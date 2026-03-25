@@ -10,11 +10,7 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://compactpay.com.br",
-        "http://localhost",
-        "http://localhost:3000",
-        "http://127.0.0.1",
-        "http://127.0.0.1:3000"
+        "https://compactpay.com.br"
     ],
     allow_credentials=True,
     allow_methods=["*"],

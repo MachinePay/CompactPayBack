@@ -12,7 +12,7 @@ from typing import List
 from app.core.dependencies import get_current_user
 
 
-from app.api.v1.endpoints import usuarios
+from app.api.v1.endpoints import usuarios, produtos
 router = APIRouter()
 
 def get_db():
@@ -40,14 +40,18 @@ def listar_maquinas(db: Session = Depends(get_db), user=Depends(get_current_user
     return maquinas
 
 
+
 # Endpoint de faturamento
 @router.get("/faturamento")
 def faturamento(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
     id_hardware: str = None,
-    periodo: str = "dia"
+    periodo: str = "dia",
+    data_inicio: str = None,
+    data_fim: str = None
 ):
+    from datetime import datetime
     _, role, cliente_id = user
     query = db.query(Transacao)
     if role != "admin":
@@ -55,7 +59,11 @@ def faturamento(
         query = query.filter(Transacao.maquina_id.in_(maquinas_ids))
     if id_hardware:
         query = query.filter(Transacao.maquina_id == id_hardware)
-    if periodo == "dia":
+    if data_inicio and data_fim:
+        dt_inicio = datetime.fromisoformat(data_inicio)
+        dt_fim = datetime.fromisoformat(data_fim)
+        query = query.filter(Transacao.data_hora >= dt_inicio, Transacao.data_hora <= dt_fim)
+    elif periodo == "dia":
         hoje = date.today()
         query = query.filter(func.date(Transacao.data_hora) == hoje)
     elif periodo == "mes":
@@ -65,8 +73,9 @@ def faturamento(
     total = query.with_entities(func.sum(Transacao.valor)).scalar() or 0.0
     return {"faturamento": float(total)}
 
-# Incluir rotas de usuários
+# Incluir rotas de usuários e produtos
 router.include_router(usuarios.router)
+router.include_router(produtos.router)
 
 @router.get("/dashboard/stats")
 def dashboard_stats(db: Session = Depends(get_db)):

@@ -1,9 +1,11 @@
 
+
 import paho.mqtt.client as mqtt
 import json
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.models import Maquina, Transacao, EventoTipo, MetodoPagamento
+from app.models.logs import Logs
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -44,9 +46,28 @@ def on_message(client, userdata, msg):
             db.add(nova_transacao)
             db.commit()
             print(f"Transação FISICO IN registrada para máquina {id_extraido}")
+        elif payload == "PELUCIA ENTREGUE (OUT)":
+            nova_transacao = Transacao(
+                maquina_id=id_extraido,
+                tipo=EventoTipo.out_flux,
+                metodo=MetodoPagamento.fisico,
+                valor=0.0
+            )
+            db.add(nova_transacao)
+            db.commit()
+            print(f"Transação FISICO OUT registrada para máquina {id_extraido}")
         db.close()
     except Exception as e:
         print(f"Erro ao processar mensagem MQTT: {e}")
+        # Grava erro no banco de dados (Logs)
+        db = SessionLocal()
+        log = Logs(
+            message=str(e),
+            level="ERROR"
+        )
+        db.add(log)
+        db.commit()
+        db.close()
 
 def start_mqtt_worker():
     client = mqtt.Client()
