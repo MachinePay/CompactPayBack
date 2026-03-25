@@ -10,4 +10,4 @@ class MaquinaBase(BaseModel):
 
 class MaquinaOut(MaquinaBase):
     class Config:
-        orm_mode = True
+        from_attributes = True
