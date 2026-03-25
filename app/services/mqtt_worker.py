@@ -1,56 +1,58 @@
+
 import paho.mqtt.client as mqtt
 import json
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.transacoes import Transacoes, TipoTransacao
-from app.models.maquinas import Maquinas
+from app.models.models import Maquina, Transacao, EventoTipo, MetodoPagamento
 from sqlalchemy.orm import Session
 from datetime import datetime
 
+TOPIC = "/TEF/+/attrs"
+
 def on_connect(client, userdata, flags, rc):
     print(f"MQTT conectado com código {rc}")
-    client.subscribe("/TEF/+/attrs")
+    client.subscribe(TOPIC)
 
 def on_message(client, userdata, msg):
     try:
-        payload = json.loads(msg.payload.decode())
-        # Extrai o id da máquina do tópico
+        payload = msg.payload.decode()
         topic_parts = msg.topic.split('/')
         if len(topic_parts) >= 3:
-            machine_id = topic_parts[2]
+            id_extraido = topic_parts[2]
         else:
             print("Tópico inválido")
             return
-        valor = float(payload.get("valor", 0))
-        tipo = payload.get("tipo", "IN")
-        if tipo not in ("IN", "OUT"):
-            tipo = "IN"
         db: Session = SessionLocal()
-        transacao = Transacoes(
-            machine_id=machine_id,
-            valor=valor,
-            tipo=TipoTransacao(tipo),
-            timestamp=datetime.utcnow()
-        )
-        db.add(transacao)
-        # Atualiza faturamento_total da máquina
-        maquina = db.query(Maquinas).filter(Maquinas.id_unico == machine_id).first()
-        if maquina:
-            if tipo == "IN":
-                maquina.faturamento_total += valor
-            elif tipo == "OUT":
-                maquina.faturamento_total -= valor
+        maquina = db.query(Maquina).filter(Maquina.id_hardware == id_extraido).first()
+        if not maquina:
+            maquina = Maquina(id_hardware=id_extraido, nome_local="Desconhecido")
+            db.add(maquina)
+            db.commit()
+            db.refresh(maquina)
+        # Sempre que receber sinal, atualiza o timestamp do último sinal
+        from datetime import datetime
+        maquina.ultimo_sinal = datetime.utcnow()
         db.commit()
+        # Processamento de pulso
+        if payload == "MOEDA DETECTADA (IN)":
+            nova_transacao = Transacao(
+                maquina_id=id_extraido,
+                tipo=EventoTipo.in_flux,
+                metodo=MetodoPagamento.fisico,
+                valor=1.00
+            )
+            db.add(nova_transacao)
+            db.commit()
+            print(f"Transação FISICO IN registrada para máquina {id_extraido}")
         db.close()
-        print(f"Transação registrada para máquina {machine_id}")
     except Exception as e:
         print(f"Erro ao processar mensagem MQTT: {e}")
 
 def start_mqtt_worker():
     client = mqtt.Client()
-    if settings.MQTT_USERNAME:
+    if getattr(settings, "MQTT_USERNAME", None):
         client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)
     client.on_connect = on_connect
     client.on_message = on_message
-    client.connect(settings.MQTT_BROKER_URL, settings.MQTT_BROKER_PORT, 60)
+    client.connect(settings.MQTT_BROKER_HOST, int(settings.MQTT_BROKER_PORT), 60)
     client.loop_forever()
