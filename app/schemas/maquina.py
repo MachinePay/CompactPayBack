@@ -5,7 +5,7 @@ from pydantic import BaseModel
 
 
 class MaquinaCreate(BaseModel):
-    id_hardware: str
+    id_hardware: Optional[str] = None
     nome: str
     cliente_id: Optional[int] = None
     localizacao: Optional[str] = None

@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+import secrets
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -26,6 +27,14 @@ def _maquina_query_por_usuario(db: Session, role: str, cliente_id):
     if role == "admin":
         return db.query(Maquina)
     return db.query(Maquina).filter(Maquina.cliente_id == cliente_id)
+
+
+def _generate_machine_id(db: Session) -> str:
+    while True:
+        candidate = f"CPM-{secrets.token_hex(3).upper()}"
+        exists = db.query(Maquina).filter(Maquina.id_hardware == candidate).first()
+        if not exists:
+            return candidate
 
 
 @router.get("/maquinas", response_model=List[MaquinaOut])
@@ -63,6 +72,17 @@ def listar_maquinas(db: Session = Depends(get_db), user=Depends(get_current_user
     return resultado
 
 
+@router.get("/maquinas/novo-id")
+def gerar_novo_id_maquina(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, _ = user
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas admin pode gerar ids de maquinas")
+    return {"id_hardware": _generate_machine_id(db)}
+
+
 @router.post("/maquinas", response_model=MaquinaOut)
 def criar_maquina(
     maquina: MaquinaCreate,
@@ -72,11 +92,12 @@ def criar_maquina(
     _, role, _ = user
     if role != "admin":
         raise HTTPException(status_code=403, detail="Apenas admin pode criar maquinas")
-    if db.query(Maquina).filter(Maquina.id_hardware == maquina.id_hardware).first():
+    machine_id = maquina.id_hardware or _generate_machine_id(db)
+    if db.query(Maquina).filter(Maquina.id_hardware == machine_id).first():
         raise HTTPException(status_code=400, detail="Maquina ja cadastrada")
 
     db_maquina = Maquina(
-        id_hardware=maquina.id_hardware,
+        id_hardware=machine_id,
         cliente_id=maquina.cliente_id,
         nome_local=maquina.nome,
         ultimo_sinal=datetime.utcnow(),
