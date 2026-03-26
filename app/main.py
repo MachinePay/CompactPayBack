@@ -10,7 +10,8 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://compactpay.com.br"
+        "https://compactpay.com.br",
+        "https://compactpay.vercel.app"
     ],
     allow_credentials=True,
     allow_methods=["*"],

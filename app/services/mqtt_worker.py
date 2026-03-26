@@ -1,5 +1,3 @@
-
-
 import paho.mqtt.client as mqtt
 import json
 from app.core.config import settings
