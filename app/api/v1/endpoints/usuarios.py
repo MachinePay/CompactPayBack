@@ -1,4 +1,5 @@
 from typing import List
+import secrets
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.exc import IntegrityError
@@ -28,11 +29,23 @@ def _resolve_user_role(role: str) -> UserRole:
         raise HTTPException(status_code=400, detail="Perfil invalido") from exc
 
 
+def _create_cliente_for_user(db: Session, nome: str | None, email: str) -> Cliente:
+    base_name = (nome or email.split("@")[0]).strip() or "Cliente CompactPay"
+    cliente = Cliente(
+        nome_empresa=base_name,
+        email_contato=email,
+        api_key=secrets.token_hex(16),
+    )
+    db.add(cliente)
+    db.flush()
+    return cliente
+
+
 def _validate_cliente_id(db: Session, role: UserRole, cliente_id: int | None) -> int | None:
     if role == UserRole.admin:
         return None
     if cliente_id is None:
-        raise HTTPException(status_code=400, detail="Cliente ID obrigatorio para perfil cliente")
+        return None
     cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
     if not cliente:
         raise HTTPException(status_code=400, detail="Cliente ID invalido")
@@ -53,6 +66,8 @@ def criar_usuario(
 
     user_role = _resolve_user_role(usuario.role)
     cliente_id = _validate_cliente_id(db, user_role, usuario.cliente_id)
+    if user_role == UserRole.cliente and cliente_id is None:
+        cliente_id = _create_cliente_for_user(db, usuario.nome, usuario.email).id
 
     db_usuario = Usuario(
         email=usuario.email,
@@ -95,6 +110,10 @@ def atualizar_usuario(
 
     user_role = _resolve_user_role(usuario.role)
     cliente_id = _validate_cliente_id(db, user_role, usuario.cliente_id)
+    if user_role == UserRole.cliente and cliente_id is None:
+        cliente_id = db_usuario.cliente_id
+        if cliente_id is None:
+            cliente_id = _create_cliente_for_user(db, usuario.nome, usuario.email).id
 
     db_usuario.email = usuario.email
     db_usuario.role = user_role
