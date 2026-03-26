@@ -11,6 +11,7 @@ from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import Maquina, Transacao
 from app.schemas.maquina import MaquinaCreate, MaquinaOut
+from app.services.mqtt_commands import publish_machine_credit
 
 router = APIRouter()
 
@@ -114,6 +115,31 @@ def criar_maquina(
         "ultimo_sinal": db_maquina.ultimo_sinal,
         "status_online": True,
         "faturamento": 0.0,
+    }
+
+
+@router.post("/maquinas/{machine_id}/credito-teste")
+def enviar_credito_teste(
+    machine_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, cliente_id = user
+    query = _maquina_query_por_usuario(db, role, cliente_id)
+    maquina = query.filter(Maquina.id_hardware == machine_id).first()
+    if not maquina:
+        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
+
+    try:
+        payload = publish_machine_credit(machine_id, action="paid")
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
+
+    return {
+        "ok": True,
+        "machine_id": machine_id,
+        "topic": f"/TEF/{machine_id}/cmd",
+        "payload": payload,
     }
 
 
