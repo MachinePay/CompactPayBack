@@ -12,7 +12,7 @@ from typing import List
 from app.core.dependencies import get_current_user
 
 
-from app.api.v1.endpoints import usuarios, produtos
+from app.api.v1.endpoints import auth, usuarios, produtos
 router = APIRouter()
 
 def get_db():
@@ -74,6 +74,7 @@ def faturamento(
     return {"faturamento": float(total)}
 
 # Incluir rotas de usuários e produtos
+router.include_router(auth.router)
 router.include_router(usuarios.router)
 router.include_router(produtos.router)
 
