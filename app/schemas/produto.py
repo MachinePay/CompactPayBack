@@ -13,4 +13,4 @@ class ProdutoCreate(ProdutoBase):
 class ProdutoOut(ProdutoBase):
     id: int
     class Config:
-        orm_mode = True
+        from_attributes = True

@@ -10,4 +10,4 @@ class ClienteBase(BaseModel):
 class ClienteOut(ClienteBase):
     maquinas: Optional[List[str]] = None
     class Config:
-        orm_mode = True
+        from_attributes = True

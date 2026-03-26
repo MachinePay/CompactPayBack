@@ -1,19 +1,18 @@
+from datetime import date, datetime, timedelta
+from typing import List
 
-
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session
+
+from app.api.v1.endpoints import auth, produtos, usuarios
+from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import Maquina, Transacao
-from app.schemas.maquina import MaquinaOut
-from app.schemas.transacao import TransacaoOut
-from datetime import date
-from sqlalchemy import func
-from typing import List
-from app.core.dependencies import get_current_user
+from app.schemas.maquina import MaquinaCreate, MaquinaOut
 
-
-from app.api.v1.endpoints import auth, usuarios, produtos
 router = APIRouter()
+
 
 def get_db():
     db = SessionLocal()
@@ -23,25 +22,80 @@ def get_db():
         db.close()
 
 
-from datetime import datetime, timedelta, date
-from sqlalchemy import func
+def _maquina_query_por_usuario(db: Session, role: str, cliente_id):
+    if role == "admin":
+        return db.query(Maquina)
+    return db.query(Maquina).filter(Maquina.cliente_id == cliente_id)
+
 
 @router.get("/maquinas", response_model=List[MaquinaOut])
 def listar_maquinas(db: Session = Depends(get_db), user=Depends(get_current_user)):
     _, role, cliente_id = user
-    if role == "admin":
-        maquinas = db.query(Maquina).all()
-    else:
-        maquinas = db.query(Maquina).filter(Maquina.cliente_id == cliente_id).all()
-    # Considera online se recebeu sinal nos últimos 3 minutos
+    maquinas = _maquina_query_por_usuario(db, role, cliente_id).all()
     agora = datetime.utcnow()
-    for m in maquinas:
-        m.status_online = (m.ultimo_sinal and (agora - m.ultimo_sinal) < timedelta(minutes=3))
-    return maquinas
+    resultado = []
+
+    for maquina in maquinas:
+        faturamento = (
+            db.query(func.sum(Transacao.valor))
+            .filter(
+                Transacao.maquina_id == maquina.id_hardware,
+                Transacao.tipo == "IN",
+            )
+            .scalar()
+            or 0.0
+        )
+        resultado.append(
+            {
+                "id_hardware": maquina.id_hardware,
+                "cliente_id": maquina.cliente_id,
+                "nome": maquina.nome_local,
+                "localizacao": None,
+                "ultimo_sinal": maquina.ultimo_sinal,
+                "status_online": bool(
+                    maquina.ultimo_sinal
+                    and (agora - maquina.ultimo_sinal) < timedelta(minutes=3)
+                ),
+                "faturamento": float(faturamento),
+            }
+        )
+
+    return resultado
 
 
+@router.post("/maquinas", response_model=MaquinaOut)
+def criar_maquina(
+    maquina: MaquinaCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, _ = user
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas admin pode criar maquinas")
+    if db.query(Maquina).filter(Maquina.id_hardware == maquina.id_hardware).first():
+        raise HTTPException(status_code=400, detail="Maquina ja cadastrada")
 
-# Endpoint de faturamento
+    db_maquina = Maquina(
+        id_hardware=maquina.id_hardware,
+        cliente_id=maquina.cliente_id,
+        nome_local=maquina.nome,
+        ultimo_sinal=datetime.utcnow(),
+    )
+    db.add(db_maquina)
+    db.commit()
+    db.refresh(db_maquina)
+
+    return {
+        "id_hardware": db_maquina.id_hardware,
+        "cliente_id": db_maquina.cliente_id,
+        "nome": db_maquina.nome_local,
+        "localizacao": maquina.localizacao,
+        "ultimo_sinal": db_maquina.ultimo_sinal,
+        "status_online": True,
+        "faturamento": 0.0,
+    }
+
+
 @router.get("/faturamento")
 def faturamento(
     db: Session = Depends(get_db),
@@ -49,44 +103,74 @@ def faturamento(
     id_hardware: str = None,
     periodo: str = "dia",
     data_inicio: str = None,
-    data_fim: str = None
+    data_fim: str = None,
 ):
-    from datetime import datetime
     _, role, cliente_id = user
     query = db.query(Transacao)
     if role != "admin":
-        maquinas_ids = [m.id_hardware for m in db.query(Maquina).filter(Maquina.cliente_id == cliente_id)]
+        maquinas_ids = [
+            m.id_hardware for m in _maquina_query_por_usuario(db, role, cliente_id).all()
+        ]
         query = query.filter(Transacao.maquina_id.in_(maquinas_ids))
     if id_hardware:
         query = query.filter(Transacao.maquina_id == id_hardware)
     if data_inicio and data_fim:
         dt_inicio = datetime.fromisoformat(data_inicio)
         dt_fim = datetime.fromisoformat(data_fim)
-        query = query.filter(Transacao.data_hora >= dt_inicio, Transacao.data_hora <= dt_fim)
+        query = query.filter(
+            Transacao.data_hora >= dt_inicio,
+            Transacao.data_hora <= dt_fim,
+        )
     elif periodo == "dia":
         hoje = date.today()
         query = query.filter(func.date(Transacao.data_hora) == hoje)
     elif periodo == "mes":
         hoje = date.today()
-        query = query.filter(func.extract('month', Transacao.data_hora) == hoje.month)
-        query = query.filter(func.extract('year', Transacao.data_hora) == hoje.year)
+        query = query.filter(func.extract("month", Transacao.data_hora) == hoje.month)
+        query = query.filter(func.extract("year", Transacao.data_hora) == hoje.year)
+
     total = query.with_entities(func.sum(Transacao.valor)).scalar() or 0.0
     return {"faturamento": float(total)}
 
-# Incluir rotas de usuários e produtos
+
 router.include_router(auth.router)
 router.include_router(usuarios.router)
 router.include_router(produtos.router)
 
+
 @router.get("/dashboard/stats")
-def dashboard_stats(db: Session = Depends(get_db)):
+def dashboard_stats(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
     hoje = date.today()
-    faturamento = db.query(func.sum(Transacao.valor)).filter(
-        Transacao.tipo == "IN",
-        func.date(Transacao.timestamp) == hoje
-    ).scalar() or 0.0
-    premios = db.query(func.count(Transacao.id)).filter(
-        Transacao.tipo == "OUT",
-        func.date(Transacao.timestamp) == hoje
-    ).scalar() or 0
-    return {"faturamento_total_dia": faturamento, "premios_entregues": premios}
+    _, role, cliente_id = user
+    query = db.query(Transacao)
+    if role != "admin":
+        maquinas_ids = [
+            m.id_hardware for m in _maquina_query_por_usuario(db, role, cliente_id).all()
+        ]
+        query = query.filter(Transacao.maquina_id.in_(maquinas_ids))
+
+    faturamento = (
+        query.with_entities(func.sum(Transacao.valor))
+        .filter(
+            Transacao.tipo == "IN",
+            func.date(Transacao.data_hora) == hoje,
+        )
+        .scalar()
+        or 0.0
+    )
+    premios = (
+        query.with_entities(func.count(Transacao.id))
+        .filter(
+            Transacao.tipo == "OUT",
+            func.date(Transacao.data_hora) == hoje,
+        )
+        .scalar()
+        or 0
+    )
+    return {
+        "faturamento_total_dia": float(faturamento),
+        "premios_entregues": int(premios),
+    }

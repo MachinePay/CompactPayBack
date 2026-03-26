@@ -12,4 +12,4 @@ class LogCreate(BaseModel):
 
 class LogOut(LogBase):
     class Config:
-        orm_mode = True
+        from_attributes = True
