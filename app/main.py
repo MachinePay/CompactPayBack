@@ -1,5 +1,4 @@
 import threading
-import threading
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.services.mqtt_worker import start_mqtt_worker
@@ -11,8 +10,9 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://compactpay.com.br",
-        "https://compactpay.vercel.app"
+        "https://compactpay.vercel.app",
     ],
+    allow_origin_regex=r"^https://compact-pay-front(-[a-z0-9-]+)*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
