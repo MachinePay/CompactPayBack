@@ -11,6 +11,12 @@ class MaquinaCreate(BaseModel):
     localizacao: Optional[str] = None
 
 
+class MaquinaUpdate(BaseModel):
+    nome: str
+    cliente_id: Optional[int] = None
+    localizacao: Optional[str] = None
+
+
 class MaquinaOut(BaseModel):
     id_hardware: str
     cliente_id: Optional[int] = None

@@ -4,14 +4,13 @@ from typing import Optional
 from pydantic import BaseModel
 
 
-class TransacaoOut(BaseModel):
+class HistoricoOperacaoOut(BaseModel):
     id: int
     maquina_id: str
-    maquina_nome: Optional[str] = None
-    tipo: str
-    metodo: str
-    valor: float
-    data_hora: datetime
+    categoria: str
+    descricao: str
+    valor: Optional[float] = None
+    created_at: datetime
 
     class Config:
         from_attributes = True

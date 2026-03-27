@@ -38,9 +38,10 @@ import datetime
 class Maquina(Base):
     __tablename__ = "maquinas"
     id_hardware = Column(String, primary_key=True) # ID do WiFiManager
-    cliente_id = Column(Integer, ForeignKey("clientes.id"))
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True)
     nome_local = Column(String)
-    ultimo_sinal = Column(DateTime, default=datetime.datetime.utcnow)
+    localizacao = Column(String, nullable=True)
+    ultimo_sinal = Column(DateTime, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")
 
@@ -53,3 +54,39 @@ class Transacao(Base):
     valor = Column(Float, default=1.0)
     data_hora = Column(DateTime, default=datetime.datetime.utcnow)
     maquina = relationship("Maquina", back_populates="transacoes")
+
+
+class HistoricoOperacao(Base):
+    __tablename__ = "historico_operacoes"
+    id = Column(Integer, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    categoria = Column(String, nullable=False, index=True)
+    descricao = Column(String, nullable=False)
+    valor = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class FechamentoMaquina(Base):
+    __tablename__ = "fechamentos_maquina"
+    id = Column(Integer, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    periodo_inicio = Column(DateTime, nullable=False, index=True)
+    periodo_fim = Column(DateTime, nullable=False, index=True)
+    total_pagamentos = Column(Float, default=0.0, nullable=False)
+    total_digital = Column(Float, default=0.0, nullable=False)
+    total_fisico = Column(Float, default=0.0, nullable=False)
+    quantidade_pagamentos = Column(Integer, default=0, nullable=False)
+    quantidade_testes = Column(Integer, default=0, nullable=False)
+    quantidade_saidas = Column(Integer, default=0, nullable=False)
+    criado_por_email = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class AuditoriaOperacao(Base):
+    __tablename__ = "auditoria_operacoes"
+    id = Column(Integer, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    acao = Column(String, nullable=False, index=True)
+    descricao = Column(String, nullable=False)
+    executado_por_email = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
