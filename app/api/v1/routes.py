@@ -9,8 +9,9 @@ from sqlalchemy.orm import Session
 from app.api.v1.endpoints import auth, pagamentos, produtos, usuarios
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import AuditoriaOperacao, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao
+from app.models.models import AuditoriaOperacao, Cliente, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao
 from app.schemas.auditoria import AuditoriaOperacaoOut
+from app.schemas.cliente import ClienteListOut
 from app.schemas.fechamento import FechamentoMaquinaOut
 from app.schemas.historico import HistoricoOperacaoOut
 from app.schemas.maquina import MaquinaCreate, MaquinaOut, MaquinaUpdate
@@ -32,6 +33,13 @@ def _maquina_query_por_usuario(db: Session, role: str, cliente_id):
     if role == "admin":
         return db.query(Maquina)
     return db.query(Maquina).filter(Maquina.cliente_id == cliente_id)
+
+
+def _cliente_query_por_usuario(db: Session, role: str, cliente_id):
+    query = db.query(Cliente)
+    if role == "admin":
+        return query
+    return query.filter(Cliente.id == cliente_id)
 
 
 def _generate_machine_id(db: Session) -> str:
@@ -288,9 +296,17 @@ def listar_maquinas(
     periodo: str = "mes",
     data_inicio: str = None,
     data_fim: str = None,
+    cliente_id: int = None,
+    id_hardware: str = None,
 ):
-    _, role, cliente_id = user
-    maquinas = _maquina_query_por_usuario(db, role, cliente_id).all()
+    _, role, user_cliente_id = user
+    maquinas_query = _maquina_query_por_usuario(db, role, user_cliente_id)
+    if role == "admin" and cliente_id is not None:
+        maquinas_query = maquinas_query.filter(Maquina.cliente_id == cliente_id)
+    if id_hardware:
+        maquinas_query = maquinas_query.filter(Maquina.id_hardware == id_hardware)
+
+    maquinas = maquinas_query.order_by(Maquina.nome_local.asc(), Maquina.id_hardware.asc()).all()
     agora = datetime.utcnow()
     resultado = []
 
@@ -327,6 +343,20 @@ def listar_maquinas(
         )
 
     return resultado
+
+
+@router.get("/clientes", response_model=List[ClienteListOut])
+def listar_clientes(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, cliente_id = user
+    clientes = (
+        _cliente_query_por_usuario(db, role, cliente_id)
+        .order_by(Cliente.nome_empresa.asc())
+        .all()
+    )
+    return clientes
 
 
 @router.get("/maquinas/novo-id")
@@ -772,15 +802,20 @@ def dashboard_overview(
     periodo: str = "mes",
     data_inicio: str = None,
     data_fim: str = None,
+    cliente_id: int = None,
+    id_hardware: str = None,
 ):
-    _, role, cliente_id = user
-    maquinas_query = _maquina_query_por_usuario(db, role, cliente_id)
+    _, role, user_cliente_id = user
+    maquinas_query = _maquina_query_por_usuario(db, role, user_cliente_id)
+    if role == "admin" and cliente_id is not None:
+        maquinas_query = maquinas_query.filter(Maquina.cliente_id == cliente_id)
+    if id_hardware:
+        maquinas_query = maquinas_query.filter(Maquina.id_hardware == id_hardware)
+
     maquinas = maquinas_query.all()
     maquinas_ids = [maquina.id_hardware for maquina in maquinas]
 
-    transacoes_query = db.query(Transacao)
-    if role != "admin":
-        transacoes_query = transacoes_query.filter(Transacao.maquina_id.in_(maquinas_ids))
+    transacoes_query = db.query(Transacao).filter(Transacao.maquina_id.in_(maquinas_ids))
 
     transacoes_periodo = _apply_transacao_periodo(
         transacoes_query,
@@ -815,16 +850,18 @@ def dashboard_overview(
     chart_data = []
     for index in range(total_days):
         current_day = start_dt.date() + timedelta(days=index)
-        day_total = (
-            db.query(func.sum(Transacao.valor))
-            .filter(
-                Transacao.tipo == "IN",
-                func.date(Transacao.data_hora) == current_day,
+        day_total = 0.0
+        if maquinas_ids:
+            day_total = (
+                db.query(func.sum(Transacao.valor))
+                .filter(
+                    Transacao.tipo == "IN",
+                    func.date(Transacao.data_hora) == current_day,
+                    Transacao.maquina_id.in_(maquinas_ids),
+                )
+                .scalar()
+                or 0.0
             )
-            .filter(Transacao.maquina_id.in_(maquinas_ids) if role != "admin" else True)
-            .scalar()
-            or 0.0
-        )
         chart_data.append(
             {
                 "dia": current_day.strftime("%d/%m"),

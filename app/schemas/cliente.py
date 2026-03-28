@@ -1,13 +1,23 @@
-from pydantic import BaseModel
 from typing import List, Optional
 
+from pydantic import BaseModel
+
+
 class ClienteBase(BaseModel):
-    id: str
     nome_empresa: str
     email_contato: str
-    api_key: str
+
 
 class ClienteOut(ClienteBase):
+    id: int
     maquinas: Optional[List[str]] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ClienteListOut(ClienteBase):
+    id: int
+
     class Config:
         from_attributes = True
