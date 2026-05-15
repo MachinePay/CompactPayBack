@@ -5,7 +5,7 @@ import time
 import urllib.request
 import urllib.error
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -94,7 +94,11 @@ def _get_maquina_visivel(db: Session, maquina_id: str, role: str, cliente_id):
 
 
 @router.post("/callback-mercado-pago")
-async def processar_pix(dados: dict):
+async def processar_pix(request: Request, dados: dict | None = None):
+    payload_query = dict(request.query_params or {})
+    payload_body = dados or {}
+    dados = {**payload_query, **payload_body}
+
     # Suporta payload simples antigo: {status, id_hardware, valor}
     if dados.get("status") == "approved" and dados.get("id_hardware"):
         id_hardware = dados.get("id_hardware")
@@ -134,7 +138,7 @@ async def processar_pix(dados: dict):
     topic = dados.get("topic") or dados.get("type") or ""
     action = dados.get("action") or ""
     data = dados.get("data") or {}
-    order_id = data.get("id") or dados.get("id")
+    order_id = data.get("id") or dados.get("id") or dados.get("data.id")
 
     if not order_id:
         return {"status": "ignorado", "detalhe": "Webhook sem id de order/payment"}
@@ -199,7 +203,7 @@ async def processar_pix(dados: dict):
     # Webhook de pagamento direto na conta MP (ex.: pagamento feito na maquininha vinculada)
     is_payment_event = topic in {"payment"} or action.startswith("payment.")
     if is_payment_event:
-        payment_id = str((dados.get("data") or {}).get("id") or dados.get("id") or "").strip()
+        payment_id = str((dados.get("data") or {}).get("id") or dados.get("id") or dados.get("data.id") or "").strip()
         if not payment_id:
             return {"status": "ignorado", "detalhe": "Evento payment sem id"}
         if payment_id in PROCESSED_PAYMENT_IDS:
