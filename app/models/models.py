@@ -90,3 +90,12 @@ class AuditoriaOperacao(Base):
     descricao = Column(String, nullable=False)
     executado_por_email = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class EscutaTerminal(Base):
+    __tablename__ = "escutas_terminal"
+    terminal_id = Column(String, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    ativo = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)

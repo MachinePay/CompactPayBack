@@ -11,13 +11,12 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao
+from app.models.models import EscutaTerminal, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao
 from app.models.produto import Produto
 from app.schemas.pagamento import PagamentoCreate, PagamentoOut
 from app.services.mqtt_commands import publish_machine_credit_pulses
 
 router = APIRouter()
-ACTIVE_TERMINAL_BINDINGS: dict[str, dict] = {}
 PROCESSED_PAYMENT_IDS: set[str] = set()
 
 
@@ -206,32 +205,46 @@ async def processar_pix(request: Request, dados: dict | None = None):
         payment_id = str((dados.get("data") or {}).get("id") or dados.get("id") or dados.get("data.id") or "").strip()
         if not payment_id:
             return {"status": "ignorado", "detalhe": "Evento payment sem id"}
-        if payment_id in PROCESSED_PAYMENT_IDS:
-            return {"status": "ignorado", "detalhe": "Pagamento ja processado"}
-
         payment_data = _mp_request("GET", f"https://api.mercadopago.com/v1/payments/{payment_id}", mp_token)
         payment_status = (payment_data.get("status") or "").lower()
         if payment_status not in {"approved", "authorized"}:
             return {"status": "ignorado", "detalhe": f"Pagamento ainda nao aprovado ({payment_status})"}
 
         terminal_id = _extract_terminal_id(payment_data)
-        binding = ACTIVE_TERMINAL_BINDINGS.get(terminal_id or "")
-        if not binding:
-            # Fallback: se so existir uma escuta ativa, usa ela.
-            if len(ACTIVE_TERMINAL_BINDINGS) == 1:
-                binding = next(iter(ACTIVE_TERMINAL_BINDINGS.values()))
-            else:
-                return {
-                    "status": "ignorado",
-                    "detalhe": "Sem vinculo ativo para este terminal",
-                    "terminal_id": terminal_id,
-                }
-
-        machine_id = binding["machine_id"]
         amount = float(payment_data.get("transaction_amount") or 1.0)
 
         db = SessionLocal()
         try:
+            duplicado = (
+                db.query(HistoricoOperacao)
+                .filter(
+                    HistoricoOperacao.categoria == "PAGAMENTO",
+                    HistoricoOperacao.descricao.contains(f"payment_id={payment_id}"),
+                )
+                .first()
+            )
+            if duplicado:
+                return {"status": "ignorado", "detalhe": "Pagamento ja processado"}
+
+            escuta = None
+            if terminal_id:
+                escuta = (
+                    db.query(EscutaTerminal)
+                    .filter(EscutaTerminal.terminal_id == terminal_id, EscutaTerminal.ativo.is_(True))
+                    .first()
+                )
+            if not escuta:
+                escutas_ativas = db.query(EscutaTerminal).filter(EscutaTerminal.ativo.is_(True)).all()
+                if len(escutas_ativas) == 1:
+                    escuta = escutas_ativas[0]
+                else:
+                    return {
+                        "status": "ignorado",
+                        "detalhe": "Sem vinculo ativo para este terminal",
+                        "terminal_id": terminal_id,
+                    }
+
+            machine_id = escuta.maquina_id
             transacao = Transacao(
                 maquina_id=machine_id,
                 tipo=EventoTipo.in_flux,
@@ -409,10 +422,22 @@ def iniciar_escuta_terminal(
         raise HTTPException(status_code=422, detail="terminal_id e obrigatorio")
 
     _get_maquina_visivel(db, machine_id, role, cliente_id)
-    ACTIVE_TERMINAL_BINDINGS[terminal_id] = {
-        "machine_id": machine_id,
-        "started_at": datetime.utcnow().isoformat(),
-    }
+    escuta = db.query(EscutaTerminal).filter(EscutaTerminal.terminal_id == terminal_id).first()
+    now = datetime.utcnow()
+    if escuta:
+        escuta.maquina_id = machine_id
+        escuta.ativo = True
+        escuta.updated_at = now
+    else:
+        escuta = EscutaTerminal(
+            terminal_id=terminal_id,
+            maquina_id=machine_id,
+            ativo=True,
+            created_at=now,
+            updated_at=now,
+        )
+        db.add(escuta)
+    db.commit()
     return {
         "ok": True,
         "terminal_id": terminal_id,
@@ -422,14 +447,30 @@ def iniciar_escuta_terminal(
 
 
 @router.post("/pagamentos/escuta/parar")
-def parar_escuta_terminal(dados: dict):
+def parar_escuta_terminal(dados: dict, db: Session = Depends(get_db)):
     terminal_id = (dados.get("terminal_id") or "").strip()
     if not terminal_id:
         raise HTTPException(status_code=422, detail="terminal_id e obrigatorio")
-    existed = ACTIVE_TERMINAL_BINDINGS.pop(terminal_id, None)
-    return {"ok": True, "terminal_id": terminal_id, "ativo_antes": bool(existed)}
+    escuta = db.query(EscutaTerminal).filter(EscutaTerminal.terminal_id == terminal_id).first()
+    ativo_antes = bool(escuta and escuta.ativo)
+    if escuta:
+        escuta.ativo = False
+        escuta.updated_at = datetime.utcnow()
+        db.commit()
+    return {"ok": True, "terminal_id": terminal_id, "ativo_antes": ativo_antes}
 
 
 @router.get("/pagamentos/escuta")
-def listar_escutas():
-    return {"ativos": ACTIVE_TERMINAL_BINDINGS}
+def listar_escutas(db: Session = Depends(get_db)):
+    escutas = db.query(EscutaTerminal).filter(EscutaTerminal.ativo.is_(True)).all()
+    return {
+        "ativos": [
+            {
+                "terminal_id": item.terminal_id,
+                "machine_id": item.maquina_id,
+                "created_at": item.created_at,
+                "updated_at": item.updated_at,
+            }
+            for item in escutas
+        ]
+    }
