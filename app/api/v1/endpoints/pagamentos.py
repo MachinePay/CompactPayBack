@@ -98,6 +98,8 @@ async def processar_pix(request: Request, dados: dict | None = None):
     payload_body = dados or {}
     dados = {**payload_query, **payload_body}
 
+    print(f"[MP webhook] query={payload_query} body={payload_body}")
+
     # Suporta payload simples antigo: {status, id_hardware, valor}
     if dados.get("status") == "approved" and dados.get("id_hardware"):
         id_hardware = dados.get("id_hardware")
@@ -127,11 +129,13 @@ async def processar_pix(request: Request, dados: dict | None = None):
 
         pulsos = _calcular_pulsos_por_valor(valor)
         publish_machine_credit_pulses(id_hardware, pulses=pulsos, action="paid")
+        print(f"[MP webhook] callback simplificado aprovado maquina={id_hardware} valor={valor} pulsos={pulsos}")
         return {"status": "sucesso", "detalhe": "Pagamento digital registrado", "pulsos": pulsos}
 
     # Fluxo real Mercado Pago Point/Webhook
     mp_token = settings.MP_ACCESS_TOKEN
     if not mp_token:
+        print("[MP webhook] MP_ACCESS_TOKEN nao configurado")
         return {"status": "erro", "detalhe": "MP_ACCESS_TOKEN nao configurado"}
 
     topic = dados.get("topic") or dados.get("type") or ""
@@ -140,6 +144,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
     order_id = data.get("id") or dados.get("id") or dados.get("data.id")
 
     if not order_id:
+        print("[MP webhook] ignorado: sem id de order/payment")
         return {"status": "ignorado", "detalhe": "Webhook sem id de order/payment"}
 
     # Para webhook da nova API /v1/orders: type=order action=order.processed
@@ -148,11 +153,13 @@ async def processar_pix(request: Request, dados: dict | None = None):
         order_data = _mp_request("GET", f"https://api.mercadopago.com/v1/orders/{order_id}", mp_token)
         order_status = (order_data.get("status") or "").lower()
         if order_status not in {"processed"} and action != "order.processed":
+            print(f"[MP webhook] order ignorada: status={order_status} action={action}")
             return {"status": "ignorado", "detalhe": f"Order ainda nao aprovada ({order_status or action})"}
 
         external_reference = order_data.get("external_reference")
         machine_id = _parse_machine_id_from_external_reference(external_reference)
         if not machine_id:
+            print("[MP webhook] order ignorada: sem machine_id no external_reference")
             return {"status": "erro", "detalhe": "Nao foi possivel identificar machine_id no external_reference"}
 
         amount = 1.0
@@ -172,6 +179,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
                 .first()
             )
             if duplicado:
+                print(f"[MP webhook] order duplicada mp_order_id={order_id}")
                 return {"status": "ignorado", "detalhe": "Pagamento ja processado"}
 
             transacao = Transacao(
@@ -197,6 +205,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
 
         pulsos = _calcular_pulsos_por_valor(amount)
         publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid")
+        print(f"[MP webhook] order processada machine={machine_id} amount={amount} pulsos={pulsos}")
         return {"status": "sucesso", "detalhe": "Pagamento aprovado e pulsos enviados", "pulsos": pulsos}
 
     # Webhook de pagamento direto na conta MP (ex.: pagamento feito na maquininha vinculada)
@@ -204,10 +213,12 @@ async def processar_pix(request: Request, dados: dict | None = None):
     if is_payment_event:
         payment_id = str((dados.get("data") or {}).get("id") or dados.get("id") or dados.get("data.id") or "").strip()
         if not payment_id:
+            print("[MP webhook] payment ignorado: sem payment_id")
             return {"status": "ignorado", "detalhe": "Evento payment sem id"}
         payment_data = _mp_request("GET", f"https://api.mercadopago.com/v1/payments/{payment_id}", mp_token)
         payment_status = (payment_data.get("status") or "").lower()
         if payment_status not in {"approved", "authorized"}:
+            print(f"[MP webhook] payment ignorado: payment_id={payment_id} status={payment_status}")
             return {"status": "ignorado", "detalhe": f"Pagamento ainda nao aprovado ({payment_status})"}
 
         terminal_id = _extract_terminal_id(payment_data)
@@ -224,6 +235,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
                 .first()
             )
             if duplicado:
+                print(f"[MP webhook] payment duplicado payment_id={payment_id}")
                 return {"status": "ignorado", "detalhe": "Pagamento ja processado"}
 
             escuta = None
@@ -234,10 +246,21 @@ async def processar_pix(request: Request, dados: dict | None = None):
                     .first()
                 )
             if not escuta:
-                escutas_ativas = db.query(EscutaTerminal).filter(EscutaTerminal.ativo.is_(True)).all()
-                if len(escutas_ativas) == 1:
+                escutas_ativas = (
+                    db.query(EscutaTerminal)
+                    .filter(EscutaTerminal.ativo.is_(True))
+                    .order_by(EscutaTerminal.updated_at.desc())
+                    .all()
+                )
+                if escutas_ativas:
                     escuta = escutas_ativas[0]
+                    print(
+                        f"[MP webhook] terminal sem match exato ({terminal_id}); usando escuta mais recente terminal={escuta.terminal_id} maquina={escuta.maquina_id}"
+                    )
                 else:
+                    print(
+                        f"[MP webhook] payment ignorado: sem escuta ativa terminal_id={terminal_id} payment_id={payment_id}"
+                    )
                     return {
                         "status": "ignorado",
                         "detalhe": "Sem vinculo ativo para este terminal",
@@ -269,6 +292,9 @@ async def processar_pix(request: Request, dados: dict | None = None):
         pulsos = _calcular_pulsos_por_valor(amount)
         publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid")
         PROCESSED_PAYMENT_IDS.add(payment_id)
+        print(
+            f"[MP webhook] payment processado payment_id={payment_id} terminal={terminal_id} machine={machine_id} amount={amount} pulsos={pulsos}"
+        )
         return {
             "status": "sucesso",
             "detalhe": "Pagamento recebido e pulsos enviados",
@@ -277,6 +303,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
             "pulsos": pulsos,
         }
 
+    print(f"[MP webhook] ignorado: evento nao tratado topic={topic} action={action}")
     return {"status": "ignorado", "detalhe": "Evento nao tratado neste endpoint"}
 
 
