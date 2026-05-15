@@ -117,6 +117,95 @@ def _get_user_email(user) -> str:
     return token_data.email
 
 
+def _status_operacional(status_online: bool, ultima_atividade_em: datetime | None) -> str:
+    if not status_online:
+        return "offline"
+    if ultima_atividade_em is None:
+        return "atencao"
+    return "operando"
+
+
+def _serialize_machine_summary(
+    db: Session,
+    maquina: Maquina,
+    periodo: str = "mes",
+    data_inicio: str = None,
+    data_fim: str = None,
+):
+    agora = datetime.utcnow()
+    status_online = bool(
+        maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < timedelta(minutes=3)
+    )
+    faturamento_query = (
+        db.query(func.sum(Transacao.valor))
+        .filter(
+            Transacao.maquina_id == maquina.id_hardware,
+            Transacao.tipo == "IN",
+        )
+    )
+    faturamento = (
+        _apply_transacao_periodo(
+            faturamento_query,
+            periodo=periodo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+        ).scalar()
+        or 0.0
+    )
+
+    start_dt, end_dt = _resolve_date_window(periodo, data_inicio, data_fim)
+    ultimo_pagamento_em = (
+        db.query(func.max(Transacao.data_hora))
+        .filter(
+            Transacao.maquina_id == maquina.id_hardware,
+            Transacao.tipo == "IN",
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+        )
+        .scalar()
+    )
+    ultima_saida_em = (
+        db.query(func.max(Transacao.data_hora))
+        .filter(
+            Transacao.maquina_id == maquina.id_hardware,
+            Transacao.tipo == "OUT",
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+        )
+        .scalar()
+    )
+    ultimo_teste_em = (
+        db.query(func.max(HistoricoOperacao.created_at))
+        .filter(
+            HistoricoOperacao.maquina_id == maquina.id_hardware,
+            HistoricoOperacao.categoria == "TESTE",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
+        )
+        .scalar()
+    )
+    ultima_atividade_em = max(
+        [item for item in [ultimo_pagamento_em, ultima_saida_em, ultimo_teste_em] if item is not None],
+        default=None,
+    )
+
+    return {
+        "id_hardware": maquina.id_hardware,
+        "cliente_id": maquina.cliente_id,
+        "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
+        "nome": maquina.nome_local,
+        "localizacao": maquina.localizacao,
+        "ultimo_sinal": maquina.ultimo_sinal,
+        "ultimo_pagamento_em": ultimo_pagamento_em,
+        "ultimo_teste_em": ultimo_teste_em,
+        "ultima_saida_em": ultima_saida_em,
+        "ultima_atividade_em": ultima_atividade_em,
+        "status_online": status_online,
+        "status_operacional": _status_operacional(status_online, ultima_atividade_em),
+        "faturamento": float(faturamento),
+    }
+
+
 def _build_machine_history_payload(
     db: Session,
     maquina: Maquina,
@@ -189,6 +278,69 @@ def _build_machine_history_payload(
         .limit(20)
         .all()
     )
+    observacoes = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.categoria == "MANUTENCAO",
+        )
+        .order_by(HistoricoOperacao.created_at.desc())
+        .limit(20)
+        .all()
+    )
+
+    timeline = []
+    for transacao in pagamentos:
+        timeline.append(
+            {
+                "id": f"pagamento-{transacao.id}",
+                "tipo": "pagamento",
+                "titulo": "Pagamento registrado",
+                "descricao": f"{transacao.metodo.value if hasattr(transacao.metodo, 'value') else str(transacao.metodo)} - R$ {float(transacao.valor):.2f}",
+                "created_at": transacao.data_hora,
+            }
+        )
+    for transacao in saidas:
+        timeline.append(
+            {
+                "id": f"saida-{transacao.id}",
+                "tipo": "saida",
+                "titulo": "Saida registrada",
+                "descricao": f"{transacao.metodo.value if hasattr(transacao.metodo, 'value') else str(transacao.metodo)} - R$ {float(transacao.valor):.2f}",
+                "created_at": transacao.data_hora,
+            }
+        )
+    for teste in testes:
+        timeline.append(
+            {
+                "id": f"teste-{teste.id}",
+                "tipo": "teste",
+                "titulo": "Teste enviado",
+                "descricao": teste.descricao,
+                "created_at": teste.created_at,
+            }
+        )
+    for observacao in observacoes:
+        timeline.append(
+            {
+                "id": f"observacao-{observacao.id}",
+                "tipo": "observacao",
+                "titulo": "Observacao de manutencao",
+                "descricao": observacao.descricao,
+                "created_at": observacao.created_at,
+            }
+        )
+    for fechamento in fechamentos:
+        timeline.append(
+            {
+                "id": f"fechamento-{fechamento.id}",
+                "tipo": "fechamento",
+                "titulo": "Fechamento salvo",
+                "descricao": f"Total R$ {float(fechamento.total_pagamentos):.2f}",
+                "created_at": fechamento.created_at,
+            }
+        )
+    timeline.sort(key=lambda item: item["created_at"], reverse=True)
 
     return {
         "range": {
@@ -204,6 +356,13 @@ def _build_machine_history_payload(
                 maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < timedelta(minutes=3)
             ),
             "ultimo_sinal": maquina.ultimo_sinal,
+            "status_operacional": _status_operacional(
+                bool(maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < timedelta(minutes=3)),
+                max(
+                    [item for item in [ultimo_pagamento.data_hora if ultimo_pagamento else None, ultimo_teste.created_at if ultimo_teste else None, ultima_saida.data_hora if ultima_saida else None] if item is not None],
+                    default=None,
+                ),
+            ),
         },
         "resumo": {
             "total_pagamentos": total_pagamentos,
@@ -258,6 +417,17 @@ def _build_machine_history_payload(
             }
             for teste in testes
         ],
+        "observacoes": [
+            {
+                "id": item.id,
+                "maquina_id": item.maquina_id,
+                "categoria": item.categoria,
+                "descricao": item.descricao,
+                "valor": item.valor,
+                "created_at": item.created_at,
+            }
+            for item in observacoes
+        ],
         "fechamentos": [
             {
                 "id": fechamento.id,
@@ -286,6 +456,7 @@ def _build_machine_history_payload(
             }
             for item in auditoria
         ],
+        "timeline": timeline[:50],
     }
 
 
@@ -307,42 +478,16 @@ def listar_maquinas(
         maquinas_query = maquinas_query.filter(Maquina.id_hardware == id_hardware)
 
     maquinas = maquinas_query.order_by(Maquina.nome_local.asc(), Maquina.id_hardware.asc()).all()
-    agora = datetime.utcnow()
-    resultado = []
-
-    for maquina in maquinas:
-        faturamento_query = (
-            db.query(func.sum(Transacao.valor))
-            .filter(
-                Transacao.maquina_id == maquina.id_hardware,
-                Transacao.tipo == "IN",
-            )
+    return [
+        _serialize_machine_summary(
+            db,
+            maquina,
+            periodo=periodo,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
         )
-        faturamento = (
-            _apply_transacao_periodo(
-                faturamento_query,
-                periodo=periodo,
-                data_inicio=data_inicio,
-                data_fim=data_fim,
-            ).scalar()
-            or 0.0
-        )
-        resultado.append(
-            {
-                "id_hardware": maquina.id_hardware,
-                "cliente_id": maquina.cliente_id,
-                "nome": maquina.nome_local,
-                "localizacao": maquina.localizacao,
-                "ultimo_sinal": maquina.ultimo_sinal,
-                "status_online": bool(
-                    maquina.ultimo_sinal
-                    and (agora - maquina.ultimo_sinal) < timedelta(minutes=3)
-                ),
-                "faturamento": float(faturamento),
-            }
-        )
-
-    return resultado
+        for maquina in maquinas
+    ]
 
 
 @router.get("/clientes", response_model=List[ClienteListOut])
@@ -395,13 +540,7 @@ def criar_maquina(
     db.refresh(db_maquina)
 
     return {
-        "id_hardware": db_maquina.id_hardware,
-        "cliente_id": db_maquina.cliente_id,
-        "nome": db_maquina.nome_local,
-        "localizacao": db_maquina.localizacao,
-        "ultimo_sinal": db_maquina.ultimo_sinal,
-        "status_online": False,
-        "faturamento": 0.0,
+        **_serialize_machine_summary(db, db_maquina, periodo="mes"),
     }
 
 
@@ -426,28 +565,7 @@ def atualizar_maquina(
     db.commit()
     db.refresh(db_maquina)
 
-    faturamento = (
-        db.query(func.sum(Transacao.valor))
-        .filter(
-            Transacao.maquina_id == db_maquina.id_hardware,
-            Transacao.tipo == "IN",
-        )
-        .scalar()
-        or 0.0
-    )
-
-    return {
-        "id_hardware": db_maquina.id_hardware,
-        "cliente_id": db_maquina.cliente_id,
-        "nome": db_maquina.nome_local,
-        "localizacao": db_maquina.localizacao,
-        "ultimo_sinal": db_maquina.ultimo_sinal,
-        "status_online": bool(
-            db_maquina.ultimo_sinal
-            and (datetime.utcnow() - db_maquina.ultimo_sinal) < timedelta(minutes=3)
-        ),
-        "faturamento": float(faturamento),
-    }
+    return _serialize_machine_summary(db, db_maquina, periodo="mes")
 
 
 @router.delete("/maquinas/{machine_id}")
@@ -512,6 +630,49 @@ def enviar_credito_teste(
         "machine_id": machine_id,
         "topic": f"/TEF/{machine_id}/cmd",
         "payload": payload,
+    }
+
+
+@router.post("/maquinas/{machine_id}/observacoes")
+def registrar_observacao_maquina(
+    machine_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, cliente_id = user
+    _get_maquina_visivel(db, machine_id, role, cliente_id)
+
+    descricao = (payload.get("descricao") or "").strip()
+    if not descricao:
+        raise HTTPException(status_code=400, detail="Descricao da observacao e obrigatoria")
+
+    historico = HistoricoOperacao(
+        maquina_id=machine_id,
+        categoria="MANUTENCAO",
+        descricao=descricao,
+        valor=None,
+        created_at=datetime.utcnow(),
+    )
+    db.add(historico)
+    db.add(
+        AuditoriaOperacao(
+            maquina_id=machine_id,
+            acao="OBSERVACAO_REGISTRADA",
+            descricao=descricao,
+            executado_por_email=_get_user_email(user),
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+    db.refresh(historico)
+    return {
+        "id": historico.id,
+        "maquina_id": historico.maquina_id,
+        "categoria": historico.categoria,
+        "descricao": historico.descricao,
+        "valor": historico.valor,
+        "created_at": historico.created_at,
     }
 
 
@@ -912,6 +1073,56 @@ def dashboard_overview(
             }
         ]
 
+    clientes_resumo = []
+    clientes_map = {}
+    for maquina in maquinas:
+        key = maquina.cliente_id or 0
+        if key not in clientes_map:
+            clientes_map[key] = {
+                "cliente_id": maquina.cliente_id,
+                "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else "Sem cliente",
+                "maquinas": [],
+                "maquinas_online": 0,
+            }
+        clientes_map[key]["maquinas"].append(maquina)
+        if maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < timedelta(minutes=3):
+            clientes_map[key]["maquinas_online"] += 1
+
+    for item in clientes_map.values():
+        machine_ids = [maquina.id_hardware for maquina in item["maquinas"]]
+        cliente_total = 0.0
+        ultima_atividade_em = None
+        if machine_ids:
+            cliente_total = (
+                _apply_transacao_periodo(
+                    db.query(func.sum(Transacao.valor)).filter(
+                        Transacao.tipo == "IN",
+                        Transacao.maquina_id.in_(machine_ids),
+                    ),
+                    periodo=periodo,
+                    data_inicio=data_inicio,
+                    data_fim=data_fim,
+                ).scalar()
+                or 0.0
+            )
+            ultima_atividade_em = (
+                db.query(func.max(Transacao.data_hora))
+                .filter(Transacao.maquina_id.in_(machine_ids))
+                .scalar()
+            )
+        clientes_resumo.append(
+            {
+                "cliente_id": item["cliente_id"],
+                "cliente_nome": item["cliente_nome"],
+                "total_faturado": float(cliente_total),
+                "maquinas": len(item["maquinas"]),
+                "maquinas_online": item["maquinas_online"],
+                "ultima_atividade_em": ultima_atividade_em,
+            }
+        )
+
+    clientes_resumo.sort(key=lambda item: item["total_faturado"], reverse=True)
+
     return {
         "stats": {
             "faturamento_total": float(faturamento),
@@ -924,4 +1135,5 @@ def dashboard_overview(
         },
         "chart_data": chart_data,
         "alerts": alerts[:4],
+        "clientes_resumo": clientes_resumo[:8],
     }
