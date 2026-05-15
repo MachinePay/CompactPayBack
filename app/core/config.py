@@ -7,5 +7,7 @@ class Settings(BaseSettings):
     MQTT_BROKER_PORT: int = int(os.getenv("MQTT_BROKER_PORT", 1883))
     MQTT_USERNAME: str = os.getenv("MQTT_USERNAME", "")
     MQTT_PASSWORD: str = os.getenv("MQTT_PASSWORD", "")
+    MP_ACCESS_TOKEN: str = os.getenv("MP_ACCESS_TOKEN", "")
+    MP_WEBHOOK_SECRET: str = os.getenv("MP_WEBHOOK_SECRET", "")
 
 settings = Settings()

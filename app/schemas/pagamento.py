@@ -16,5 +16,6 @@ class PagamentoOut(BaseModel):
     maquina_id: str
     valor: float
     produto_id: Optional[int] = None
+    pulsos: int
     payload: str
     data_hora: datetime
