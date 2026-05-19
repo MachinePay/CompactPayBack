@@ -169,7 +169,7 @@ def create_pos_for_machine(cliente, maquina) -> dict:
         "store_id": int(cliente.mp_store_id) if str(cliente.mp_store_id or "").isdigit() else cliente.mp_store_id,
         "external_store_id": cliente.mp_store_external_id,
         "external_id": external_id,
-        "category": settings.MP_DEFAULT_POS_CATEGORY,
+        "category": cliente.mp_pos_category or settings.MP_DEFAULT_POS_CATEGORY,
     }
     try:
         pos = mp_request(

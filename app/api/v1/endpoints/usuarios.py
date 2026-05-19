@@ -50,6 +50,7 @@ def _create_cliente_for_user(db: Session, usuario: UsuarioCreate | UsuarioUpdate
         mp_client_id=usuario.mp_client_id,
         mp_client_secret=usuario.mp_client_secret,
         mp_user_id=usuario.mp_user_id,
+        mp_pos_category=usuario.mp_pos_category,
         mp_store_id=usuario.mp_store_id,
         mp_store_external_id=usuario.mp_store_external_id,
     )
@@ -82,6 +83,7 @@ def _sync_cliente_from_usuario(db: Session, usuario: UsuarioCreate | UsuarioUpda
     if usuario.mp_client_secret and usuario.mp_client_secret != "********":
         cliente.mp_client_secret = usuario.mp_client_secret
     cliente.mp_user_id = usuario.mp_user_id
+    cliente.mp_pos_category = usuario.mp_pos_category
     cliente.mp_store_id = usuario.mp_store_id
     cliente.mp_store_external_id = usuario.mp_store_external_id
 
@@ -105,6 +107,7 @@ def _sync_db_usuario_fields(db_usuario: Usuario, usuario: UsuarioCreate | Usuari
     if usuario.mp_client_secret and usuario.mp_client_secret != "********":
         db_usuario.mp_client_secret = usuario.mp_client_secret
     db_usuario.mp_user_id = usuario.mp_user_id
+    db_usuario.mp_pos_category = usuario.mp_pos_category
     db_usuario.mp_store_id = usuario.mp_store_id
     db_usuario.mp_store_external_id = usuario.mp_store_external_id
 
@@ -135,6 +138,7 @@ def _serialize_usuario(db_usuario: Usuario) -> dict:
         "mp_store_external_id": db_usuario.mp_store_external_id or (cliente.mp_store_external_id if cliente else None),
         "mp_live_mode": db_usuario.mp_live_mode if db_usuario.mp_live_mode is not None else (cliente.mp_live_mode if cliente else None),
         "mp_scope": db_usuario.mp_scope or (cliente.mp_scope if cliente else None),
+        "mp_pos_category": db_usuario.mp_pos_category or (cliente.mp_pos_category if cliente else None),
         "mp_configurado": bool(db_usuario.mp_access_token or (cliente and cliente.mp_access_token)),
     }
 

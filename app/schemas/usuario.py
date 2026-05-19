@@ -26,6 +26,7 @@ class UsuarioBase(BaseModel):
     mp_store_external_id: Optional[str] = None
     mp_live_mode: Optional[bool] = None
     mp_scope: Optional[str] = None
+    mp_pos_category: Optional[int] = None
 
 
 class UsuarioCreate(UsuarioBase):

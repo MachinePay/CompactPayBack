@@ -28,6 +28,7 @@ class ClienteListOut(ClienteBase):
     endereco_latitude: Optional[float] = None
     endereco_longitude: Optional[float] = None
     mp_configurado: bool = False
+    mp_pos_category: Optional[int] = None
     mp_user_id: Optional[str] = None
     mp_store_id: Optional[str] = None
     mp_store_external_id: Optional[str] = None

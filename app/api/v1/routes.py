@@ -520,6 +520,7 @@ def listar_clientes(
             "endereco_latitude": cliente.endereco_latitude,
             "endereco_longitude": cliente.endereco_longitude,
             "mp_configurado": bool(cliente.mp_access_token),
+            "mp_pos_category": cliente.mp_pos_category,
             "mp_user_id": cliente.mp_user_id,
             "mp_store_id": cliente.mp_store_id,
             "mp_store_external_id": cliente.mp_store_external_id,
