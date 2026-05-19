@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.api.v1.endpoints import auth, pagamentos, produtos, usuarios
+from app.api.v1.endpoints import auth, mercado_pago, pagamentos, produtos, usuarios
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import AuditoriaOperacao, Cliente, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao
@@ -16,6 +16,7 @@ from app.schemas.fechamento import FechamentoMaquinaOut
 from app.schemas.historico import HistoricoOperacaoOut
 from app.schemas.maquina import MaquinaCreate, MaquinaOut, MaquinaUpdate
 from app.schemas.transacao import TransacaoOut
+from app.services.mercado_pago import create_pos_for_machine
 from app.services.mqtt_commands import publish_machine_credit
 
 router = APIRouter()
@@ -195,6 +196,9 @@ def _serialize_machine_summary(
         "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
         "nome": maquina.nome_local,
         "localizacao": maquina.localizacao,
+        "mp_pos_id": maquina.mp_pos_id,
+        "mp_pos_external_id": maquina.mp_pos_external_id,
+        "mp_qr_image": maquina.mp_qr_image,
         "ultimo_sinal": maquina.ultimo_sinal,
         "ultimo_pagamento_em": ultimo_pagamento_em,
         "ultimo_teste_em": ultimo_teste_em,
@@ -501,7 +505,21 @@ def listar_clientes(
         .order_by(Cliente.nome_empresa.asc())
         .all()
     )
-    return clientes
+    return [
+        {
+            "id": cliente.id,
+            "nome_empresa": cliente.nome_empresa,
+            "email_contato": cliente.email_contato,
+            "telefone": cliente.telefone,
+            "cpf": cliente.cpf,
+            "cnpj": cliente.cnpj,
+            "mp_configurado": bool(cliente.mp_access_token),
+            "mp_user_id": cliente.mp_user_id,
+            "mp_store_id": cliente.mp_store_id,
+            "mp_store_external_id": cliente.mp_store_external_id,
+        }
+        for cliente in clientes
+    ]
 
 
 @router.get("/maquinas/novo-id")
@@ -527,6 +545,14 @@ def criar_maquina(
     machine_id = maquina.id_hardware or _generate_machine_id(db)
     if db.query(Maquina).filter(Maquina.id_hardware == machine_id).first():
         raise HTTPException(status_code=400, detail="Maquina ja cadastrada")
+    cliente = db.query(Cliente).filter(Cliente.id == maquina.cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=422, detail="Escolha um usuario/cliente valido para criar a maquina")
+    if not cliente.mp_access_token:
+        raise HTTPException(
+            status_code=422,
+            detail="O usuario escolhido ainda nao tem MP_ACCESS_TOKEN cadastrado",
+        )
 
     db_maquina = Maquina(
         id_hardware=machine_id,
@@ -535,6 +561,10 @@ def criar_maquina(
         localizacao=maquina.localizacao,
         ultimo_sinal=None,
     )
+    pos_data = create_pos_for_machine(cliente, db_maquina)
+    db_maquina.mp_pos_id = pos_data["mp_pos_id"]
+    db_maquina.mp_pos_external_id = pos_data["mp_pos_external_id"]
+    db_maquina.mp_qr_image = pos_data["mp_qr_image"]
     db.add(db_maquina)
     db.commit()
     db.refresh(db_maquina)
@@ -914,6 +944,7 @@ def apagar_historico_maquina(
 
 router.include_router(auth.router)
 router.include_router(usuarios.router)
+router.include_router(mercado_pago.router)
 router.include_router(produtos.router)
 router.include_router(pagamentos.router)
 

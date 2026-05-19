@@ -1,9 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-import json
 import time
-import urllib.request
-import urllib.error
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -11,9 +8,10 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import EscutaTerminal, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao
+from app.models.models import Cliente, EscutaTerminal, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao
 from app.models.produto import Produto
 from app.schemas.pagamento import PagamentoCreate, PagamentoOut
+from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit_pulses
 
 router = APIRouter()
@@ -29,27 +27,33 @@ def _calcular_pulsos_por_valor(valor: float) -> int:
     return max(1, pulsos)
 
 
-def _mp_request(method: str, url: str, token: str, body: dict | None = None, headers: dict | None = None):
-    req_headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-    }
-    if headers:
-        req_headers.update(headers)
-    data = None
-    if body is not None:
-        data = json.dumps(body).encode("utf-8")
-    request = urllib.request.Request(url, data=data, method=method, headers=req_headers)
-    try:
-        with urllib.request.urlopen(request, timeout=30) as response:
-            raw = response.read().decode("utf-8")
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as exc:
-        error_body = exc.read().decode("utf-8", errors="ignore")
-        raise HTTPException(
-            status_code=502,
-            detail=f"Falha Mercado Pago ({exc.code}): {error_body or 'erro sem detalhe'}",
-        ) from exc
+def _iter_mp_tokens(db: Session):
+    seen = set()
+    if settings.MP_ACCESS_TOKEN:
+        seen.add(settings.MP_ACCESS_TOKEN)
+        yield settings.MP_ACCESS_TOKEN
+    for token in db.query(Cliente.mp_access_token).filter(Cliente.mp_access_token.isnot(None)).all():
+        value = (token[0] or "").strip()
+        if value and value not in seen:
+            seen.add(value)
+            yield value
+
+
+def _mp_request_with_known_tokens(db: Session, method: str, url: str, preferred_token: str | None = None):
+    errors = []
+    tokens = []
+    if preferred_token:
+        tokens.append(preferred_token)
+    tokens.extend(list(_iter_mp_tokens(db)))
+    for token in tokens:
+        try:
+            return mp_request(method, url, token), token
+        except HTTPException as exc:
+            errors.append(str(exc.detail))
+    raise HTTPException(
+        status_code=502,
+        detail="Nao foi possivel consultar o Mercado Pago com as credenciais cadastradas: " + " | ".join(errors[-3:]),
+    )
 
 
 def _parse_machine_id_from_external_reference(external_reference: str | None) -> str | None:
@@ -132,12 +136,6 @@ async def processar_pix(request: Request, dados: dict | None = None):
         print(f"[MP webhook] callback simplificado aprovado maquina={id_hardware} valor={valor} pulsos={pulsos}")
         return {"status": "sucesso", "detalhe": "Pagamento digital registrado", "pulsos": pulsos}
 
-    # Fluxo real Mercado Pago Point/Webhook
-    mp_token = settings.MP_ACCESS_TOKEN
-    if not mp_token:
-        print("[MP webhook] MP_ACCESS_TOKEN nao configurado")
-        return {"status": "erro", "detalhe": "MP_ACCESS_TOKEN nao configurado"}
-
     topic = dados.get("topic") or dados.get("type") or ""
     action = dados.get("action") or ""
     data = dados.get("data") or {}
@@ -150,7 +148,15 @@ async def processar_pix(request: Request, dados: dict | None = None):
     # Para webhook da nova API /v1/orders: type=order action=order.processed
     # Busca detalhes da order para obter external_reference e amount
     if topic == "order" or action.startswith("order.") or str(order_id).startswith("ORD"):
-        order_data = _mp_request("GET", f"https://api.mercadopago.com/v1/orders/{order_id}", mp_token)
+        db_lookup = SessionLocal()
+        try:
+            order_data, _ = _mp_request_with_known_tokens(
+                db_lookup,
+                "GET",
+                f"https://api.mercadopago.com/v1/orders/{order_id}",
+            )
+        finally:
+            db_lookup.close()
         order_status = (order_data.get("status") or "").lower()
         if order_status not in {"processed"} and action != "order.processed":
             print(f"[MP webhook] order ignorada: status={order_status} action={action}")
@@ -215,7 +221,15 @@ async def processar_pix(request: Request, dados: dict | None = None):
         if not payment_id:
             print("[MP webhook] payment ignorado: sem payment_id")
             return {"status": "ignorado", "detalhe": "Evento payment sem id"}
-        payment_data = _mp_request("GET", f"https://api.mercadopago.com/v1/payments/{payment_id}", mp_token)
+        db_lookup = SessionLocal()
+        try:
+            payment_data, _ = _mp_request_with_known_tokens(
+                db_lookup,
+                "GET",
+                f"https://api.mercadopago.com/v1/payments/{payment_id}",
+            )
+        finally:
+            db_lookup.close()
         payment_status = (payment_data.get("status") or "").lower()
         if payment_status not in {"approved", "authorized"}:
             print(f"[MP webhook] payment ignorado: payment_id={payment_id} status={payment_status}")
@@ -374,7 +388,6 @@ def cobrar_na_maquininha(
     machine_id = (dados.get("maquina_id") or "").strip()
     terminal_id = (dados.get("terminal_id") or "").strip()
     valor = float(dados.get("valor") or 0)
-    mp_token = (dados.get("mp_access_token") or settings.MP_ACCESS_TOKEN or "").strip()
 
     if not machine_id:
         raise HTTPException(status_code=422, detail="maquina_id e obrigatorio")
@@ -382,10 +395,15 @@ def cobrar_na_maquininha(
         raise HTTPException(status_code=422, detail="terminal_id e obrigatorio")
     if valor <= 0:
         raise HTTPException(status_code=422, detail="valor deve ser maior que zero")
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
+    mp_token = (
+        dados.get("mp_access_token")
+        or (maquina.dono.mp_access_token if getattr(maquina, "dono", None) else "")
+        or settings.MP_ACCESS_TOKEN
+        or ""
+    ).strip()
     if not mp_token:
-        raise HTTPException(status_code=422, detail="MP_ACCESS_TOKEN nao configurado")
-
-    _get_maquina_visivel(db, machine_id, role, cliente_id)
+        raise HTTPException(status_code=422, detail="Cliente da maquina sem MP_ACCESS_TOKEN cadastrado")
 
     external_reference = f"{machine_id}:{int(time.time())}"
     body = {
@@ -404,7 +422,7 @@ def cobrar_na_maquininha(
             }
         },
     }
-    order_data = _mp_request(
+    order_data = mp_request(
         "POST",
         "https://api.mercadopago.com/v1/orders",
         mp_token,

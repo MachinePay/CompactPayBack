@@ -35,8 +35,54 @@ def startup_event():
     Base.metadata.create_all(bind=engine)
     with engine.begin() as connection:
         inspector = inspect(connection)
+        cliente_columns = {column["name"] for column in inspector.get_columns("clientes")}
+        for column_name in [
+            "telefone",
+            "cpf",
+            "cnpj",
+            "mp_public_key",
+            "mp_access_token",
+            "mp_client_id",
+            "mp_client_secret",
+            "mp_user_id",
+            "mp_refresh_token",
+            "mp_token_expires_at",
+            "mp_live_mode",
+            "mp_scope",
+            "mp_store_id",
+            "mp_store_external_id",
+        ]:
+            if column_name not in cliente_columns:
+                column_type = "BOOLEAN" if column_name == "mp_live_mode" else "TIMESTAMP" if column_name == "mp_token_expires_at" else "VARCHAR"
+                connection.execute(text(f"ALTER TABLE clientes ADD COLUMN {column_name} {column_type}"))
+
+        usuario_columns = {column["name"] for column in inspector.get_columns("usuarios")}
+        for column_name in [
+            "nome",
+            "telefone",
+            "cpf",
+            "cnpj",
+            "mp_public_key",
+            "mp_access_token",
+            "mp_client_id",
+            "mp_client_secret",
+            "mp_user_id",
+            "mp_refresh_token",
+            "mp_token_expires_at",
+            "mp_live_mode",
+            "mp_scope",
+            "mp_store_id",
+            "mp_store_external_id",
+        ]:
+            if column_name not in usuario_columns:
+                column_type = "BOOLEAN" if column_name == "mp_live_mode" else "TIMESTAMP" if column_name == "mp_token_expires_at" else "VARCHAR"
+                connection.execute(text(f"ALTER TABLE usuarios ADD COLUMN {column_name} {column_type}"))
+
         maquina_columns = {column["name"] for column in inspector.get_columns("maquinas")}
         if "localizacao" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN localizacao VARCHAR"))
+        for column_name in ["mp_pos_id", "mp_pos_external_id", "mp_qr_image"]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
     mqtt_thread = threading.Thread(target=run_mqtt, daemon=True)
     mqtt_thread.start()

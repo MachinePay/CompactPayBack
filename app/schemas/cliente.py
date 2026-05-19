@@ -18,6 +18,13 @@ class ClienteOut(ClienteBase):
 
 class ClienteListOut(ClienteBase):
     id: int
+    telefone: Optional[str] = None
+    cpf: Optional[str] = None
+    cnpj: Optional[str] = None
+    mp_configurado: bool = False
+    mp_user_id: Optional[str] = None
+    mp_store_id: Optional[str] = None
+    mp_store_external_id: Optional[str] = None
 
     class Config:
         from_attributes = True

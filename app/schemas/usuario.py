@@ -8,6 +8,18 @@ class UsuarioBase(BaseModel):
     role: str = "cliente"
     cliente_id: Optional[int] = None
     nome: Optional[str] = None
+    telefone: Optional[str] = None
+    cpf: Optional[str] = None
+    cnpj: Optional[str] = None
+    mp_public_key: Optional[str] = None
+    mp_access_token: Optional[str] = None
+    mp_client_id: Optional[str] = None
+    mp_client_secret: Optional[str] = None
+    mp_user_id: Optional[str] = None
+    mp_store_id: Optional[str] = None
+    mp_store_external_id: Optional[str] = None
+    mp_live_mode: Optional[bool] = None
+    mp_scope: Optional[str] = None
 
 
 class UsuarioCreate(UsuarioBase):
@@ -20,6 +32,9 @@ class UsuarioUpdate(UsuarioBase):
 
 class UsuarioOut(UsuarioBase):
     id: int
+    mp_configurado: bool = False
+    mp_access_token: Optional[str] = None
+    mp_client_secret: Optional[str] = None
 
     class Config:
         from_attributes = True
