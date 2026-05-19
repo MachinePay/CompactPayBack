@@ -63,6 +63,19 @@ def normalize_external_id(value: str, max_length: int = 39) -> str:
     return (normalized or f"CP{int(time.time())}")[:max_length]
 
 
+def _category_candidates(preferred_category: int | None) -> list[int]:
+    candidates = []
+    if preferred_category:
+        candidates.append(int(preferred_category))
+    if settings.MP_DEFAULT_POS_CATEGORY:
+        candidates.append(int(settings.MP_DEFAULT_POS_CATEGORY))
+    for raw_category in settings.MP_POS_CATEGORY_FALLBACKS.split(","):
+        raw_category = raw_category.strip()
+        if raw_category.isdigit():
+            candidates.append(int(raw_category))
+    return list(dict.fromkeys(candidates))
+
+
 def search_store_by_external_id(user_id: str, access_token: str, external_id: str) -> dict | None:
     query = urllib.parse.urlencode({"external_id": external_id})
     try:
@@ -169,21 +182,34 @@ def create_pos_for_machine(cliente, maquina) -> dict:
         "store_id": int(cliente.mp_store_id) if str(cliente.mp_store_id or "").isdigit() else cliente.mp_store_id,
         "external_store_id": cliente.mp_store_external_id,
         "external_id": external_id,
-        "category": cliente.mp_pos_category or settings.MP_DEFAULT_POS_CATEGORY,
     }
-    try:
-        pos = mp_request(
-            "POST",
-            "https://api.mercadopago.com/pos",
-            access_token,
-            body=body,
-            headers={"X-Idempotency-Key": external_id},
-        )
-    except HTTPException:
-        existing_pos = search_pos_by_external_id(access_token, external_id)
-        if not existing_pos:
-            raise
-        pos = existing_pos
+    last_error = None
+    pos = None
+    for category in _category_candidates(cliente.mp_pos_category):
+        body["category"] = category
+        print(f"[Mercado Pago] criando POS external_id={external_id} category={category}")
+        try:
+            pos = mp_request(
+                "POST",
+                "https://api.mercadopago.com/pos",
+                access_token,
+                body=body,
+                headers={"X-Idempotency-Key": f"{external_id}{category}"},
+            )
+            cliente.mp_pos_category = category
+            break
+        except HTTPException as exc:
+            last_error = exc
+            error_detail = str(exc.detail).lower()
+            existing_pos = search_pos_by_external_id(access_token, external_id)
+            if existing_pos:
+                pos = existing_pos
+                break
+            if "pos_unknown_mcc" not in error_detail and "merchant category code" not in error_detail:
+                raise
+
+    if pos is None:
+        raise last_error or HTTPException(status_code=502, detail="Nao foi possivel criar o caixa no Mercado Pago")
     return {
         "mp_pos_id": str(pos.get("id") or ""),
         "mp_pos_external_id": pos.get("external_id") or external_id,
