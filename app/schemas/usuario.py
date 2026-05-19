@@ -11,6 +11,12 @@ class UsuarioBase(BaseModel):
     telefone: Optional[str] = None
     cpf: Optional[str] = None
     cnpj: Optional[str] = None
+    endereco_rua: Optional[str] = None
+    endereco_numero: Optional[str] = None
+    endereco_cidade: Optional[str] = None
+    endereco_estado: Optional[str] = None
+    endereco_latitude: Optional[float] = None
+    endereco_longitude: Optional[float] = None
     mp_public_key: Optional[str] = None
     mp_access_token: Optional[str] = None
     mp_client_id: Optional[str] = None

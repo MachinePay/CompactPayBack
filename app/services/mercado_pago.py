@@ -26,6 +26,7 @@ def mp_request(method: str, url: str, token: str, body: dict | None = None, head
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:
         error_body = exc.read().decode("utf-8", errors="ignore")
+        print(f"[Mercado Pago] {method} {url} falhou ({exc.code}): {error_body or 'erro sem detalhe'}")
         raise HTTPException(
             status_code=502,
             detail=f"Falha Mercado Pago ({exc.code}): {error_body or 'erro sem detalhe'}",
@@ -62,6 +63,30 @@ def normalize_external_id(value: str, max_length: int = 39) -> str:
     return (normalized or f"CP{int(time.time())}")[:max_length]
 
 
+def search_store_by_external_id(user_id: str, access_token: str, external_id: str) -> dict | None:
+    query = urllib.parse.urlencode({"external_id": external_id})
+    try:
+        data = mp_request(
+            "GET",
+            f"https://api.mercadopago.com/users/{urllib.parse.quote(user_id)}/stores/search?{query}",
+            access_token,
+        )
+    except HTTPException:
+        return None
+    results = data.get("results") or []
+    return results[0] if results else None
+
+
+def search_pos_by_external_id(access_token: str, external_id: str) -> dict | None:
+    query = urllib.parse.urlencode({"external_id": external_id})
+    try:
+        data = mp_request("GET", f"https://api.mercadopago.com/pos?{query}", access_token)
+    except HTTPException:
+        return None
+    results = data.get("results") or []
+    return results[0] if results else None
+
+
 def create_default_store(cliente) -> dict:
     access_token = (cliente.mp_access_token or "").strip()
     if not access_token:
@@ -72,25 +97,39 @@ def create_default_store(cliente) -> dict:
         f"CPSTORE{cliente.id}",
         max_length=60,
     )
+    existing_store = search_store_by_external_id(user_id, access_token, external_id)
+    if existing_store:
+        return {
+            "mp_user_id": user_id,
+            "mp_store_id": str(existing_store.get("id") or ""),
+            "mp_store_external_id": existing_store.get("external_id") or external_id,
+        }
+
     body = {
         "name": (cliente.nome_empresa or "CompactPay")[:45],
         "external_id": external_id,
         "location": {
-            "street_number": settings.MP_DEFAULT_STORE_STREET_NUMBER,
-            "street_name": settings.MP_DEFAULT_STORE_STREET_NAME,
-            "city_name": settings.MP_DEFAULT_STORE_CITY_NAME,
-            "state_name": settings.MP_DEFAULT_STORE_STATE_NAME,
-            "latitude": settings.MP_DEFAULT_STORE_LATITUDE,
-            "longitude": settings.MP_DEFAULT_STORE_LONGITUDE,
+            "street_number": cliente.endereco_numero or settings.MP_DEFAULT_STORE_STREET_NUMBER,
+            "street_name": cliente.endereco_rua or settings.MP_DEFAULT_STORE_STREET_NAME,
+            "city_name": cliente.endereco_cidade or settings.MP_DEFAULT_STORE_CITY_NAME,
+            "state_name": cliente.endereco_estado or settings.MP_DEFAULT_STORE_STATE_NAME,
+            "latitude": cliente.endereco_latitude if cliente.endereco_latitude is not None else settings.MP_DEFAULT_STORE_LATITUDE,
+            "longitude": cliente.endereco_longitude if cliente.endereco_longitude is not None else settings.MP_DEFAULT_STORE_LONGITUDE,
             "reference": cliente.nome_empresa or "CompactPay",
         },
     }
-    store = mp_request(
-        "POST",
-        f"https://api.mercadopago.com/users/{urllib.parse.quote(user_id)}/stores",
-        access_token,
-        body=body,
-    )
+    try:
+        store = mp_request(
+            "POST",
+            f"https://api.mercadopago.com/users/{urllib.parse.quote(user_id)}/stores",
+            access_token,
+            body=body,
+        )
+    except HTTPException:
+        existing_store = search_store_by_external_id(user_id, access_token, external_id)
+        if not existing_store:
+            raise
+        store = existing_store
     return {
         "mp_user_id": user_id,
         "mp_store_id": str(store.get("id") or ""),
@@ -116,6 +155,14 @@ def create_pos_for_machine(cliente, maquina) -> dict:
     ensure_cliente_store(cliente)
 
     external_id = normalize_external_id(maquina.id_hardware, max_length=39)
+    existing_pos = search_pos_by_external_id(access_token, external_id)
+    if existing_pos:
+        return {
+            "mp_pos_id": str(existing_pos.get("id") or ""),
+            "mp_pos_external_id": existing_pos.get("external_id") or external_id,
+            "mp_qr_image": ((existing_pos.get("qr") or {}).get("image") or ""),
+        }
+
     body = {
         "name": (maquina.nome_local or maquina.id_hardware)[:44],
         "fixed_amount": False,
@@ -124,13 +171,19 @@ def create_pos_for_machine(cliente, maquina) -> dict:
         "external_id": external_id,
         "category": settings.MP_DEFAULT_POS_CATEGORY,
     }
-    pos = mp_request(
-        "POST",
-        "https://api.mercadopago.com/pos",
-        access_token,
-        body=body,
-        headers={"X-Idempotency-Key": f"{external_id}-{int(time.time() * 1000)}"},
-    )
+    try:
+        pos = mp_request(
+            "POST",
+            "https://api.mercadopago.com/pos",
+            access_token,
+            body=body,
+            headers={"X-Idempotency-Key": external_id},
+        )
+    except HTTPException:
+        existing_pos = search_pos_by_external_id(access_token, external_id)
+        if not existing_pos:
+            raise
+        pos = existing_pos
     return {
         "mp_pos_id": str(pos.get("id") or ""),
         "mp_pos_external_id": pos.get("external_id") or external_id,

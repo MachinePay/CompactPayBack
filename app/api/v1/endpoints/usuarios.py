@@ -39,6 +39,12 @@ def _create_cliente_for_user(db: Session, usuario: UsuarioCreate | UsuarioUpdate
         telefone=usuario.telefone,
         cpf=usuario.cpf,
         cnpj=usuario.cnpj,
+        endereco_rua=usuario.endereco_rua,
+        endereco_numero=usuario.endereco_numero,
+        endereco_cidade=usuario.endereco_cidade,
+        endereco_estado=usuario.endereco_estado,
+        endereco_latitude=usuario.endereco_latitude,
+        endereco_longitude=usuario.endereco_longitude,
         mp_public_key=usuario.mp_public_key,
         mp_access_token=usuario.mp_access_token,
         mp_client_id=usuario.mp_client_id,
@@ -63,6 +69,12 @@ def _sync_cliente_from_usuario(db: Session, usuario: UsuarioCreate | UsuarioUpda
     cliente.telefone = usuario.telefone
     cliente.cpf = usuario.cpf
     cliente.cnpj = usuario.cnpj
+    cliente.endereco_rua = usuario.endereco_rua
+    cliente.endereco_numero = usuario.endereco_numero
+    cliente.endereco_cidade = usuario.endereco_cidade
+    cliente.endereco_estado = usuario.endereco_estado
+    cliente.endereco_latitude = usuario.endereco_latitude
+    cliente.endereco_longitude = usuario.endereco_longitude
     cliente.mp_public_key = usuario.mp_public_key
     if usuario.mp_access_token and usuario.mp_access_token != "********":
         cliente.mp_access_token = usuario.mp_access_token
@@ -79,6 +91,12 @@ def _sync_db_usuario_fields(db_usuario: Usuario, usuario: UsuarioCreate | Usuari
     db_usuario.telefone = usuario.telefone
     db_usuario.cpf = usuario.cpf
     db_usuario.cnpj = usuario.cnpj
+    db_usuario.endereco_rua = usuario.endereco_rua
+    db_usuario.endereco_numero = usuario.endereco_numero
+    db_usuario.endereco_cidade = usuario.endereco_cidade
+    db_usuario.endereco_estado = usuario.endereco_estado
+    db_usuario.endereco_latitude = usuario.endereco_latitude
+    db_usuario.endereco_longitude = usuario.endereco_longitude
     db_usuario.email = usuario.email
     db_usuario.mp_public_key = usuario.mp_public_key
     if usuario.mp_access_token and usuario.mp_access_token != "********":
@@ -102,6 +120,12 @@ def _serialize_usuario(db_usuario: Usuario) -> dict:
         "telefone": db_usuario.telefone or (cliente.telefone if cliente else None),
         "cpf": db_usuario.cpf or (cliente.cpf if cliente else None),
         "cnpj": db_usuario.cnpj or (cliente.cnpj if cliente else None),
+        "endereco_rua": db_usuario.endereco_rua or (cliente.endereco_rua if cliente else None),
+        "endereco_numero": db_usuario.endereco_numero or (cliente.endereco_numero if cliente else None),
+        "endereco_cidade": db_usuario.endereco_cidade or (cliente.endereco_cidade if cliente else None),
+        "endereco_estado": db_usuario.endereco_estado or (cliente.endereco_estado if cliente else None),
+        "endereco_latitude": db_usuario.endereco_latitude if db_usuario.endereco_latitude is not None else (cliente.endereco_latitude if cliente else None),
+        "endereco_longitude": db_usuario.endereco_longitude if db_usuario.endereco_longitude is not None else (cliente.endereco_longitude if cliente else None),
         "mp_public_key": db_usuario.mp_public_key or (cliente.mp_public_key if cliente else None),
         "mp_access_token": "********" if db_usuario.mp_access_token or (cliente and cliente.mp_access_token) else None,
         "mp_client_id": db_usuario.mp_client_id or (cliente.mp_client_id if cliente else None),
