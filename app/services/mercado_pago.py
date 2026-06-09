@@ -150,6 +150,55 @@ def create_default_store(cliente) -> dict:
     }
 
 
+def create_store_for_machine(cliente, maquina) -> dict:
+    access_token = (cliente.mp_access_token or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=422, detail="Cliente sem MP_ACCESS_TOKEN cadastrado")
+
+    user_id = (cliente.mp_user_id or "").strip() or get_mp_user_id(access_token)
+    cliente.mp_user_id = user_id
+    external_id = normalize_external_id(f"CPSTORE{maquina.id_hardware}", max_length=60)
+    existing_store = search_store_by_external_id(user_id, access_token, external_id)
+    if existing_store:
+        return {
+            "mp_user_id": user_id,
+            "mp_store_id": str(existing_store.get("id") or ""),
+            "mp_store_external_id": existing_store.get("external_id") or external_id,
+        }
+
+    store_name = (maquina.nome_local or cliente.nome_empresa or "CompactPay")[:45]
+    body = {
+        "name": store_name,
+        "external_id": external_id,
+        "location": {
+            "street_number": cliente.endereco_numero or settings.MP_DEFAULT_STORE_STREET_NUMBER,
+            "street_name": cliente.endereco_rua or settings.MP_DEFAULT_STORE_STREET_NAME,
+            "city_name": cliente.endereco_cidade or settings.MP_DEFAULT_STORE_CITY_NAME,
+            "state_name": cliente.endereco_estado or settings.MP_DEFAULT_STORE_STATE_NAME,
+            "latitude": cliente.endereco_latitude if cliente.endereco_latitude is not None else settings.MP_DEFAULT_STORE_LATITUDE,
+            "longitude": cliente.endereco_longitude if cliente.endereco_longitude is not None else settings.MP_DEFAULT_STORE_LONGITUDE,
+            "reference": store_name,
+        },
+    }
+    try:
+        store = mp_request(
+            "POST",
+            f"https://api.mercadopago.com/users/{urllib.parse.quote(user_id)}/stores",
+            access_token,
+            body=body,
+        )
+    except HTTPException:
+        existing_store = search_store_by_external_id(user_id, access_token, external_id)
+        if not existing_store:
+            raise
+        store = existing_store
+    return {
+        "mp_user_id": user_id,
+        "mp_store_id": str(store.get("id") or ""),
+        "mp_store_external_id": store.get("external_id") or external_id,
+    }
+
+
 def ensure_cliente_store(cliente) -> None:
     if cliente.mp_store_id and cliente.mp_store_external_id:
         if not cliente.mp_user_id and cliente.mp_access_token:
@@ -165,12 +214,14 @@ def create_pos_for_machine(cliente, maquina) -> dict:
     access_token = (cliente.mp_access_token or "").strip()
     if not access_token:
         raise HTTPException(status_code=422, detail="Cliente sem MP_ACCESS_TOKEN cadastrado")
-    ensure_cliente_store(cliente)
+    store_data = create_store_for_machine(cliente, maquina)
 
     external_id = normalize_external_id(maquina.id_hardware, max_length=39)
     existing_pos = search_pos_by_external_id(access_token, external_id)
     if existing_pos:
         return {
+            "mp_store_id": store_data["mp_store_id"],
+            "mp_store_external_id": store_data["mp_store_external_id"],
             "mp_pos_id": str(existing_pos.get("id") or ""),
             "mp_pos_external_id": existing_pos.get("external_id") or external_id,
             "mp_qr_image": ((existing_pos.get("qr") or {}).get("image") or ""),
@@ -179,8 +230,12 @@ def create_pos_for_machine(cliente, maquina) -> dict:
     body = {
         "name": (maquina.nome_local or maquina.id_hardware)[:44],
         "fixed_amount": False,
-        "store_id": int(cliente.mp_store_id) if str(cliente.mp_store_id or "").isdigit() else cliente.mp_store_id,
-        "external_store_id": cliente.mp_store_external_id,
+        "store_id": (
+            int(store_data["mp_store_id"])
+            if str(store_data["mp_store_id"] or "").isdigit()
+            else store_data["mp_store_id"]
+        ),
+        "external_store_id": store_data["mp_store_external_id"],
         "external_id": external_id,
     }
     last_error = None
@@ -211,6 +266,8 @@ def create_pos_for_machine(cliente, maquina) -> dict:
     if pos is None:
         raise last_error or HTTPException(status_code=502, detail="Nao foi possivel criar o caixa no Mercado Pago")
     return {
+        "mp_store_id": store_data["mp_store_id"],
+        "mp_store_external_id": store_data["mp_store_external_id"],
         "mp_pos_id": str(pos.get("id") or ""),
         "mp_pos_external_id": pos.get("external_id") or external_id,
         "mp_qr_image": ((pos.get("qr") or {}).get("image") or ""),

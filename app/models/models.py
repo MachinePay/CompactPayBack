@@ -85,6 +85,8 @@ class Maquina(Base):
     cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True)
     nome_local = Column(String)
     localizacao = Column(String, nullable=True)
+    mp_store_id = Column(String, nullable=True)
+    mp_store_external_id = Column(String, nullable=True)
     mp_pos_id = Column(String, nullable=True)
     mp_pos_external_id = Column(String, nullable=True)
     mp_qr_image = Column(String, nullable=True)

@@ -196,6 +196,8 @@ def _serialize_machine_summary(
         "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
         "nome": maquina.nome_local,
         "localizacao": maquina.localizacao,
+        "mp_store_id": maquina.mp_store_id,
+        "mp_store_external_id": maquina.mp_store_external_id,
         "mp_pos_id": maquina.mp_pos_id,
         "mp_pos_external_id": maquina.mp_pos_external_id,
         "mp_qr_image": maquina.mp_qr_image,
@@ -569,6 +571,8 @@ def criar_maquina(
         ultimo_sinal=None,
     )
     pos_data = create_pos_for_machine(cliente, db_maquina)
+    db_maquina.mp_store_id = pos_data["mp_store_id"]
+    db_maquina.mp_store_external_id = pos_data["mp_store_external_id"]
     db_maquina.mp_pos_id = pos_data["mp_pos_id"]
     db_maquina.mp_pos_external_id = pos_data["mp_pos_external_id"]
     db_maquina.mp_qr_image = pos_data["mp_qr_image"]

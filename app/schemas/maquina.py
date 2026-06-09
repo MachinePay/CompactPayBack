@@ -23,6 +23,8 @@ class MaquinaOut(BaseModel):
     cliente_nome: Optional[str] = None
     nome: Optional[str] = None
     localizacao: Optional[str] = None
+    mp_store_id: Optional[str] = None
+    mp_store_external_id: Optional[str] = None
     mp_pos_id: Optional[str] = None
     mp_pos_external_id: Optional[str] = None
     mp_qr_image: Optional[str] = None

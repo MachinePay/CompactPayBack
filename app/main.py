@@ -95,7 +95,7 @@ def startup_event():
         maquina_columns = {column["name"] for column in inspector.get_columns("maquinas")}
         if "localizacao" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN localizacao VARCHAR"))
-        for column_name in ["mp_pos_id", "mp_pos_external_id", "mp_qr_image"]:
+        for column_name in ["mp_store_id", "mp_store_external_id", "mp_pos_id", "mp_pos_external_id", "mp_qr_image"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
     mqtt_thread = threading.Thread(target=run_mqtt, daemon=True)
