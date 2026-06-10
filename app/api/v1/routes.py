@@ -10,6 +10,7 @@ from app.api.v1.endpoints import auth, mercado_pago, pagamentos, produtos, usuar
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import AuditoriaOperacao, Cliente, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao
+from app.models.produto import Produto
 from app.schemas.auditoria import AuditoriaOperacaoOut
 from app.schemas.cliente import ClienteListOut
 from app.schemas.fechamento import FechamentoMaquinaOut
@@ -627,6 +628,7 @@ def deletar_maquina(
     db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(Transacao).filter(Transacao.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(Produto).filter(Produto.maquina_id == machine_id).delete(synchronize_session=False)
     db.delete(db_maquina)
     db.commit()
     return {"ok": True}
