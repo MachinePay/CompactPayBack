@@ -202,6 +202,7 @@ def _serialize_machine_summary(
         "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
         "nome": maquina.nome_local,
         "localizacao": maquina.localizacao,
+        "banco_pagamento": maquina.banco_pagamento or "mercado_pago",
         "mp_store_id": maquina.mp_store_id,
         "mp_store_external_id": maquina.mp_store_external_id,
         "mp_pos_id": maquina.mp_pos_id,
@@ -527,6 +528,9 @@ def listar_clientes(
             "endereco_estado": cliente.endereco_estado,
             "endereco_latitude": cliente.endereco_latitude,
             "endereco_longitude": cliente.endereco_longitude,
+            "cliente_mercado_pago": bool(cliente.cliente_mercado_pago or cliente.mp_access_token),
+            "cliente_pagbank": bool(cliente.cliente_pagbank),
+            "cliente_s6pay": bool(cliente.cliente_s6pay),
             "mp_configurado": bool(cliente.mp_access_token),
             "mp_pos_category": cliente.mp_pos_category,
             "mp_user_id": cliente.mp_user_id,
@@ -563,6 +567,19 @@ def criar_maquina(
     cliente = db.query(Cliente).filter(Cliente.id == maquina.cliente_id).first()
     if not cliente:
         raise HTTPException(status_code=422, detail="Escolha um usuario/cliente valido para criar a maquina")
+    banco_pagamento = (maquina.banco_pagamento or "mercado_pago").strip().lower()
+    bancos_validos = {"mercado_pago", "pagbank", "s6pay"}
+    if banco_pagamento not in bancos_validos:
+        raise HTTPException(status_code=422, detail="Banco de pagamento invalido")
+    banco_habilitado = {
+        "mercado_pago": bool(cliente.cliente_mercado_pago or cliente.mp_access_token),
+        "pagbank": bool(cliente.cliente_pagbank),
+        "s6pay": bool(cliente.cliente_s6pay),
+    }[banco_pagamento]
+    if not banco_habilitado:
+        raise HTTPException(status_code=422, detail="O banco escolhido nao esta habilitado para este cliente")
+    if banco_pagamento != "mercado_pago":
+        raise HTTPException(status_code=501, detail="Integracao deste banco ainda nao foi implementada")
     if not cliente.mp_access_token:
         raise HTTPException(
             status_code=422,
@@ -572,6 +589,7 @@ def criar_maquina(
     db_maquina = Maquina(
         id_hardware=machine_id,
         cliente_id=maquina.cliente_id,
+        banco_pagamento=banco_pagamento,
         nome_local=maquina.nome,
         localizacao=maquina.localizacao,
         ultimo_sinal=None,
@@ -609,6 +627,8 @@ def atualizar_maquina(
     db_maquina.nome_local = maquina.nome
     db_maquina.localizacao = maquina.localizacao
     db_maquina.cliente_id = maquina.cliente_id
+    if maquina.banco_pagamento:
+        db_maquina.banco_pagamento = maquina.banco_pagamento
     db.commit()
     db.refresh(db_maquina)
 

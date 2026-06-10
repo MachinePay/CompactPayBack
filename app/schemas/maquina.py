@@ -9,12 +9,14 @@ class MaquinaCreate(BaseModel):
     nome: str
     cliente_id: Optional[int] = None
     localizacao: Optional[str] = None
+    banco_pagamento: Optional[str] = "mercado_pago"
 
 
 class MaquinaUpdate(BaseModel):
     nome: str
     cliente_id: Optional[int] = None
     localizacao: Optional[str] = None
+    banco_pagamento: Optional[str] = None
 
 
 class MaquinaOut(BaseModel):
@@ -23,6 +25,7 @@ class MaquinaOut(BaseModel):
     cliente_nome: Optional[str] = None
     nome: Optional[str] = None
     localizacao: Optional[str] = None
+    banco_pagamento: Optional[str] = None
     mp_store_id: Optional[str] = None
     mp_store_external_id: Optional[str] = None
     mp_pos_id: Optional[str] = None

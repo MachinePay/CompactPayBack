@@ -45,6 +45,9 @@ def _create_cliente_for_user(db: Session, usuario: UsuarioCreate | UsuarioUpdate
         endereco_estado=usuario.endereco_estado,
         endereco_latitude=usuario.endereco_latitude,
         endereco_longitude=usuario.endereco_longitude,
+        cliente_mercado_pago=bool(usuario.cliente_mercado_pago),
+        cliente_pagbank=bool(usuario.cliente_pagbank),
+        cliente_s6pay=bool(usuario.cliente_s6pay),
         mp_public_key=usuario.mp_public_key,
         mp_access_token=usuario.mp_access_token,
         mp_client_id=usuario.mp_client_id,
@@ -76,6 +79,19 @@ def _sync_cliente_from_usuario(db: Session, usuario: UsuarioCreate | UsuarioUpda
     cliente.endereco_estado = usuario.endereco_estado
     cliente.endereco_latitude = usuario.endereco_latitude
     cliente.endereco_longitude = usuario.endereco_longitude
+    cliente.cliente_mercado_pago = bool(usuario.cliente_mercado_pago)
+    cliente.cliente_pagbank = bool(usuario.cliente_pagbank)
+    cliente.cliente_s6pay = bool(usuario.cliente_s6pay)
+    if not usuario.cliente_mercado_pago:
+        cliente.mp_public_key = None
+        cliente.mp_access_token = None
+        cliente.mp_client_id = None
+        cliente.mp_client_secret = None
+        cliente.mp_user_id = None
+        cliente.mp_pos_category = None
+        cliente.mp_store_id = None
+        cliente.mp_store_external_id = None
+        return
     cliente.mp_public_key = usuario.mp_public_key
     if usuario.mp_access_token and usuario.mp_access_token != "********":
         cliente.mp_access_token = usuario.mp_access_token
@@ -100,6 +116,19 @@ def _sync_db_usuario_fields(db_usuario: Usuario, usuario: UsuarioCreate | Usuari
     db_usuario.endereco_latitude = usuario.endereco_latitude
     db_usuario.endereco_longitude = usuario.endereco_longitude
     db_usuario.email = usuario.email
+    db_usuario.cliente_mercado_pago = bool(usuario.cliente_mercado_pago)
+    db_usuario.cliente_pagbank = bool(usuario.cliente_pagbank)
+    db_usuario.cliente_s6pay = bool(usuario.cliente_s6pay)
+    if not usuario.cliente_mercado_pago:
+        db_usuario.mp_public_key = None
+        db_usuario.mp_access_token = None
+        db_usuario.mp_client_id = None
+        db_usuario.mp_client_secret = None
+        db_usuario.mp_user_id = None
+        db_usuario.mp_pos_category = None
+        db_usuario.mp_store_id = None
+        db_usuario.mp_store_external_id = None
+        return
     db_usuario.mp_public_key = usuario.mp_public_key
     if usuario.mp_access_token and usuario.mp_access_token != "********":
         db_usuario.mp_access_token = usuario.mp_access_token
@@ -129,6 +158,9 @@ def _serialize_usuario(db_usuario: Usuario) -> dict:
         "endereco_estado": db_usuario.endereco_estado or (cliente.endereco_estado if cliente else None),
         "endereco_latitude": db_usuario.endereco_latitude if db_usuario.endereco_latitude is not None else (cliente.endereco_latitude if cliente else None),
         "endereco_longitude": db_usuario.endereco_longitude if db_usuario.endereco_longitude is not None else (cliente.endereco_longitude if cliente else None),
+        "cliente_mercado_pago": bool(db_usuario.cliente_mercado_pago or (cliente and cliente.cliente_mercado_pago)),
+        "cliente_pagbank": bool(db_usuario.cliente_pagbank or (cliente and cliente.cliente_pagbank)),
+        "cliente_s6pay": bool(db_usuario.cliente_s6pay or (cliente and cliente.cliente_s6pay)),
         "mp_public_key": db_usuario.mp_public_key or (cliente.mp_public_key if cliente else None),
         "mp_access_token": "********" if db_usuario.mp_access_token or (cliente and cliente.mp_access_token) else None,
         "mp_client_id": db_usuario.mp_client_id or (cliente.mp_client_id if cliente else None),

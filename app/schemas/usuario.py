@@ -17,6 +17,9 @@ class UsuarioBase(BaseModel):
     endereco_estado: Optional[str] = None
     endereco_latitude: Optional[float] = None
     endereco_longitude: Optional[float] = None
+    cliente_mercado_pago: Optional[bool] = None
+    cliente_pagbank: Optional[bool] = None
+    cliente_s6pay: Optional[bool] = None
     mp_public_key: Optional[str] = None
     mp_access_token: Optional[str] = None
     mp_client_id: Optional[str] = None

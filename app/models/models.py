@@ -31,6 +31,9 @@ class Cliente(Base):
     endereco_estado = Column(String, nullable=True)
     endereco_latitude = Column(Float, nullable=True)
     endereco_longitude = Column(Float, nullable=True)
+    cliente_mercado_pago = Column(Boolean, nullable=True)
+    cliente_pagbank = Column(Boolean, nullable=True)
+    cliente_s6pay = Column(Boolean, nullable=True)
     mp_public_key = Column(String, nullable=True)
     mp_access_token = Column(String, nullable=True)
     mp_client_id = Column(String, nullable=True)
@@ -58,6 +61,9 @@ class Usuario(Base):
     endereco_estado = Column(String, nullable=True)
     endereco_latitude = Column(Float, nullable=True)
     endereco_longitude = Column(Float, nullable=True)
+    cliente_mercado_pago = Column(Boolean, nullable=True)
+    cliente_pagbank = Column(Boolean, nullable=True)
+    cliente_s6pay = Column(Boolean, nullable=True)
     mp_public_key = Column(String, nullable=True)
     mp_access_token = Column(String, nullable=True)
     mp_client_id = Column(String, nullable=True)
@@ -83,6 +89,7 @@ class Maquina(Base):
     __tablename__ = "maquinas"
     id_hardware = Column(String, primary_key=True) # ID do WiFiManager
     cliente_id = Column(Integer, ForeignKey("clientes.id"), nullable=True)
+    banco_pagamento = Column(String, nullable=True)
     nome_local = Column(String)
     localizacao = Column(String, nullable=True)
     mp_store_id = Column(String, nullable=True)
