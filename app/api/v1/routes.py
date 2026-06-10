@@ -1,5 +1,4 @@
 from datetime import date, datetime, timedelta
-import secrets
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -45,11 +44,17 @@ def _cliente_query_por_usuario(db: Session, role: str, cliente_id):
 
 
 def _generate_machine_id(db: Session) -> str:
-    while True:
-        candidate = f"CPM-{secrets.token_hex(3).upper()}"
-        exists = db.query(Maquina).filter(Maquina.id_hardware == candidate).first()
-        if not exists:
-            return candidate
+    numeric_ids = []
+    for (id_hardware,) in db.query(Maquina.id_hardware).all():
+        value = str(id_hardware or "").strip()
+        if value.isdigit():
+            numeric_ids.append(int(value))
+
+    next_id = max(numeric_ids, default=999) + 1
+    next_id = max(next_id, 1000)
+    while db.query(Maquina).filter(Maquina.id_hardware == str(next_id)).first():
+        next_id += 1
+    return str(next_id)
 
 
 def _apply_transacao_periodo(
