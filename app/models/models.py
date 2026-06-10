@@ -119,6 +119,13 @@ class HistoricoOperacao(Base):
     categoria = Column(String, nullable=False, index=True)
     descricao = Column(String, nullable=False)
     valor = Column(Float, nullable=True)
+    provider = Column(String, nullable=True)
+    provider_payment_id = Column(String, nullable=True)
+    payment_type = Column(String, nullable=True)
+    card_brand = Column(String, nullable=True)
+    bank_name = Column(String, nullable=True)
+    pulse_status = Column(String, nullable=True)
+    refunded_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 

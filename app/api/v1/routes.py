@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta
+import re
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -16,7 +17,7 @@ from app.schemas.fechamento import FechamentoMaquinaOut
 from app.schemas.historico import HistoricoOperacaoOut
 from app.schemas.maquina import MaquinaCreate, MaquinaOut, MaquinaUpdate
 from app.schemas.transacao import TransacaoOut
-from app.services.mercado_pago import create_pos_for_machine
+from app.services.mercado_pago import create_pos_for_machine, mp_request
 from app.services.mqtt_commands import publish_machine_credit
 
 router = APIRouter()
@@ -257,6 +258,17 @@ def _build_machine_history_payload(
         .order_by(HistoricoOperacao.created_at.desc())
         .all()
     )
+    pagamentos_historico = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.categoria == "PAGAMENTO",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
+        )
+        .order_by(HistoricoOperacao.created_at.desc())
+        .all()
+    )
 
     total_pagamentos = sum(float(item.valor or 0) for item in pagamentos)
     total_digital = sum(
@@ -354,6 +366,59 @@ def _build_machine_history_payload(
             }
         )
     timeline.sort(key=lambda item: item["created_at"], reverse=True)
+    vendas = []
+    for item in pagamentos_historico:
+        provider_payment_id = item.provider_payment_id
+        if not provider_payment_id:
+            match = re.search(r"(?:payment_id|mp_order_id)=([^,\)\s]+)", item.descricao or "")
+            provider_payment_id = match.group(1) if match else None
+        pulse_status = item.pulse_status or "liberado"
+        vendas.append(
+            {
+                "id": item.id,
+                "kind": "pagamento",
+                "is_test": False,
+                "data": item.created_at,
+                "valor": float(item.valor or 0),
+                "taxa": None,
+                "total": float(item.valor or 0),
+                "ponto": maquina.nome_local,
+                "provider": item.provider or (maquina.banco_pagamento or "mercado_pago"),
+                "payment_type": item.payment_type or "digital",
+                "card_brand": item.card_brand,
+                "bank_name": item.bank_name,
+                "provider_payment_id": provider_payment_id,
+                "pulse_status": pulse_status,
+                "situacao": "Extornado" if item.refunded_at else "Venda Aprovada",
+                "refunded_at": item.refunded_at,
+                "can_refund": bool(provider_payment_id and item.provider in {None, "mercado_pago"} and not item.refunded_at and pulse_status == "falha"),
+                "descricao": item.descricao,
+            }
+        )
+    for item in testes:
+        vendas.append(
+            {
+                "id": item.id,
+                "kind": "teste",
+                "is_test": True,
+                "data": item.created_at,
+                "valor": float(item.valor or 0),
+                "taxa": None,
+                "total": float(item.valor or 0),
+                "ponto": maquina.nome_local,
+                "provider": "teste",
+                "payment_type": "TESTE",
+                "card_brand": None,
+                "bank_name": None,
+                "provider_payment_id": None,
+                "pulse_status": "teste",
+                "situacao": "TESTE",
+                "refunded_at": None,
+                "can_refund": False,
+                "descricao": item.descricao,
+            }
+        )
+    vendas.sort(key=lambda item: item["data"], reverse=True)
 
     return {
         "range": {
@@ -364,6 +429,9 @@ def _build_machine_history_payload(
             "id_hardware": maquina.id_hardware,
             "nome": maquina.nome_local,
             "localizacao": maquina.localizacao,
+            "banco_pagamento": maquina.banco_pagamento or "mercado_pago",
+            "mp_pos_id": maquina.mp_pos_id,
+            "mp_pos_external_id": maquina.mp_pos_external_id,
             "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
             "status_online": bool(
                 maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < timedelta(minutes=3)
@@ -407,6 +475,7 @@ def _build_machine_history_payload(
             }
             for transacao in pagamentos
         ],
+        "vendas": vendas,
         "saidas": [
             {
                 "id": transacao.id,
@@ -742,6 +811,62 @@ def registrar_observacao_maquina(
         "valor": historico.valor,
         "created_at": historico.created_at,
     }
+
+
+@router.post("/maquinas/{machine_id}/pagamentos/{historico_id}/extorno")
+def estornar_pagamento_maquina(
+    machine_id: str,
+    historico_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, cliente_id = user
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
+    historico = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.id == historico_id,
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.categoria == "PAGAMENTO",
+        )
+        .first()
+    )
+    if not historico:
+        raise HTTPException(status_code=404, detail="Pagamento nao encontrado")
+    if historico.refunded_at:
+        raise HTTPException(status_code=400, detail="Pagamento ja foi estornado")
+    if (historico.pulse_status or "").lower() != "falha":
+        raise HTTPException(status_code=422, detail="Extorno automatico permitido apenas quando o pulso falhou")
+
+    payment_id = historico.provider_payment_id
+    if not payment_id:
+        match = re.search(r"payment_id=([^,\)\s]+)", historico.descricao or "")
+        payment_id = match.group(1) if match else None
+    if not payment_id:
+        raise HTTPException(status_code=422, detail="Pagamento sem payment_id do Mercado Pago para estorno automatico")
+
+    token = (maquina.dono.mp_access_token if getattr(maquina, "dono", None) else "") or ""
+    if not token:
+        raise HTTPException(status_code=422, detail="Cliente sem token Mercado Pago para estorno")
+
+    mp_request(
+        "POST",
+        f"https://api.mercadopago.com/v1/payments/{payment_id}/refunds",
+        token.strip(),
+        body={},
+        headers={"X-Idempotency-Key": f"refund-{payment_id}-{historico_id}"},
+    )
+    historico.refunded_at = datetime.utcnow()
+    db.add(
+        AuditoriaOperacao(
+            maquina_id=machine_id,
+            acao="EXTORNO",
+            descricao=f"Extorno solicitado para payment_id={payment_id}",
+            executado_por_email=_get_user_email(user),
+        )
+    )
+    db.commit()
+    return {"ok": True, "payment_id": payment_id, "refunded_at": historico.refunded_at}
 
 
 @router.get("/faturamento")

@@ -106,5 +106,18 @@ def startup_event():
         for column_name in ["mp_store_id", "mp_store_external_id", "mp_pos_id", "mp_pos_external_id", "mp_qr_image"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
+        historico_columns = {column["name"] for column in inspector.get_columns("historico_operacoes")}
+        for column_name in [
+            "provider",
+            "provider_payment_id",
+            "payment_type",
+            "card_brand",
+            "bank_name",
+            "pulse_status",
+        ]:
+            if column_name not in historico_columns:
+                connection.execute(text(f"ALTER TABLE historico_operacoes ADD COLUMN {column_name} VARCHAR"))
+        if "refunded_at" not in historico_columns:
+            connection.execute(text("ALTER TABLE historico_operacoes ADD COLUMN refunded_at TIMESTAMP"))
     mqtt_thread = threading.Thread(target=run_mqtt, daemon=True)
     mqtt_thread.start()

@@ -78,6 +78,18 @@ def _extract_terminal_id(payload: dict) -> str | None:
     return None
 
 
+def _payment_metadata(payment_data: dict) -> dict:
+    issuer = payment_data.get("issuer") or {}
+    card = payment_data.get("card") or {}
+    return {
+        "provider": "mercado_pago",
+        "provider_payment_id": str(payment_data.get("id") or "").strip() or None,
+        "payment_type": payment_data.get("payment_type_id") or payment_data.get("payment_method_id"),
+        "card_brand": payment_data.get("payment_method_id") or card.get("cardholder", {}).get("name"),
+        "bank_name": issuer.get("name") or issuer.get("id"),
+    }
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -290,21 +302,41 @@ async def processar_pix(request: Request, dados: dict | None = None):
                 data_hora=datetime.utcnow(),
             )
             db.add(transacao)
-            db.add(
-                HistoricoOperacao(
-                    maquina_id=machine_id,
-                    categoria="PAGAMENTO",
-                    descricao=f"Pagamento maquininha aprovado (payment_id={payment_id}, terminal_id={terminal_id or 'n/a'})",
-                    valor=amount,
-                    created_at=transacao.data_hora,
-                )
+            historico = HistoricoOperacao(
+                maquina_id=machine_id,
+                categoria="PAGAMENTO",
+                descricao=f"Pagamento maquininha aprovado (payment_id={payment_id}, terminal_id={terminal_id or 'n/a'})",
+                valor=amount,
+                created_at=transacao.data_hora,
+                **_payment_metadata(payment_data),
             )
+            db.add(historico)
             db.commit()
+            db.refresh(historico)
         finally:
             db.close()
 
         pulsos = _calcular_pulsos_por_valor(amount)
-        publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid")
+        try:
+            publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid")
+            db_status = SessionLocal()
+            try:
+                item = db_status.query(HistoricoOperacao).filter(HistoricoOperacao.id == historico.id).first()
+                if item:
+                    item.pulse_status = "liberado"
+                    db_status.commit()
+            finally:
+                db_status.close()
+        except Exception:
+            db_status = SessionLocal()
+            try:
+                item = db_status.query(HistoricoOperacao).filter(HistoricoOperacao.id == historico.id).first()
+                if item:
+                    item.pulse_status = "falha"
+                    db_status.commit()
+            finally:
+                db_status.close()
+            raise
         PROCESSED_PAYMENT_IDS.add(payment_id)
         print(
             f"[MP webhook] payment processado payment_id={payment_id} terminal={terminal_id} machine={machine_id} amount={amount} pulsos={pulsos}"
@@ -345,17 +377,20 @@ def lancar_pagamento(
         data_hora=datetime.utcnow(),
     )
     db.add(transacao)
-    db.add(
-        HistoricoOperacao(
-            maquina_id=pagamento.maquina_id,
-            categoria="PAGAMENTO",
-            descricao=pagamento.descricao or "Pagamento digital lancado pelo painel",
-            valor=pagamento.valor,
-            created_at=transacao.data_hora,
-        )
+    historico = HistoricoOperacao(
+        maquina_id=pagamento.maquina_id,
+        categoria="PAGAMENTO",
+        descricao=pagamento.descricao or "Pagamento digital lancado pelo painel",
+        valor=pagamento.valor,
+        provider="manual",
+        payment_type="lancamento_painel",
+        pulse_status="pendente",
+        created_at=transacao.data_hora,
     )
+    db.add(historico)
     db.commit()
     db.refresh(transacao)
+    db.refresh(historico)
 
     try:
         pulsos = _calcular_pulsos_por_valor(pagamento.valor)
@@ -364,7 +399,11 @@ def lancar_pagamento(
             pulses=pulsos,
             action="paid",
         )
+        historico.pulse_status = "liberado"
+        db.commit()
     except Exception as exc:
+        historico.pulse_status = "falha"
+        db.commit()
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
 
     return {
