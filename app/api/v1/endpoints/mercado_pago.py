@@ -11,7 +11,7 @@ from app.core.dependencies import get_current_user
 from app.core.security import ALGORITHM, SECRET_KEY
 from app.db.session import SessionLocal
 from app.models.models import Cliente, Usuario
-from app.services.mercado_pago import exchange_oauth_code
+from app.services.mercado_pago import exchange_oauth_code, mp_request, search_store_by_external_id
 
 router = APIRouter()
 
@@ -112,3 +112,118 @@ def callback_oauth_mercado_pago(
     db.commit()
 
     return RedirectResponse(f"{frontend_url}/usuarios?mp_status=conectado&cliente_id={cliente.id}")
+
+
+@router.get("/mercado-pago/clientes/{cliente_id}/validacao")
+def validar_integracao_mercado_pago(
+    cliente_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, _ = user
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas admin pode validar Mercado Pago")
+
+    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado")
+
+    checks = []
+
+    mp_habilitado = bool(cliente.cliente_mercado_pago or cliente.mp_access_token)
+    checks.append({
+        "key": "cliente_mercado_pago",
+        "label": "Cliente Mercado Pago",
+        "ok": mp_habilitado,
+        "message": "Habilitado" if mp_habilitado else "Mercado Pago nao esta habilitado para este cliente",
+    })
+
+    access_token = (cliente.mp_access_token or "").strip()
+    checks.append({
+        "key": "mp_access_token",
+        "label": "Access token",
+        "ok": bool(access_token),
+        "message": "Token cadastrado" if access_token else "Cadastre ou conecte o Mercado Pago antes de criar maquina",
+    })
+
+    if not access_token:
+        return {
+            "ok": False,
+            "cliente_id": cliente.id,
+            "cliente_nome": cliente.nome_empresa,
+            "mp_user_id": cliente.mp_user_id,
+            "mp_live_mode": bool(cliente.mp_live_mode),
+            "mp_store_id": cliente.mp_store_id,
+            "mp_store_external_id": cliente.mp_store_external_id,
+            "checks": checks,
+        }
+
+    try:
+        mp_user = mp_request("GET", "https://api.mercadopago.com/users/me", access_token)
+    except HTTPException as exc:
+        checks.append({
+            "key": "mp_users_me",
+            "label": "Consulta Mercado Pago",
+            "ok": False,
+            "message": str(exc.detail),
+        })
+        return {
+            "ok": False,
+            "cliente_id": cliente.id,
+            "cliente_nome": cliente.nome_empresa,
+            "mp_user_id": cliente.mp_user_id,
+            "mp_live_mode": bool(cliente.mp_live_mode),
+            "mp_store_id": cliente.mp_store_id,
+            "mp_store_external_id": cliente.mp_store_external_id,
+            "checks": checks,
+        }
+
+    mp_user_id = str(mp_user.get("id") or "")
+    if mp_user_id and cliente.mp_user_id != mp_user_id:
+        cliente.mp_user_id = mp_user_id
+        usuarios = db.query(Usuario).filter(Usuario.cliente_id == cliente.id).all()
+        for usuario in usuarios:
+            usuario.mp_user_id = mp_user_id
+        db.commit()
+
+    checks.append({
+        "key": "mp_users_me",
+        "label": "Consulta Mercado Pago",
+        "ok": bool(mp_user_id),
+        "message": f"Conta Mercado Pago encontrada: {mp_user_id}" if mp_user_id else "Mercado Pago nao retornou user_id",
+    })
+
+    if cliente.mp_store_external_id:
+        store = search_store_by_external_id(mp_user_id, access_token, cliente.mp_store_external_id)
+        checks.append({
+            "key": "mp_store",
+            "label": "Loja Mercado Pago",
+            "ok": bool(store),
+            "message": "Loja encontrada" if store else "Loja salva no sistema nao foi encontrada no Mercado Pago",
+        })
+    else:
+        checks.append({
+            "key": "mp_store",
+            "label": "Loja Mercado Pago",
+            "ok": True,
+            "message": "Sem loja padrao salva; a loja da maquina sera criada no cadastro",
+        })
+
+    category_ok = bool(cliente.mp_pos_category)
+    checks.append({
+        "key": "mp_pos_category",
+        "label": "Categoria/MCC do caixa",
+        "ok": category_ok,
+        "message": f"Categoria configurada: {cliente.mp_pos_category}" if category_ok else "Categoria nao configurada; sera usado fallback do backend",
+    })
+
+    return {
+        "ok": all(item["ok"] for item in checks),
+        "cliente_id": cliente.id,
+        "cliente_nome": cliente.nome_empresa,
+        "mp_user_id": mp_user_id or cliente.mp_user_id,
+        "mp_live_mode": bool(cliente.mp_live_mode),
+        "mp_store_id": cliente.mp_store_id,
+        "mp_store_external_id": cliente.mp_store_external_id,
+        "checks": checks,
+    }
