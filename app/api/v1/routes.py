@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
-from app.api.v1.endpoints import auditoria, auth, clientes, mercado_pago, pagamentos, produtos, relatorios, usuarios
+from app.api.v1.endpoints import auditoria, auth, clientes, maquinas, mercado_pago, pagamentos, produtos, relatorios, usuarios
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import AuditoriaOperacao, Cliente, EscutaTerminal, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
@@ -605,17 +605,6 @@ def listar_maquinas(
     ]
 
 
-@router.get("/maquinas/novo-id")
-def gerar_novo_id_maquina(
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    _, role, _ = user
-    if role != "admin":
-        raise HTTPException(status_code=403, detail="Apenas admin pode gerar ids de maquinas")
-    return {"id_hardware": _generate_machine_id(db)}
-
-
 @router.post("/maquinas", response_model=MaquinaOut)
 def criar_maquina(
     maquina: MaquinaCreate,
@@ -1140,6 +1129,7 @@ router.include_router(usuarios.router)
 router.include_router(mercado_pago.router)
 router.include_router(auditoria.router)
 router.include_router(clientes.router)
+router.include_router(maquinas.router)
 router.include_router(produtos.router)
 router.include_router(relatorios.router)
 router.include_router(pagamentos.router)
