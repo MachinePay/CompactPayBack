@@ -3,7 +3,7 @@ import re
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.api.v1.endpoints import auth, mercado_pago, pagamentos, produtos, usuarios
@@ -125,6 +125,39 @@ def _get_user_email(user) -> str:
     return token_data.email
 
 
+def _real_payment_history_query(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime):
+    query = db.query(HistoricoOperacao).filter(
+        HistoricoOperacao.categoria == "PAGAMENTO",
+        HistoricoOperacao.created_at >= start_dt,
+        HistoricoOperacao.created_at <= end_dt,
+    )
+    if not machine_ids:
+        return query.filter(HistoricoOperacao.id.is_(None))
+    return query.filter(
+        HistoricoOperacao.maquina_id.in_(machine_ids),
+        or_(HistoricoOperacao.provider.is_(None), HistoricoOperacao.provider != "manual"),
+        ~HistoricoOperacao.descricao.ilike("%lancado pelo painel%"),
+    )
+
+
+def _real_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> tuple[float, int]:
+    if not machine_ids:
+        return 0.0, 0
+    digital_query = _real_payment_history_query(db, machine_ids, start_dt, end_dt)
+    digital_total = digital_query.with_entities(func.sum(HistoricoOperacao.valor)).scalar() or 0.0
+    digital_count = digital_query.with_entities(func.count(HistoricoOperacao.id)).scalar() or 0
+    fisico_query = db.query(Transacao).filter(
+        Transacao.maquina_id.in_(machine_ids),
+        Transacao.tipo == "IN",
+        Transacao.metodo == "FISICO",
+        Transacao.data_hora >= start_dt,
+        Transacao.data_hora <= end_dt,
+    )
+    fisico_total = fisico_query.with_entities(func.sum(Transacao.valor)).scalar() or 0.0
+    fisico_count = fisico_query.with_entities(func.count(Transacao.id)).scalar() or 0
+    return float(digital_total or 0.0) + float(fisico_total or 0.0), int(digital_count or 0) + int(fisico_count or 0)
+
+
 def _status_operacional(status_online: bool, ultima_atividade_em: datetime | None) -> str:
     if not status_online:
         return "offline"
@@ -144,24 +177,8 @@ def _serialize_machine_summary(
     status_online = bool(
         maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < timedelta(minutes=3)
     )
-    faturamento_query = (
-        db.query(func.sum(Transacao.valor))
-        .filter(
-            Transacao.maquina_id == maquina.id_hardware,
-            Transacao.tipo == "IN",
-        )
-    )
-    faturamento = (
-        _apply_transacao_periodo(
-            faturamento_query,
-            periodo=periodo,
-            data_inicio=data_inicio,
-            data_fim=data_fim,
-        ).scalar()
-        or 0.0
-    )
-
     start_dt, end_dt = _resolve_date_window(periodo, data_inicio, data_fim)
+    faturamento, _ = _real_revenue_totals(db, [maquina.id_hardware], start_dt, end_dt)
     ultimo_pagamento_em = (
         db.query(func.max(Transacao.data_hora))
         .filter(
@@ -270,11 +287,12 @@ def _build_machine_history_payload(
         .all()
     )
 
-    total_pagamentos = sum(float(item.valor or 0) for item in pagamentos)
-    total_digital = sum(
-        float(item.valor or 0)
-        for item in pagamentos
-        if (item.metodo.value if hasattr(item.metodo, "value") else str(item.metodo)) == "DIGITAL"
+    total_pagamentos, quantidade_pagamentos_reais = _real_revenue_totals(db, [machine_id], start_dt, end_dt)
+    total_digital = (
+        _real_payment_history_query(db, [machine_id], start_dt, end_dt)
+        .with_entities(func.sum(HistoricoOperacao.valor))
+        .scalar()
+        or 0.0
     )
     total_fisico = sum(
         float(item.valor or 0)
@@ -449,7 +467,7 @@ def _build_machine_history_payload(
             "total_pagamentos": total_pagamentos,
             "total_digital": total_digital,
             "total_fisico": total_fisico,
-            "quantidade_pagamentos": len(pagamentos),
+            "quantidade_pagamentos": quantidade_pagamentos_reais,
             "quantidade_testes": len(testes),
             "quantidade_saidas": len(saidas),
             "ultimo_pagamento_em": ultimo_pagamento.data_hora if ultimo_pagamento else None,
@@ -879,20 +897,12 @@ def faturamento(
     data_fim: str = None,
 ):
     _, role, cliente_id = user
-    query = db.query(Transacao)
-    if role != "admin":
-        maquinas_ids = [
-            m.id_hardware for m in _maquina_query_por_usuario(db, role, cliente_id).all()
-        ]
-        query = query.filter(Transacao.maquina_id.in_(maquinas_ids))
+    maquinas_ids = [m.id_hardware for m in _maquina_query_por_usuario(db, role, cliente_id).all()]
     if id_hardware:
-        query = query.filter(Transacao.maquina_id == id_hardware)
-    if data_inicio and data_fim:
-        query = _apply_transacao_periodo(query, data_inicio=data_inicio, data_fim=data_fim)
-    else:
-        query = _apply_transacao_periodo(query, periodo=periodo)
+        maquinas_ids = [id_hardware] if id_hardware in maquinas_ids or role == "admin" else []
 
-    total = query.with_entities(func.sum(Transacao.valor)).scalar() or 0.0
+    start_dt, end_dt = _resolve_date_window(periodo, data_inicio, data_fim)
+    total, _ = _real_revenue_totals(db, maquinas_ids, start_dt, end_dt)
     return {"faturamento": float(total)}
 
 
@@ -1118,23 +1128,15 @@ def dashboard_stats(
     user=Depends(get_current_user),
 ):
     hoje = date.today()
+    start_dt = datetime.combine(hoje, datetime.min.time())
+    end_dt = datetime.combine(hoje, datetime.max.time())
     _, role, cliente_id = user
     query = db.query(Transacao)
+    maquinas_ids = [m.id_hardware for m in _maquina_query_por_usuario(db, role, cliente_id).all()]
     if role != "admin":
-        maquinas_ids = [
-            m.id_hardware for m in _maquina_query_por_usuario(db, role, cliente_id).all()
-        ]
         query = query.filter(Transacao.maquina_id.in_(maquinas_ids))
 
-    faturamento = (
-        query.with_entities(func.sum(Transacao.valor))
-        .filter(
-            Transacao.tipo == "IN",
-            func.date(Transacao.data_hora) == hoje,
-        )
-        .scalar()
-        or 0.0
-    )
+    faturamento, _ = _real_revenue_totals(db, maquinas_ids, start_dt, end_dt)
     premios = (
         query.with_entities(func.count(Transacao.id))
         .filter(
@@ -1179,12 +1181,8 @@ def dashboard_overview(
         data_fim=data_fim,
     )
 
-    faturamento = (
-        transacoes_periodo.filter(Transacao.tipo == "IN")
-        .with_entities(func.sum(Transacao.valor))
-        .scalar()
-        or 0.0
-    )
+    start_dt, end_dt = _resolve_date_window(periodo, data_inicio, data_fim)
+    faturamento, quantidade_vendas_reais = _real_revenue_totals(db, maquinas_ids, start_dt, end_dt)
     premios = (
         transacoes_periodo.filter(Transacao.tipo == "OUT")
         .with_entities(func.count(Transacao.id))
@@ -1198,24 +1196,19 @@ def dashboard_overview(
         for maquina in maquinas
         if maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < timedelta(minutes=3)
     ]
-    ticket_medio = float(faturamento) / int(premios) if premios else float(faturamento)
+    ticket_medio = float(faturamento) / int(quantidade_vendas_reais) if quantidade_vendas_reais else 0.0
 
-    start_dt, end_dt = _resolve_date_window(periodo, data_inicio, data_fim)
     total_days = max(1, (end_dt.date() - start_dt.date()).days + 1)
     chart_data = []
     for index in range(total_days):
         current_day = start_dt.date() + timedelta(days=index)
         day_total = 0.0
         if maquinas_ids:
-            day_total = (
-                db.query(func.sum(Transacao.valor))
-                .filter(
-                    Transacao.tipo == "IN",
-                    func.date(Transacao.data_hora) == current_day,
-                    Transacao.maquina_id.in_(maquinas_ids),
-                )
-                .scalar()
-                or 0.0
+            day_total, _ = _real_revenue_totals(
+                db,
+                maquinas_ids,
+                datetime.combine(current_day, datetime.min.time()),
+                datetime.combine(current_day, datetime.max.time()),
             )
         chart_data.append(
             {
@@ -1287,18 +1280,7 @@ def dashboard_overview(
         cliente_total = 0.0
         ultima_atividade_em = None
         if machine_ids:
-            cliente_total = (
-                _apply_transacao_periodo(
-                    db.query(func.sum(Transacao.valor)).filter(
-                        Transacao.tipo == "IN",
-                        Transacao.maquina_id.in_(machine_ids),
-                    ),
-                    periodo=periodo,
-                    data_inicio=data_inicio,
-                    data_fim=data_fim,
-                ).scalar()
-                or 0.0
-            )
+            cliente_total, _ = _real_revenue_totals(db, machine_ids, start_dt, end_dt)
             ultima_atividade_em = (
                 db.query(func.max(Transacao.data_hora))
                 .filter(Transacao.maquina_id.in_(machine_ids))
