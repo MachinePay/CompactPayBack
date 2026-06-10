@@ -227,17 +227,23 @@ def create_pos_for_machine(cliente, maquina) -> dict:
             "mp_qr_image": ((existing_pos.get("qr") or {}).get("image") or ""),
         }
 
+    store_id = str(store_data["mp_store_id"] or "").strip()
+    if not store_id:
+        raise HTTPException(
+            status_code=502,
+            detail="Mercado Pago criou/localizou a loja, mas nao retornou store_id",
+        )
+
     body = {
         "name": (maquina.nome_local or maquina.id_hardware)[:44],
         "fixed_amount": False,
-        "store_id": (
-            int(store_data["mp_store_id"])
-            if str(store_data["mp_store_id"] or "").isdigit()
-            else store_data["mp_store_id"]
-        ),
-        "external_store_id": store_data["mp_store_external_id"],
         "external_id": external_id,
     }
+    if store_id.isdigit():
+        body["store_id"] = int(store_id)
+    else:
+        body["external_store_id"] = store_data["mp_store_external_id"]
+
     last_error = None
     pos = None
     for category in _category_candidates(cliente.mp_pos_category):
