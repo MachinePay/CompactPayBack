@@ -4,6 +4,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.models import Maquina, Transacao, EventoTipo, MetodoPagamento
 from app.models.logs import Logs
+from app.services.vendas import registrar_venda_pagamento
 from sqlalchemy.orm import Session
 from datetime import datetime
 
@@ -42,6 +43,18 @@ def on_message(client, userdata, msg):
                 valor=1.00
             )
             db.add(nova_transacao)
+            db.flush()
+            registrar_venda_pagamento(
+                db,
+                maquina_id=id_extraido,
+                valor=1.00,
+                origem="fisico",
+                transacao_id=nova_transacao.id,
+                provider="fisico",
+                tipo_pagamento="moeda_nota",
+                status_pulso="fisico",
+                created_at=nova_transacao.data_hora,
+            )
             db.commit()
             print(f"Transação FISICO IN registrada para máquina {id_extraido}")
         elif payload == "PELUCIA ENTREGUE (OUT)":

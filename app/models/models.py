@@ -112,6 +112,30 @@ class Transacao(Base):
     maquina = relationship("Maquina", back_populates="transacoes")
 
 
+class VendaPagamento(Base):
+    __tablename__ = "vendas_pagamentos"
+    id = Column(Integer, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    transacao_id = Column(Integer, ForeignKey("transacoes.id"), nullable=True, index=True)
+    historico_id = Column(Integer, ForeignKey("historico_operacoes.id"), nullable=True, index=True)
+    origem = Column(String, nullable=False, index=True)
+    provider = Column(String, nullable=True, index=True)
+    provider_payment_id = Column(String, nullable=True, index=True)
+    tipo_pagamento = Column(String, nullable=True)
+    bandeira_cartao = Column(String, nullable=True)
+    banco = Column(String, nullable=True)
+    valor_bruto = Column(Float, default=0.0, nullable=False)
+    taxa = Column(Float, nullable=True)
+    valor_liquido = Column(Float, default=0.0, nullable=False)
+    status_pulso = Column(String, nullable=True, index=True)
+    conta_faturamento = Column(Boolean, default=True, nullable=False)
+    conta_ticket_medio = Column(Boolean, default=True, nullable=False)
+    is_teste = Column(Boolean, default=False, nullable=False)
+    is_manual = Column(Boolean, default=False, nullable=False)
+    refunded_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
+
+
 class HistoricoOperacao(Base):
     __tablename__ = "historico_operacoes"
     id = Column(Integer, primary_key=True)

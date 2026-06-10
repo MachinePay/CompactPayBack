@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.v1.endpoints import auth, mercado_pago, pagamentos, produtos, usuarios
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import AuditoriaOperacao, AuditoriaSistema, Cliente, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao
+from app.models.models import AuditoriaOperacao, AuditoriaSistema, Cliente, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.models.produto import Produto
 from app.schemas.auditoria import AuditoriaOperacaoOut
 from app.schemas.cliente import ClienteListOut
@@ -144,19 +144,42 @@ def _real_payment_history_query(db: Session, machine_ids: list[str], start_dt: d
 def _real_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> tuple[float, int]:
     if not machine_ids:
         return 0.0, 0
-    digital_query = _real_payment_history_query(db, machine_ids, start_dt, end_dt)
+    vendas_query = db.query(VendaPagamento).filter(
+        VendaPagamento.maquina_id.in_(machine_ids),
+        VendaPagamento.created_at >= start_dt,
+        VendaPagamento.created_at <= end_dt,
+        VendaPagamento.conta_faturamento.is_(True),
+    )
+    vendas_total = vendas_query.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0
+    vendas_count = (
+        vendas_query.filter(VendaPagamento.conta_ticket_medio.is_(True))
+        .with_entities(func.count(VendaPagamento.id))
+        .scalar()
+        or 0
+    )
+
+    historicos_com_venda = db.query(VendaPagamento.historico_id).filter(VendaPagamento.historico_id.isnot(None))
+    digital_query = _real_payment_history_query(db, machine_ids, start_dt, end_dt).filter(
+        ~HistoricoOperacao.id.in_(historicos_com_venda)
+    )
     digital_total = digital_query.with_entities(func.sum(HistoricoOperacao.valor)).scalar() or 0.0
     digital_count = digital_query.with_entities(func.count(HistoricoOperacao.id)).scalar() or 0
+
+    transacoes_com_venda = db.query(VendaPagamento.transacao_id).filter(VendaPagamento.transacao_id.isnot(None))
     fisico_query = db.query(Transacao).filter(
         Transacao.maquina_id.in_(machine_ids),
         Transacao.tipo == "IN",
         Transacao.metodo == "FISICO",
         Transacao.data_hora >= start_dt,
         Transacao.data_hora <= end_dt,
+        ~Transacao.id.in_(transacoes_com_venda),
     )
     fisico_total = fisico_query.with_entities(func.sum(Transacao.valor)).scalar() or 0.0
     fisico_count = fisico_query.with_entities(func.count(Transacao.id)).scalar() or 0
-    return float(digital_total or 0.0) + float(fisico_total or 0.0), int(digital_count or 0) + int(fisico_count or 0)
+    return (
+        float(vendas_total or 0.0) + float(digital_total or 0.0) + float(fisico_total or 0.0),
+        int(vendas_count or 0) + int(digital_count or 0) + int(fisico_count or 0),
+    )
 
 
 def _status_operacional(status_online: bool, ultima_atividade_em: datetime | None) -> str:
