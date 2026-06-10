@@ -155,6 +155,17 @@ class AuditoriaOperacao(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 
+class AuditoriaSistema(Base):
+    __tablename__ = "auditoria_sistema"
+    id = Column(Integer, primary_key=True)
+    entidade_tipo = Column(String, nullable=False, index=True)
+    entidade_id = Column(String, nullable=True, index=True)
+    acao = Column(String, nullable=False, index=True)
+    descricao = Column(String, nullable=False)
+    executado_por_email = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
 class EscutaTerminal(Base):
     __tablename__ = "escutas_terminal"
     terminal_id = Column(String, primary_key=True)

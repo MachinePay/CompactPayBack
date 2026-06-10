@@ -10,6 +10,7 @@ from app.core.security import get_password_hash
 from app.db.session import SessionLocal
 from app.models.models import Cliente, UserRole, Usuario
 from app.schemas.usuario import UsuarioCreate, UsuarioOut, UsuarioUpdate
+from app.services.auditoria import registrar_auditoria
 
 router = APIRouter()
 
@@ -214,6 +215,15 @@ def criar_usuario(
     _sync_db_usuario_fields(db_usuario, usuario)
     db.add(db_usuario)
     try:
+        db.flush()
+        registrar_auditoria(
+            db,
+            user,
+            acao="USUARIO_CRIADO",
+            entidade_tipo="usuario",
+            entidade_id=db_usuario.id,
+            descricao=f"Usuario criado email={usuario.email} role={user_role.value}",
+        )
         db.commit()
     except IntegrityError as exc:
         db.rollback()
@@ -261,6 +271,18 @@ def atualizar_usuario(
     db_usuario.cliente_id = cliente_id
     if usuario.password:
         db_usuario.hashed_password = get_password_hash(usuario.password)
+    registrar_auditoria(
+        db,
+        user,
+        acao="USUARIO_ATUALIZADO",
+        entidade_tipo="usuario",
+        entidade_id=usuario_id,
+        descricao=(
+            f"Usuario atualizado email={usuario.email} role={user_role.value} "
+            f"cliente_id={cliente_id} senha_alterada={bool(usuario.password)} "
+            f"mp_habilitado={bool(usuario.cliente_mercado_pago)} pagbank={bool(usuario.cliente_pagbank)} s6pay={bool(usuario.cliente_s6pay)}"
+        ),
+    )
 
     try:
         db.commit()
@@ -285,6 +307,17 @@ def deletar_usuario(
     if not db_usuario:
         raise HTTPException(status_code=404, detail="Usuario nao encontrado")
 
+    email = db_usuario.email
+    role_value = db_usuario.role.value if hasattr(db_usuario.role, "value") else str(db_usuario.role)
+    cliente_id = db_usuario.cliente_id
+    registrar_auditoria(
+        db,
+        user,
+        acao="USUARIO_EXCLUIDO",
+        entidade_tipo="usuario",
+        entidade_id=usuario_id,
+        descricao=f"Usuario excluido email={email} role={role_value} cliente_id={cliente_id}",
+    )
     db.delete(db_usuario)
     db.commit()
     return {"ok": True}

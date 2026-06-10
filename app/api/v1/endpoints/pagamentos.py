@@ -11,6 +11,7 @@ from app.db.session import SessionLocal
 from app.models.models import Cliente, EscutaTerminal, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao
 from app.models.produto import Produto
 from app.schemas.pagamento import PagamentoCreate, PagamentoOut
+from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit_pulses
 
@@ -388,6 +389,17 @@ def lancar_pagamento(
         created_at=transacao.data_hora,
     )
     db.add(historico)
+    registrar_auditoria(
+        db,
+        user,
+        acao="PAGAMENTO_MANUAL_LANCADO",
+        entidade_tipo="maquina",
+        entidade_id=pagamento.maquina_id,
+        descricao=(
+            f"Pagamento manual lancado valor={pagamento.valor} produto_id={pagamento.produto_id} "
+            f"descricao={pagamento.descricao or 'Pagamento digital lancado pelo painel'}"
+        ),
+    )
     db.commit()
     db.refresh(transacao)
     db.refresh(historico)

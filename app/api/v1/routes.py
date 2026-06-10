@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.v1.endpoints import auth, mercado_pago, pagamentos, produtos, usuarios
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import AuditoriaOperacao, Cliente, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao
+from app.models.models import AuditoriaOperacao, AuditoriaSistema, Cliente, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao
 from app.models.produto import Produto
 from app.schemas.auditoria import AuditoriaOperacaoOut
 from app.schemas.cliente import ClienteListOut
@@ -18,6 +18,7 @@ from app.schemas.historico import HistoricoOperacaoOut
 from app.schemas.maquina import MaquinaCreate, MaquinaOut, MaquinaUpdate
 from app.schemas.transacao import TransacaoOut
 from app.services.mercado_pago import create_pos_for_machine, mp_request
+from app.services.auditoria import registrar_auditoria
 from app.services.mqtt_commands import publish_machine_credit
 
 router = APIRouter()
@@ -688,6 +689,17 @@ def criar_maquina(
     db_maquina.mp_pos_external_id = pos_data["mp_pos_external_id"]
     db_maquina.mp_qr_image = pos_data["mp_qr_image"]
     db.add(db_maquina)
+    registrar_auditoria(
+        db,
+        user,
+        acao="MAQUINA_CRIADA",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=(
+            f"Maquina criada cliente_id={maquina.cliente_id} nome={maquina.nome} "
+            f"localizacao={maquina.localizacao} banco={banco_pagamento} mp_pos_id={db_maquina.mp_pos_id}"
+        ),
+    )
     db.commit()
     db.refresh(db_maquina)
 
@@ -711,11 +723,28 @@ def atualizar_maquina(
     if not db_maquina:
         raise HTTPException(status_code=404, detail="Maquina nao encontrada")
 
+    nome_anterior = db_maquina.nome_local
+    localizacao_anterior = db_maquina.localizacao
+    cliente_anterior = db_maquina.cliente_id
+    banco_anterior = db_maquina.banco_pagamento
     db_maquina.nome_local = maquina.nome
     db_maquina.localizacao = maquina.localizacao
     db_maquina.cliente_id = maquina.cliente_id
     if maquina.banco_pagamento:
         db_maquina.banco_pagamento = maquina.banco_pagamento
+    registrar_auditoria(
+        db,
+        user,
+        acao="MAQUINA_ATUALIZADA",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=(
+            f"Maquina atualizada nome={nome_anterior}->{maquina.nome} "
+            f"localizacao={localizacao_anterior}->{maquina.localizacao} "
+            f"cliente_id={cliente_anterior}->{maquina.cliente_id} "
+            f"banco={banco_anterior}->{db_maquina.banco_pagamento}"
+        ),
+    )
     db.commit()
     db.refresh(db_maquina)
 
@@ -736,6 +765,24 @@ def deletar_maquina(
     if not db_maquina:
         raise HTTPException(status_code=404, detail="Maquina nao encontrada")
 
+    produtos_removidos = db.query(Produto).filter(Produto.maquina_id == machine_id).count()
+    transacoes_removidas = db.query(Transacao).filter(Transacao.maquina_id == machine_id).count()
+    historicos_removidos = db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).count()
+    fechamentos_removidos = db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).count()
+    auditorias_removidas = db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).count()
+    registrar_auditoria(
+        db,
+        user,
+        acao="MAQUINA_EXCLUIDA",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=(
+            f"Maquina excluida nome={db_maquina.nome_local} cliente_id={db_maquina.cliente_id} "
+            f"produtos={produtos_removidos} transacoes={transacoes_removidas} "
+            f"historicos={historicos_removidos} fechamentos={fechamentos_removidos} "
+            f"auditorias_maquina={auditorias_removidas}"
+        ),
+    )
     db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).delete(synchronize_session=False)
@@ -778,6 +825,14 @@ def enviar_credito_teste(
             created_at=datetime.utcnow(),
         )
     )
+    registrar_auditoria(
+        db,
+        user,
+        acao="TESTE_CREDITO",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=f"Credito de teste enviado pelo painel payload={payload}",
+    )
     db.commit()
 
     return {
@@ -818,6 +873,14 @@ def registrar_observacao_maquina(
             executado_por_email=_get_user_email(user),
             created_at=datetime.utcnow(),
         )
+    )
+    registrar_auditoria(
+        db,
+        user,
+        acao="OBSERVACAO_REGISTRADA",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=f"Observacao registrada: {descricao}",
     )
     db.commit()
     db.refresh(historico)
@@ -882,6 +945,14 @@ def estornar_pagamento_maquina(
             descricao=f"Extorno solicitado para payment_id={payment_id}",
             executado_por_email=_get_user_email(user),
         )
+    )
+    registrar_auditoria(
+        db,
+        user,
+        acao="EXTORNO",
+        entidade_tipo="pagamento",
+        entidade_id=historico_id,
+        descricao=f"Extorno Mercado Pago solicitado maquina_id={machine_id} payment_id={payment_id}",
     )
     db.commit()
     return {"ok": True, "payment_id": payment_id, "refunded_at": historico.refunded_at}
@@ -964,6 +1035,40 @@ def listar_transacoes(
     ]
 
 
+@router.get("/auditoria-sistema")
+def listar_auditoria_sistema(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    entidade_tipo: str = None,
+    entidade_id: str = None,
+    acao: str = None,
+    limite: int = 100,
+):
+    _, role, _ = user
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas admin pode consultar auditoria do sistema")
+    query = db.query(AuditoriaSistema)
+    if entidade_tipo:
+        query = query.filter(AuditoriaSistema.entidade_tipo == entidade_tipo)
+    if entidade_id:
+        query = query.filter(AuditoriaSistema.entidade_id == entidade_id)
+    if acao:
+        query = query.filter(AuditoriaSistema.acao == acao)
+    items = query.order_by(AuditoriaSistema.created_at.desc()).limit(min(max(limite, 1), 500)).all()
+    return [
+        {
+            "id": item.id,
+            "entidade_tipo": item.entidade_tipo,
+            "entidade_id": item.entidade_id,
+            "acao": item.acao,
+            "descricao": item.descricao,
+            "executado_por_email": item.executado_por_email,
+            "created_at": item.created_at,
+        }
+        for item in items
+    ]
+
+
 @router.get("/maquinas/{machine_id}/historico")
 def obter_historico_maquina(
     machine_id: str,
@@ -1041,6 +1146,17 @@ def criar_fechamento_maquina(
             created_at=datetime.utcnow(),
         )
     )
+    registrar_auditoria(
+        db,
+        user,
+        acao="FECHAMENTO_CRIADO",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=(
+            f"Fechamento criado periodo={start_dt.isoformat()} ate {end_dt.isoformat()} "
+            f"total={payload['resumo']['total_pagamentos']}"
+        ),
+    )
     db.commit()
     db.refresh(fechamento)
     return fechamento
@@ -1105,6 +1221,17 @@ def apagar_historico_maquina(
             executado_por_email=_get_user_email(user),
             created_at=datetime.utcnow(),
         )
+    )
+    registrar_auditoria(
+        db,
+        user,
+        acao="HISTORICO_APAGADO",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=(
+            f"Historico apagado periodo={start_dt.isoformat()} ate {end_dt.isoformat()} "
+            f"pagamentos={pagamentos_removidos} testes={testes_removidos}"
+        ),
     )
     db.commit()
 

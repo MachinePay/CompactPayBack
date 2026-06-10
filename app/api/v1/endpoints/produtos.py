@@ -8,6 +8,7 @@ from app.db.session import SessionLocal
 from app.models.models import Maquina, Usuario
 from app.models.produto import Produto
 from app.schemas.produto import ProdutoCreate, ProdutoOut
+from app.services.auditoria import registrar_auditoria
 
 router = APIRouter()
 
@@ -66,6 +67,15 @@ def criar_produto(
         usuario_id=db_usuario.id,
     )
     db.add(db_produto)
+    db.flush()
+    registrar_auditoria(
+        db,
+        user,
+        acao="PRODUTO_CRIADO",
+        entidade_tipo="produto",
+        entidade_id=db_produto.id,
+        descricao=f"Produto criado nome={produto.nome} valor={produto.valor} maquina_id={produto.maquina_id}",
+    )
     db.commit()
     db.refresh(db_produto)
     return _produto_out(db_produto, maquina.nome_local)
@@ -110,9 +120,23 @@ def atualizar_produto(
     maquina = _get_maquina_visivel(db, produto.maquina_id, role, cliente_id)
     _get_maquina_visivel(db, db_produto.maquina_id, role, cliente_id)
 
+    nome_anterior = db_produto.nome
+    valor_anterior = db_produto.valor
+    maquina_anterior = db_produto.maquina_id
     db_produto.nome = produto.nome
     db_produto.valor = produto.valor
     db_produto.maquina_id = produto.maquina_id
+    registrar_auditoria(
+        db,
+        user,
+        acao="PRODUTO_ATUALIZADO",
+        entidade_tipo="produto",
+        entidade_id=produto_id,
+        descricao=(
+            f"Produto atualizado nome={nome_anterior}->{produto.nome} "
+            f"valor={valor_anterior}->{produto.valor} maquina_id={maquina_anterior}->{produto.maquina_id}"
+        ),
+    )
     db.commit()
     db.refresh(db_produto)
     return _produto_out(db_produto, maquina.nome_local)
@@ -130,6 +154,14 @@ def deletar_produto(
         raise HTTPException(status_code=404, detail="Produto nao encontrado")
 
     _get_maquina_visivel(db, db_produto.maquina_id, role, cliente_id)
+    registrar_auditoria(
+        db,
+        user,
+        acao="PRODUTO_EXCLUIDO",
+        entidade_tipo="produto",
+        entidade_id=produto_id,
+        descricao=f"Produto excluido nome={db_produto.nome} valor={db_produto.valor} maquina_id={db_produto.maquina_id}",
+    )
     db.delete(db_produto)
     db.commit()
     return {"ok": True}
