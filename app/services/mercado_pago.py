@@ -10,6 +10,52 @@ from fastapi import HTTPException
 from app.core.config import settings
 
 
+def _mp_error_payload(error_body: str) -> dict:
+    if not error_body:
+        return {}
+    try:
+        data = json.loads(error_body)
+        return data if isinstance(data, dict) else {"raw": error_body}
+    except json.JSONDecodeError:
+        return {"raw": error_body}
+
+
+def _mp_error_message(status_code: int, error_body: str) -> str:
+    data = _mp_error_payload(error_body)
+    error_code = str(data.get("error") or data.get("code") or "").strip()
+    message = str(data.get("message") or data.get("description") or data.get("raw") or "erro sem detalhe").strip()
+    causes = data.get("causes") if isinstance(data.get("causes"), list) else []
+    cause_messages = [
+        str(cause.get("description") or cause.get("message") or cause.get("code") or "").strip()
+        for cause in causes
+        if isinstance(cause, dict)
+    ]
+    cause_detail = " | ".join([item for item in cause_messages if item])
+
+    known_errors = {
+        "store_not_found": "Loja Mercado Pago nao encontrada. Valide a integracao do cliente e tente criar a maquina novamente.",
+        "non_existent_external_store_id": "O caixa nao foi criado porque a loja informada nao existe no Mercado Pago. Valide a integracao do cliente e recrie a loja/POS.",
+        "pos_unknown_mcc": "Categoria/MCC do caixa Mercado Pago nao aceita. Use a categoria padrao ou valide os fallbacks configurados.",
+        "invalid_token": "Token Mercado Pago invalido ou expirado. Conecte novamente a conta Mercado Pago do cliente.",
+        "invalid_access_token": "Access token Mercado Pago invalido ou expirado. Conecte novamente a conta Mercado Pago do cliente.",
+        "unauthorized": "Mercado Pago recusou a autorizacao. Verifique se o token pertence ao cliente correto.",
+        "forbidden": "Mercado Pago recusou a permissao desta operacao para a conta/token informado.",
+    }
+    if error_code in known_errors:
+        return known_errors[error_code]
+
+    lower_message = message.lower()
+    if "invalid access token" in lower_message or "invalid_token" in lower_message:
+        return known_errors["invalid_access_token"]
+    if "merchant category code" in lower_message:
+        return known_errors["pos_unknown_mcc"]
+
+    detail = f"{error_code}: {message}" if error_code else message
+    if cause_detail:
+        detail = f"{detail} | {cause_detail}"
+    return f"Mercado Pago retornou erro {status_code}: {detail}"
+
+
 def mp_request(method: str, url: str, token: str, body: dict | None = None, headers: dict | None = None):
     req_headers = {
         "Content-Type": "application/json",
@@ -29,7 +75,7 @@ def mp_request(method: str, url: str, token: str, body: dict | None = None, head
         print(f"[Mercado Pago] {method} {url} falhou ({exc.code}): {error_body or 'erro sem detalhe'}")
         raise HTTPException(
             status_code=502,
-            detail=f"Falha Mercado Pago ({exc.code}): {error_body or 'erro sem detalhe'}",
+            detail=_mp_error_message(exc.code, error_body),
         ) from exc
 
 
@@ -266,7 +312,11 @@ def create_pos_for_machine(cliente, maquina) -> dict:
             if existing_pos:
                 pos = existing_pos
                 break
-            if "pos_unknown_mcc" not in error_detail and "merchant category code" not in error_detail:
+            if (
+                "pos_unknown_mcc" not in error_detail
+                and "merchant category code" not in error_detail
+                and "categoria/mcc" not in error_detail
+            ):
                 raise
 
     if pos is None:
