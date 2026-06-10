@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.v1.endpoints import auth, mercado_pago, pagamentos, produtos, usuarios
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import AuditoriaOperacao, AuditoriaSistema, Cliente, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
+from app.models.models import AuditoriaOperacao, AuditoriaSistema, Cliente, EscutaTerminal, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.models.produto import Produto
 from app.schemas.auditoria import AuditoriaOperacaoOut
 from app.schemas.cliente import ClienteListOut
@@ -790,9 +790,11 @@ def deletar_maquina(
 
     produtos_removidos = db.query(Produto).filter(Produto.maquina_id == machine_id).count()
     transacoes_removidas = db.query(Transacao).filter(Transacao.maquina_id == machine_id).count()
+    vendas_removidas = db.query(VendaPagamento).filter(VendaPagamento.maquina_id == machine_id).count()
     historicos_removidos = db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).count()
     fechamentos_removidos = db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).count()
     auditorias_removidas = db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).count()
+    escutas_removidas = db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).count()
     registrar_auditoria(
         db,
         user,
@@ -802,10 +804,13 @@ def deletar_maquina(
         descricao=(
             f"Maquina excluida nome={db_maquina.nome_local} cliente_id={db_maquina.cliente_id} "
             f"produtos={produtos_removidos} transacoes={transacoes_removidas} "
+            f"vendas={vendas_removidas} escutas_terminal={escutas_removidas} "
             f"historicos={historicos_removidos} fechamentos={fechamentos_removidos} "
             f"auditorias_maquina={auditorias_removidas}"
         ),
     )
+    db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(VendaPagamento).filter(VendaPagamento.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).delete(synchronize_session=False)
@@ -1213,13 +1218,32 @@ def apagar_historico_maquina(
             detail="Nao e permitido apagar historico de um periodo que ja foi fechado",
         )
 
-    pagamentos_removidos = (
+    vendas_removidas = (
+        db.query(VendaPagamento)
+        .filter(
+            VendaPagamento.maquina_id == machine_id,
+            VendaPagamento.created_at >= start_dt,
+            VendaPagamento.created_at <= end_dt,
+        )
+        .delete(synchronize_session=False)
+    )
+    transacoes_removidas = (
         db.query(Transacao)
         .filter(
             Transacao.maquina_id == machine_id,
             Transacao.tipo == "IN",
             Transacao.data_hora >= start_dt,
             Transacao.data_hora <= end_dt,
+        )
+        .delete(synchronize_session=False)
+    )
+    pagamentos_historico_removidos = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.categoria == "PAGAMENTO",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
         )
         .delete(synchronize_session=False)
     )
@@ -1239,7 +1263,8 @@ def apagar_historico_maquina(
             acao="HISTORICO_APAGADO",
             descricao=(
                 f"Historico apagado para o periodo {start_dt.isoformat()} ate {end_dt.isoformat()} "
-                f"(pagamentos={pagamentos_removidos}, testes={testes_removidos})"
+                f"(transacoes={transacoes_removidas}, vendas={vendas_removidas}, "
+                f"pagamentos_historico={pagamentos_historico_removidos}, testes={testes_removidos})"
             ),
             executado_por_email=_get_user_email(user),
             created_at=datetime.utcnow(),
@@ -1253,14 +1278,17 @@ def apagar_historico_maquina(
         entidade_id=machine_id,
         descricao=(
             f"Historico apagado periodo={start_dt.isoformat()} ate {end_dt.isoformat()} "
-            f"pagamentos={pagamentos_removidos} testes={testes_removidos}"
+            f"transacoes={transacoes_removidas} vendas={vendas_removidas} "
+            f"pagamentos_historico={pagamentos_historico_removidos} testes={testes_removidos}"
         ),
     )
     db.commit()
 
     return {
         "ok": True,
-        "pagamentos_removidos": pagamentos_removidos,
+        "pagamentos_removidos": transacoes_removidas,
+        "vendas_removidas": vendas_removidas,
+        "pagamentos_historico_removidos": pagamentos_historico_removidos,
         "testes_removidos": testes_removidos,
     }
 
