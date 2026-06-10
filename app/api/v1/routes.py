@@ -762,57 +762,6 @@ def deletar_maquina(
     return {"ok": True}
 
 
-@router.post("/maquinas/{machine_id}/observacoes")
-def registrar_observacao_maquina(
-    machine_id: str,
-    payload: dict,
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    _, role, cliente_id = user
-    _get_maquina_visivel(db, machine_id, role, cliente_id)
-
-    descricao = (payload.get("descricao") or "").strip()
-    if not descricao:
-        raise HTTPException(status_code=400, detail="Descricao da observacao e obrigatoria")
-
-    historico = HistoricoOperacao(
-        maquina_id=machine_id,
-        categoria="MANUTENCAO",
-        descricao=descricao,
-        valor=None,
-        created_at=datetime.utcnow(),
-    )
-    db.add(historico)
-    db.add(
-        AuditoriaOperacao(
-            maquina_id=machine_id,
-            acao="OBSERVACAO_REGISTRADA",
-            descricao=descricao,
-            executado_por_email=_get_user_email(user),
-            created_at=datetime.utcnow(),
-        )
-    )
-    registrar_auditoria(
-        db,
-        user,
-        acao="OBSERVACAO_REGISTRADA",
-        entidade_tipo="maquina",
-        entidade_id=machine_id,
-        descricao=f"Observacao registrada: {descricao}",
-    )
-    db.commit()
-    db.refresh(historico)
-    return {
-        "id": historico.id,
-        "maquina_id": historico.maquina_id,
-        "categoria": historico.categoria,
-        "descricao": historico.descricao,
-        "valor": historico.valor,
-        "created_at": historico.created_at,
-    }
-
-
 @router.post("/maquinas/{machine_id}/pagamentos/{historico_id}/extorno")
 def estornar_pagamento_maquina(
     machine_id: str,
