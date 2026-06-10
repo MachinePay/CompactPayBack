@@ -17,7 +17,6 @@ from app.schemas.historico import HistoricoOperacaoOut
 from app.schemas.maquina import MaquinaCreate, MaquinaOut, MaquinaUpdate
 from app.services.mercado_pago import create_pos_for_machine, mp_request
 from app.services.auditoria import registrar_auditoria
-from app.services.mqtt_commands import publish_machine_credit
 
 router = APIRouter()
 
@@ -761,56 +760,6 @@ def deletar_maquina(
     db.delete(db_maquina)
     db.commit()
     return {"ok": True}
-
-
-@router.post("/maquinas/{machine_id}/credito-teste")
-def enviar_credito_teste(
-    machine_id: str,
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    _, role, cliente_id = user
-    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
-
-    try:
-        payload = publish_machine_credit(machine_id, action="paid")
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
-
-    db.add(
-        HistoricoOperacao(
-            maquina_id=machine_id,
-            categoria="TESTE",
-            descricao="Credito de teste enviado pelo painel",
-            valor=None,
-            created_at=datetime.utcnow(),
-        )
-    )
-    db.add(
-        AuditoriaOperacao(
-            maquina_id=machine_id,
-            acao="TESTE_CREDITO",
-            descricao="Credito de teste enviado pelo painel",
-            executado_por_email=_get_user_email(user),
-            created_at=datetime.utcnow(),
-        )
-    )
-    registrar_auditoria(
-        db,
-        user,
-        acao="TESTE_CREDITO",
-        entidade_tipo="maquina",
-        entidade_id=machine_id,
-        descricao=f"Credito de teste enviado pelo painel payload={payload}",
-    )
-    db.commit()
-
-    return {
-        "ok": True,
-        "machine_id": machine_id,
-        "topic": f"/TEF/{machine_id}/cmd",
-        "payload": payload,
-    }
 
 
 @router.post("/maquinas/{machine_id}/observacoes")
