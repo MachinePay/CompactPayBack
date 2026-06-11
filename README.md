@@ -16,7 +16,7 @@ API backend para o sistema CompactPay, desenvolvido com FastAPI, SQLAlchemy, Pos
    ```bash
    python -m venv venv
    source venv/bin/activate  # Linux/macOS
-   venv\Scripts\activate    # Windows
+   venv\Scripts\activate e    # Windows
    ```
 2. Instale as dependências:
    ```bash
