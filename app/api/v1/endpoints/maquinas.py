@@ -16,7 +16,9 @@ from app.models.models import (
     VendaPagamento,
 )
 from app.models.produto import Produto
+from app.schemas.fechamento import FechamentoMaquinaOut
 from app.services.auditoria import registrar_auditoria
+from app.services.maquinas_relatorio import build_machine_history_payload
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit
 
@@ -58,6 +60,78 @@ def _get_maquina_visivel(db: Session, machine_id: str, role: str, cliente_id):
 def _get_user_email(user) -> str:
     token_data, _, _ = user
     return token_data.email
+
+
+@router.post("/maquinas/{machine_id}/fechamentos", response_model=FechamentoMaquinaOut)
+def criar_fechamento_maquina(
+    machine_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    periodo: str = "mes",
+    data_inicio: str = None,
+    data_fim: str = None,
+):
+    _, role, cliente_id = user
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
+    payload = build_machine_history_payload(
+        db,
+        maquina,
+        periodo=periodo,
+        data_inicio=data_inicio,
+        data_fim=data_fim,
+    )
+    start_dt = payload["range"]["inicio"]
+    end_dt = payload["range"]["fim"]
+
+    fechamento_existente = (
+        db.query(FechamentoMaquina)
+        .filter(
+            FechamentoMaquina.maquina_id == machine_id,
+            FechamentoMaquina.periodo_inicio <= end_dt,
+            FechamentoMaquina.periodo_fim >= start_dt,
+        )
+        .first()
+    )
+    if fechamento_existente:
+        raise HTTPException(status_code=409, detail="Ja existe fechamento salvo para esse periodo")
+
+    fechamento = FechamentoMaquina(
+        maquina_id=machine_id,
+        periodo_inicio=start_dt,
+        periodo_fim=end_dt,
+        total_pagamentos=payload["resumo"]["total_pagamentos"],
+        total_digital=payload["resumo"]["total_digital"],
+        total_fisico=payload["resumo"]["total_fisico"],
+        quantidade_pagamentos=payload["resumo"]["quantidade_pagamentos"],
+        quantidade_testes=payload["resumo"]["quantidade_testes"],
+        quantidade_saidas=payload["resumo"]["quantidade_saidas"],
+        criado_por_email=_get_user_email(user),
+        created_at=datetime.utcnow(),
+    )
+    db.add(fechamento)
+    db.add(
+        AuditoriaOperacao(
+            maquina_id=machine_id,
+            acao="FECHAMENTO_CRIADO",
+            descricao=f"Fechamento salvo para o periodo {start_dt.isoformat()} ate {end_dt.isoformat()}",
+            executado_por_email=_get_user_email(user),
+            created_at=datetime.utcnow(),
+        )
+    )
+    registrar_auditoria(
+        db,
+        user,
+        acao="FECHAMENTO_CRIADO",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=(
+            f"Fechamento criado periodo={start_dt.isoformat()} ate {end_dt.isoformat()} "
+            f"total={payload['resumo']['total_pagamentos']}"
+        ),
+    )
+    db.commit()
+    db.refresh(fechamento)
+    return fechamento
 
 
 @router.get("/maquinas/novo-id")
