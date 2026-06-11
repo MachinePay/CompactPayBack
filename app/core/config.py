@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     MP_CLIENT_SECRET: str = os.getenv("MP_CLIENT_SECRET", "")
     MP_OAUTH_REDIRECT_URI: str = os.getenv("MP_OAUTH_REDIRECT_URI", "")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
+    CORS_ALLOWED_ORIGINS: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
     MP_DEFAULT_STORE_STREET_NAME: str = os.getenv("MP_DEFAULT_STORE_STREET_NAME", "Rua CompactPay")
     MP_DEFAULT_STORE_STREET_NUMBER: str = os.getenv("MP_DEFAULT_STORE_STREET_NUMBER", "0")
     MP_DEFAULT_STORE_CITY_NAME: str = os.getenv("MP_DEFAULT_STORE_CITY_NAME", "Sao Paulo")

@@ -17,12 +17,14 @@ def _normalize_origin(origin: str) -> str:
 
 
 def _build_allowed_origins() -> list[str]:
+    extra_origins = settings.CORS_ALLOWED_ORIGINS.split(",")
     origins = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "https://compactpay.com.br",
         "https://compactpay.vercel.app",
         settings.FRONTEND_URL,
+        *extra_origins,
     ]
     return list(dict.fromkeys(origin for origin in (_normalize_origin(item) for item in origins) if origin))
 
