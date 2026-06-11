@@ -18,7 +18,7 @@ from app.models.models import (
 from app.models.produto import Produto
 from app.schemas.fechamento import FechamentoMaquinaOut
 from app.services.auditoria import registrar_auditoria
-from app.services.maquinas_relatorio import build_machine_history_payload
+from app.services.maquinas_relatorio import build_machine_history_payload, resolve_date_window
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit
 
@@ -153,6 +153,109 @@ def obter_historico_maquina(
         data_fim=data_fim,
     )
     return {key: value for key, value in payload.items() if key != "range"}
+
+
+@router.delete("/maquinas/{machine_id}/historico")
+def apagar_historico_maquina(
+    machine_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    periodo: str = "mes",
+    data_inicio: str = None,
+    data_fim: str = None,
+):
+    _, role, cliente_id = user
+    _get_maquina_visivel(db, machine_id, role, cliente_id)
+    start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
+
+    fechamento_existente = (
+        db.query(FechamentoMaquina)
+        .filter(
+            FechamentoMaquina.maquina_id == machine_id,
+            FechamentoMaquina.periodo_inicio <= end_dt,
+            FechamentoMaquina.periodo_fim >= start_dt,
+        )
+        .first()
+    )
+    if fechamento_existente:
+        raise HTTPException(
+            status_code=409,
+            detail="Nao e permitido apagar historico de um periodo que ja foi fechado",
+        )
+
+    vendas_removidas = (
+        db.query(VendaPagamento)
+        .filter(
+            VendaPagamento.maquina_id == machine_id,
+            VendaPagamento.created_at >= start_dt,
+            VendaPagamento.created_at <= end_dt,
+        )
+        .delete(synchronize_session=False)
+    )
+    transacoes_removidas = (
+        db.query(Transacao)
+        .filter(
+            Transacao.maquina_id == machine_id,
+            Transacao.tipo == "IN",
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+        )
+        .delete(synchronize_session=False)
+    )
+    pagamentos_historico_removidos = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.categoria == "PAGAMENTO",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
+        )
+        .delete(synchronize_session=False)
+    )
+    testes_removidos = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.categoria == "TESTE",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
+        )
+        .delete(synchronize_session=False)
+    )
+    db.add(
+        AuditoriaOperacao(
+            maquina_id=machine_id,
+            acao="HISTORICO_APAGADO",
+            descricao=(
+                f"Historico apagado para o periodo {start_dt.isoformat()} ate {end_dt.isoformat()} "
+                f"(transacoes={transacoes_removidas}, vendas={vendas_removidas}, "
+                f"pagamentos_historico={pagamentos_historico_removidos}, testes={testes_removidos})"
+            ),
+            executado_por_email=_get_user_email(user),
+            created_at=datetime.utcnow(),
+        )
+    )
+    registrar_auditoria(
+        db,
+        user,
+        acao="HISTORICO_APAGADO",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=(
+            f"Historico apagado periodo={start_dt.isoformat()} ate {end_dt.isoformat()} "
+            f"transacoes={transacoes_removidas} vendas={vendas_removidas} "
+            f"pagamentos_historico={pagamentos_historico_removidos} testes={testes_removidos}"
+        ),
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "pagamentos_removidos": transacoes_removidas,
+        "vendas_removidas": vendas_removidas,
+        "pagamentos_historico_removidos": pagamentos_historico_removidos,
+        "testes_removidos": testes_removidos,
+    }
 
 
 @router.get("/maquinas/novo-id")
