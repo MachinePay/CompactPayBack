@@ -30,6 +30,26 @@ def _redirect_uri() -> str:
     raise HTTPException(status_code=500, detail="MP_OAUTH_REDIRECT_URI nao configurado")
 
 
+def _mp_validation_response(cliente: Cliente, checks: list[dict], **extra):
+    blocking = [item for item in checks if not item.get("ok") and item.get("severity", "error") == "error"]
+    warnings = [item for item in checks if not item.get("ok") and item.get("severity") == "warning"]
+    return {
+        "ok": not blocking,
+        "cliente_id": cliente.id,
+        "cliente_nome": cliente.nome_empresa,
+        "mp_user_id": cliente.mp_user_id,
+        "mp_live_mode": bool(cliente.mp_live_mode),
+        "mp_scope": cliente.mp_scope,
+        "mp_store_id": cliente.mp_store_id,
+        "mp_store_external_id": cliente.mp_store_external_id,
+        "mp_pos_category": cliente.mp_pos_category,
+        "blocking_count": len(blocking),
+        "warning_count": len(warnings),
+        "checks": checks,
+        **extra,
+    }
+
+
 @router.get("/mercado-pago/oauth/url")
 def gerar_url_oauth_mercado_pago(
     cliente_id: int,
@@ -135,7 +155,9 @@ def validar_integracao_mercado_pago(
         "key": "cliente_mercado_pago",
         "label": "Cliente Mercado Pago",
         "ok": mp_habilitado,
+        "severity": "error",
         "message": "Habilitado" if mp_habilitado else "Mercado Pago nao esta habilitado para este cliente",
+        "hint": "Ative o checkbox Cliente Mercado Pago no cadastro do usuario cliente.",
     })
 
     access_token = (cliente.mp_access_token or "").strip()
@@ -143,20 +165,32 @@ def validar_integracao_mercado_pago(
         "key": "mp_access_token",
         "label": "Access token",
         "ok": bool(access_token),
+        "severity": "error",
         "message": "Token cadastrado" if access_token else "Cadastre ou conecte o Mercado Pago antes de criar maquina",
+        "hint": "Use o botao Conectar MP ou preencha um token de producao valido.",
+    })
+
+    checks.append({
+        "key": "mp_public_key",
+        "label": "Public key",
+        "ok": bool((cliente.mp_public_key or "").strip()),
+        "severity": "warning",
+        "message": "Public key cadastrada" if cliente.mp_public_key else "Public key nao cadastrada",
+        "hint": "Nao bloqueia a criacao do POS, mas ajuda em fluxos futuros no frontend.",
+    })
+
+    category_ok = bool(cliente.mp_pos_category)
+    checks.append({
+        "key": "mp_pos_category",
+        "label": "Categoria/MCC do caixa",
+        "ok": category_ok,
+        "severity": "warning",
+        "message": f"Categoria configurada: {cliente.mp_pos_category}" if category_ok else "Categoria nao configurada; sera usado fallback do backend",
+        "hint": "Mantenha 7994 enquanto estiver funcionando; altere somente se o Mercado Pago exigir outro MCC.",
     })
 
     if not access_token:
-        return {
-            "ok": False,
-            "cliente_id": cliente.id,
-            "cliente_nome": cliente.nome_empresa,
-            "mp_user_id": cliente.mp_user_id,
-            "mp_live_mode": bool(cliente.mp_live_mode),
-            "mp_store_id": cliente.mp_store_id,
-            "mp_store_external_id": cliente.mp_store_external_id,
-            "checks": checks,
-        }
+        return _mp_validation_response(cliente, checks, next_step="Conecte ou cadastre o Access Token do Mercado Pago.")
 
     try:
         mp_user = mp_request("GET", "https://api.mercadopago.com/users/me", access_token)
@@ -165,18 +199,11 @@ def validar_integracao_mercado_pago(
             "key": "mp_users_me",
             "label": "Consulta Mercado Pago",
             "ok": False,
+            "severity": "error",
             "message": str(exc.detail),
+            "hint": "Confira se o token e de producao, nao expirou e pertence ao cliente correto.",
         })
-        return {
-            "ok": False,
-            "cliente_id": cliente.id,
-            "cliente_nome": cliente.nome_empresa,
-            "mp_user_id": cliente.mp_user_id,
-            "mp_live_mode": bool(cliente.mp_live_mode),
-            "mp_store_id": cliente.mp_store_id,
-            "mp_store_external_id": cliente.mp_store_external_id,
-            "checks": checks,
-        }
+        return _mp_validation_response(cliente, checks, next_step="Corrija o Access Token e valide novamente.")
 
     mp_user_id = str(mp_user.get("id") or "")
     if mp_user_id and cliente.mp_user_id != mp_user_id:
@@ -190,7 +217,27 @@ def validar_integracao_mercado_pago(
         "key": "mp_users_me",
         "label": "Consulta Mercado Pago",
         "ok": bool(mp_user_id),
+        "severity": "error",
         "message": f"Conta Mercado Pago encontrada: {mp_user_id}" if mp_user_id else "Mercado Pago nao retornou user_id",
+        "hint": "Esse user_id sera usado para procurar/criar lojas e caixas.",
+    })
+
+    checks.append({
+        "key": "mp_account_status",
+        "label": "Status da conta",
+        "ok": (mp_user.get("status") or "active") in {"active", "confirmed"},
+        "severity": "warning",
+        "message": f"Status: {mp_user.get('status') or 'nao informado'}",
+        "hint": "Se houver erro ao criar loja/caixa, confirme pendencias diretamente no Mercado Pago.",
+    })
+
+    checks.append({
+        "key": "mp_live_mode",
+        "label": "Ambiente",
+        "ok": bool(cliente.mp_live_mode) or str(access_token).startswith("APP_USR-"),
+        "severity": "warning",
+        "message": "Token de producao" if (cliente.mp_live_mode or str(access_token).startswith("APP_USR-")) else "Token pode ser de teste",
+        "hint": "Para maquina real, use token de producao da conta vinculada.",
     })
 
     if cliente.mp_store_external_id:
@@ -199,31 +246,30 @@ def validar_integracao_mercado_pago(
             "key": "mp_store",
             "label": "Loja Mercado Pago",
             "ok": bool(store),
+            "severity": "error",
             "message": "Loja encontrada" if store else "Loja salva no sistema nao foi encontrada no Mercado Pago",
+            "hint": "Se a loja foi removida no Mercado Pago, limpe a loja salva ou crie uma nova maquina para gerar outra loja.",
         })
     else:
         checks.append({
             "key": "mp_store",
             "label": "Loja Mercado Pago",
             "ok": True,
+            "severity": "warning",
             "message": "Sem loja padrao salva; a loja da maquina sera criada no cadastro",
+            "hint": "Isso e esperado no primeiro cadastro de maquina do cliente.",
         })
 
-    category_ok = bool(cliente.mp_pos_category)
-    checks.append({
-        "key": "mp_pos_category",
-        "label": "Categoria/MCC do caixa",
-        "ok": category_ok,
-        "message": f"Categoria configurada: {cliente.mp_pos_category}" if category_ok else "Categoria nao configurada; sera usado fallback do backend",
-    })
-
-    return {
-        "ok": all(item["ok"] for item in checks),
-        "cliente_id": cliente.id,
-        "cliente_nome": cliente.nome_empresa,
-        "mp_user_id": mp_user_id or cliente.mp_user_id,
-        "mp_live_mode": bool(cliente.mp_live_mode),
-        "mp_store_id": cliente.mp_store_id,
-        "mp_store_external_id": cliente.mp_store_external_id,
-        "checks": checks,
-    }
+    return _mp_validation_response(
+        cliente,
+        checks,
+        mp_user_id=mp_user_id or cliente.mp_user_id,
+        mp_account={
+            "id": mp_user_id,
+            "nickname": mp_user.get("nickname"),
+            "email": mp_user.get("email"),
+            "site_id": mp_user.get("site_id"),
+            "status": mp_user.get("status"),
+        },
+        next_step="Integracao pronta para criar maquinas." if not [item for item in checks if not item.get("ok") and item.get("severity", "error") == "error"] else "Corrija os itens bloqueantes e valide novamente.",
+    )
