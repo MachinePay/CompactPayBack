@@ -8,6 +8,7 @@ from app.api.v1.endpoints import (
     maquinas,
     mercado_pago,
     pagamentos,
+    pagamentos_escuta,
     produtos,
     relatorios,
     usuarios,
@@ -24,4 +25,5 @@ router.include_router(maquinas.router)
 router.include_router(produtos.router)
 router.include_router(relatorios.router)
 router.include_router(pagamentos.router)
+router.include_router(pagamentos_escuta.router)
 router.include_router(dashboard.router)
