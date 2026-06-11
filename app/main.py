@@ -1,3 +1,4 @@
+import logging
 import threading
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -29,9 +30,12 @@ def _build_allowed_origins() -> list[str]:
     return list(dict.fromkeys(origin for origin in (_normalize_origin(item) for item in origins) if origin))
 
 
+ALLOWED_ORIGINS = _build_allowed_origins()
+logging.info("CORS allow_origins configurado: %s", ", ".join(ALLOWED_ORIGINS))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_build_allowed_origins(),
+    allow_origins=ALLOWED_ORIGINS,
     allow_origin_regex=r"^https://compact-pay-front(-[a-z0-9-]+)*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
