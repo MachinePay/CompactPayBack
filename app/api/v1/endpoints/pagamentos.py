@@ -1,5 +1,4 @@
 from datetime import datetime
-from decimal import Decimal
 import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -14,82 +13,17 @@ from app.schemas.pagamento import PagamentoCreate, PagamentoOut
 from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit_pulses
+from app.services.pagamentos_helpers import (
+    calcular_pulsos_por_valor,
+    extract_terminal_id,
+    mp_request_with_known_tokens,
+    parse_machine_id_from_external_reference,
+    payment_metadata,
+)
 from app.services.vendas import registrar_venda_pagamento
 
 router = APIRouter()
 PROCESSED_PAYMENT_IDS: set[str] = set()
-
-
-def _calcular_pulsos_por_valor(valor: float) -> int:
-    # Regra atual: 1 pulso por R$1, minimo de 1 pulso para qualquer valor positivo.
-    quantia = Decimal(str(valor))
-    if quantia <= 0:
-        return 1
-    pulsos = int(quantia)
-    return max(1, pulsos)
-
-
-def _iter_mp_tokens(db: Session):
-    seen = set()
-    if settings.MP_ACCESS_TOKEN:
-        seen.add(settings.MP_ACCESS_TOKEN)
-        yield settings.MP_ACCESS_TOKEN
-    for token in db.query(Cliente.mp_access_token).filter(Cliente.mp_access_token.isnot(None)).all():
-        value = (token[0] or "").strip()
-        if value and value not in seen:
-            seen.add(value)
-            yield value
-
-
-def _mp_request_with_known_tokens(db: Session, method: str, url: str, preferred_token: str | None = None):
-    errors = []
-    tokens = []
-    if preferred_token:
-        tokens.append(preferred_token)
-    tokens.extend(list(_iter_mp_tokens(db)))
-    for token in tokens:
-        try:
-            return mp_request(method, url, token), token
-        except HTTPException as exc:
-            errors.append(str(exc.detail))
-    raise HTTPException(
-        status_code=502,
-        detail="Nao foi possivel consultar o Mercado Pago com as credenciais cadastradas: " + " | ".join(errors[-3:]),
-    )
-
-
-def _parse_machine_id_from_external_reference(external_reference: str | None) -> str | None:
-    if not external_reference:
-        return None
-    # Formato esperado: MACHINE_ID:timestamp
-    if ":" in external_reference:
-        return external_reference.split(":", 1)[0].strip() or None
-    return external_reference.strip() or None
-
-
-def _extract_terminal_id(payload: dict) -> str | None:
-    candidates = [
-        ((payload.get("point_of_interaction") or {}).get("transaction_data") or {}).get("terminal_id"),
-        ((payload.get("point_of_interaction") or {}).get("transaction_data") or {}).get("device_id"),
-        (payload.get("metadata") or {}).get("terminal_id"),
-        payload.get("terminal_id"),
-    ]
-    for candidate in candidates:
-        if candidate:
-            return str(candidate).strip()
-    return None
-
-
-def _payment_metadata(payment_data: dict) -> dict:
-    issuer = payment_data.get("issuer") or {}
-    card = payment_data.get("card") or {}
-    return {
-        "provider": "mercado_pago",
-        "provider_payment_id": str(payment_data.get("id") or "").strip() or None,
-        "payment_type": payment_data.get("payment_type_id") or payment_data.get("payment_method_id"),
-        "card_brand": payment_data.get("payment_method_id") or card.get("cardholder", {}).get("name"),
-        "bank_name": issuer.get("name") or issuer.get("id"),
-    }
 
 
 def get_db():
@@ -158,7 +92,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
         finally:
             db.close()
 
-        pulsos = _calcular_pulsos_por_valor(valor)
+        pulsos = calcular_pulsos_por_valor(valor)
         publish_machine_credit_pulses(id_hardware, pulses=pulsos, action="paid")
         print(f"[MP webhook] callback simplificado aprovado maquina={id_hardware} valor={valor} pulsos={pulsos}")
         return {"status": "sucesso", "detalhe": "Pagamento digital registrado", "pulsos": pulsos}
@@ -177,7 +111,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
     if topic == "order" or action.startswith("order.") or str(order_id).startswith("ORD"):
         db_lookup = SessionLocal()
         try:
-            order_data, _ = _mp_request_with_known_tokens(
+            order_data, _ = mp_request_with_known_tokens(
                 db_lookup,
                 "GET",
                 f"https://api.mercadopago.com/v1/orders/{order_id}",
@@ -190,7 +124,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
             return {"status": "ignorado", "detalhe": f"Order ainda nao aprovada ({order_status or action})"}
 
         external_reference = order_data.get("external_reference")
-        machine_id = _parse_machine_id_from_external_reference(external_reference)
+        machine_id = parse_machine_id_from_external_reference(external_reference)
         if not machine_id:
             print("[MP webhook] order ignorada: sem machine_id no external_reference")
             return {"status": "erro", "detalhe": "Nao foi possivel identificar machine_id no external_reference"}
@@ -253,7 +187,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
         finally:
             db.close()
 
-        pulsos = _calcular_pulsos_por_valor(amount)
+        pulsos = calcular_pulsos_por_valor(amount)
         publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid")
         db_status = SessionLocal()
         try:
@@ -278,7 +212,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
             return {"status": "ignorado", "detalhe": "Evento payment sem id"}
         db_lookup = SessionLocal()
         try:
-            payment_data, _ = _mp_request_with_known_tokens(
+            payment_data, _ = mp_request_with_known_tokens(
                 db_lookup,
                 "GET",
                 f"https://api.mercadopago.com/v1/payments/{payment_id}",
@@ -290,7 +224,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
             print(f"[MP webhook] payment ignorado: payment_id={payment_id} status={payment_status}")
             return {"status": "ignorado", "detalhe": f"Pagamento ainda nao aprovado ({payment_status})"}
 
-        terminal_id = _extract_terminal_id(payment_data)
+        terminal_id = extract_terminal_id(payment_data)
         amount = float(payment_data.get("transaction_amount") or 1.0)
 
         db = SessionLocal()
@@ -351,7 +285,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
                 descricao=f"Pagamento maquininha aprovado (payment_id={payment_id}, terminal_id={terminal_id or 'n/a'})",
                 valor=amount,
                 created_at=transacao.data_hora,
-                **_payment_metadata(payment_data),
+                **payment_metadata(payment_data),
             )
             db.add(historico)
             db.flush()
@@ -375,7 +309,7 @@ async def processar_pix(request: Request, dados: dict | None = None):
         finally:
             db.close()
 
-        pulsos = _calcular_pulsos_por_valor(amount)
+        pulsos = calcular_pulsos_por_valor(amount)
         try:
             publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid")
             db_status = SessionLocal()
@@ -485,7 +419,7 @@ def lancar_pagamento(
     db.refresh(historico)
 
     try:
-        pulsos = _calcular_pulsos_por_valor(pagamento.valor)
+        pulsos = calcular_pulsos_por_valor(pagamento.valor)
         payload = publish_machine_credit_pulses(
             pagamento.maquina_id,
             pulses=pulsos,
