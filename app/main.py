@@ -1,6 +1,7 @@
 import logging
 import threading
 import time
+from uuid import uuid4
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
@@ -48,10 +49,13 @@ app.include_router(api_router, prefix="/api/v1")
 @app.middleware("http")
 async def log_requests(request, call_next):
     start_time = time.perf_counter()
+    request_id = request.headers.get("X-Request-ID") or str(uuid4())
     response = await call_next(request)
     duration_ms = (time.perf_counter() - start_time) * 1000
+    response.headers["X-Request-ID"] = request_id
     logging.info(
-        "HTTP %s %s status=%s duration_ms=%.2f",
+        "HTTP request_id=%s %s %s status=%s duration_ms=%.2f",
+        request_id,
         request.method,
         request.url.path,
         response.status_code,
