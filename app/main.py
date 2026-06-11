@@ -2,8 +2,9 @@ import logging
 import threading
 import time
 from uuid import uuid4
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.services.mqtt_worker import start_mqtt_worker
 from app.api.v1.routes import router as api_router
@@ -50,6 +51,7 @@ app.include_router(api_router, prefix="/api/v1")
 async def log_requests(request, call_next):
     start_time = time.perf_counter()
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    request.state.request_id = request_id
     try:
         response = await call_next(request)
         duration_ms = (time.perf_counter() - start_time) * 1000
@@ -73,6 +75,20 @@ async def log_requests(request, call_next):
             duration_ms,
         )
         raise
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    request_id = getattr(request.state, "request_id", str(uuid4()))
+    logging.exception("Unhandled exception request_id=%s path=%s", request_id, request.url.path)
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Erro interno no servidor.",
+            "request_id": request_id,
+        },
+        headers={"X-Request-ID": request_id},
+    )
 
 
 def run_mqtt():
