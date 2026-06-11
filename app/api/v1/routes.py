@@ -5,6 +5,7 @@ from app.api.v1.endpoints import (
     auth,
     clientes,
     dashboard,
+    health,
     maquinas,
     maquinas_operacoes,
     maquinas_relatorios,
@@ -19,6 +20,7 @@ from app.api.v1.endpoints import (
 router = APIRouter()
 
 router.include_router(auth.router)
+router.include_router(health.router)
 router.include_router(usuarios.router)
 router.include_router(mercado_pago.router)
 router.include_router(auditoria.router)
