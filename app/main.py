@@ -183,5 +183,8 @@ def startup_event():
                 connection.execute(text(f"ALTER TABLE historico_operacoes ADD COLUMN {column_name} VARCHAR"))
         if "refunded_at" not in historico_columns:
             connection.execute(text("ALTER TABLE historico_operacoes ADD COLUMN refunded_at TIMESTAMP"))
-    mqtt_thread = threading.Thread(target=run_mqtt, daemon=True)
-    mqtt_thread.start()
+    if settings.START_MQTT_WORKER:
+        mqtt_thread = threading.Thread(target=run_mqtt, daemon=True)
+        mqtt_thread.start()
+    else:
+        logging.info("MQTT worker desativado por START_MQTT_WORKER=false")
