@@ -17,5 +17,6 @@ class PagamentoOut(BaseModel):
     valor: float
     produto_id: Optional[int] = None
     pulsos: int
+    topic: Optional[str] = None
     payload: str
     data_hora: datetime

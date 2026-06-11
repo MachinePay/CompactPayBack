@@ -1,5 +1,6 @@
 import paho.mqtt.publish as publish
 import time
+import logging
 
 from app.core.config import settings
 
@@ -18,9 +19,17 @@ def publish_machine_credit(machine_id: str, action: str = "paid") -> str:
     publish.single(
         topic,
         payload=payload,
+        qos=int(settings.MQTT_COMMAND_QOS),
         hostname=settings.MQTT_BROKER_URL,
         port=int(settings.MQTT_BROKER_PORT),
         auth=auth,
+    )
+    logging.info(
+        "MQTT comando publicado machine_id=%s topic=%s payload=%s qos=%s",
+        machine_id,
+        topic,
+        payload,
+        settings.MQTT_COMMAND_QOS,
     )
     return payload
 

@@ -140,6 +140,7 @@ def lancar_pagamento(
         "valor": pagamento.valor,
         "produto_id": pagamento.produto_id,
         "pulsos": pulsos,
+        "topic": f"/TEF/{pagamento.maquina_id}/cmd",
         "payload": payload,
         "data_hora": transacao.data_hora,
     }
