@@ -50,6 +50,12 @@ def _mp_validation_response(cliente: Cliente, checks: list[dict], **extra):
     }
 
 
+def _mp_status_value(status) -> str:
+    if isinstance(status, dict):
+        return str(status.get("id") or status.get("status") or status.get("description") or "").strip()
+    return str(status or "").strip()
+
+
 @router.get("/mercado-pago/oauth/url")
 def gerar_url_oauth_mercado_pago(
     cliente_id: int,
@@ -222,12 +228,13 @@ def validar_integracao_mercado_pago(
         "hint": "Esse user_id sera usado para procurar/criar lojas e caixas.",
     })
 
+    mp_status = _mp_status_value(mp_user.get("status")) or "active"
     checks.append({
         "key": "mp_account_status",
         "label": "Status da conta",
-        "ok": (mp_user.get("status") or "active") in {"active", "confirmed"},
+        "ok": mp_status in {"active", "confirmed"},
         "severity": "warning",
-        "message": f"Status: {mp_user.get('status') or 'nao informado'}",
+        "message": f"Status: {mp_status or 'nao informado'}",
         "hint": "Se houver erro ao criar loja/caixa, confirme pendencias diretamente no Mercado Pago.",
     })
 
