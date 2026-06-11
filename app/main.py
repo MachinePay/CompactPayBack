@@ -50,18 +50,29 @@ app.include_router(api_router, prefix="/api/v1")
 async def log_requests(request, call_next):
     start_time = time.perf_counter()
     request_id = request.headers.get("X-Request-ID") or str(uuid4())
-    response = await call_next(request)
-    duration_ms = (time.perf_counter() - start_time) * 1000
-    response.headers["X-Request-ID"] = request_id
-    logging.info(
-        "HTTP request_id=%s %s %s status=%s duration_ms=%.2f",
-        request_id,
-        request.method,
-        request.url.path,
-        response.status_code,
-        duration_ms,
-    )
-    return response
+    try:
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        response.headers["X-Request-ID"] = request_id
+        logging.info(
+            "HTTP request_id=%s %s %s status=%s duration_ms=%.2f",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration_ms,
+        )
+        return response
+    except Exception:
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        logging.exception(
+            "HTTP request_id=%s %s %s status=error duration_ms=%.2f",
+            request_id,
+            request.method,
+            request.url.path,
+            duration_ms,
+        )
+        raise
 
 
 def run_mqtt():
