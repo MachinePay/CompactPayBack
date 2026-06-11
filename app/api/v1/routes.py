@@ -9,8 +9,7 @@ from sqlalchemy.orm import Session
 from app.api.v1.endpoints import auditoria, auth, clientes, maquinas, mercado_pago, pagamentos, produtos, relatorios, usuarios
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import AuditoriaOperacao, Cliente, EscutaTerminal, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
-from app.models.produto import Produto
+from app.models.models import AuditoriaOperacao, Cliente, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.schemas.auditoria import AuditoriaOperacaoOut
 from app.schemas.fechamento import FechamentoMaquinaOut
 from app.schemas.historico import HistoricoOperacaoOut
@@ -713,53 +712,6 @@ def atualizar_maquina(
     db.refresh(db_maquina)
 
     return _serialize_machine_summary(db, db_maquina, periodo="mes")
-
-
-@router.delete("/maquinas/{machine_id}")
-def deletar_maquina(
-    machine_id: str,
-    db: Session = Depends(get_db),
-    user=Depends(get_current_user),
-):
-    _, role, _ = user
-    if role != "admin":
-        raise HTTPException(status_code=403, detail="Apenas admin pode excluir maquinas")
-
-    db_maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
-    if not db_maquina:
-        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
-
-    produtos_removidos = db.query(Produto).filter(Produto.maquina_id == machine_id).count()
-    transacoes_removidas = db.query(Transacao).filter(Transacao.maquina_id == machine_id).count()
-    vendas_removidas = db.query(VendaPagamento).filter(VendaPagamento.maquina_id == machine_id).count()
-    historicos_removidos = db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).count()
-    fechamentos_removidos = db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).count()
-    auditorias_removidas = db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).count()
-    escutas_removidas = db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).count()
-    registrar_auditoria(
-        db,
-        user,
-        acao="MAQUINA_EXCLUIDA",
-        entidade_tipo="maquina",
-        entidade_id=machine_id,
-        descricao=(
-            f"Maquina excluida nome={db_maquina.nome_local} cliente_id={db_maquina.cliente_id} "
-            f"produtos={produtos_removidos} transacoes={transacoes_removidas} "
-            f"vendas={vendas_removidas} escutas_terminal={escutas_removidas} "
-            f"historicos={historicos_removidos} fechamentos={fechamentos_removidos} "
-            f"auditorias_maquina={auditorias_removidas}"
-        ),
-    )
-    db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(VendaPagamento).filter(VendaPagamento.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(Transacao).filter(Transacao.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(Produto).filter(Produto.maquina_id == machine_id).delete(synchronize_session=False)
-    db.delete(db_maquina)
-    db.commit()
-    return {"ok": True}
 
 
 @router.get("/maquinas/{machine_id}/historico")
