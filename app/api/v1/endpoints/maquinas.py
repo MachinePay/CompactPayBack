@@ -134,6 +134,27 @@ def criar_fechamento_maquina(
     return fechamento
 
 
+@router.get("/maquinas/{machine_id}/historico")
+def obter_historico_maquina(
+    machine_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    periodo: str = "mes",
+    data_inicio: str = None,
+    data_fim: str = None,
+):
+    _, role, cliente_id = user
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
+    payload = build_machine_history_payload(
+        db,
+        maquina,
+        periodo=periodo,
+        data_inicio=data_inicio,
+        data_fim=data_fim,
+    )
+    return {key: value for key, value in payload.items() if key != "range"}
+
+
 @router.get("/maquinas/novo-id")
 def gerar_novo_id_maquina(
     db: Session = Depends(get_db),
