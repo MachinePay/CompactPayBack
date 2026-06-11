@@ -1,4 +1,5 @@
 from datetime import datetime
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -7,6 +8,7 @@ from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import AuditoriaOperacao, HistoricoOperacao, Maquina
 from app.services.auditoria import registrar_auditoria
+from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit
 
 router = APIRouter()
@@ -159,3 +161,67 @@ def registrar_observacao_maquina(
         "valor": historico.valor,
         "created_at": historico.created_at,
     }
+
+
+@router.post("/maquinas/{machine_id}/pagamentos/{historico_id}/extorno")
+def estornar_pagamento_maquina(
+    machine_id: str,
+    historico_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, cliente_id = user
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
+    historico = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.id == historico_id,
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.categoria == "PAGAMENTO",
+        )
+        .first()
+    )
+    if not historico:
+        raise HTTPException(status_code=404, detail="Pagamento nao encontrado")
+    if historico.refunded_at:
+        raise HTTPException(status_code=400, detail="Pagamento ja foi estornado")
+    if (historico.pulse_status or "").lower() != "falha":
+        raise HTTPException(status_code=422, detail="Extorno automatico permitido apenas quando o pulso falhou")
+
+    payment_id = historico.provider_payment_id
+    if not payment_id:
+        match = re.search(r"payment_id=([^,\)\s]+)", historico.descricao or "")
+        payment_id = match.group(1) if match else None
+    if not payment_id:
+        raise HTTPException(status_code=422, detail="Pagamento sem payment_id do Mercado Pago para estorno automatico")
+
+    token = (maquina.dono.mp_access_token if getattr(maquina, "dono", None) else "") or ""
+    if not token:
+        raise HTTPException(status_code=422, detail="Cliente sem token Mercado Pago para estorno")
+
+    mp_request(
+        "POST",
+        f"https://api.mercadopago.com/v1/payments/{payment_id}/refunds",
+        token.strip(),
+        body={},
+        headers={"X-Idempotency-Key": f"refund-{payment_id}-{historico_id}"},
+    )
+    historico.refunded_at = datetime.utcnow()
+    db.add(
+        AuditoriaOperacao(
+            maquina_id=machine_id,
+            acao="EXTORNO",
+            descricao=f"Extorno solicitado para payment_id={payment_id}",
+            executado_por_email=_get_user_email(user),
+        )
+    )
+    registrar_auditoria(
+        db,
+        user,
+        acao="EXTORNO",
+        entidade_tipo="pagamento",
+        entidade_id=historico_id,
+        descricao=f"Extorno Mercado Pago solicitado maquina_id={machine_id} payment_id={payment_id}",
+    )
+    db.commit()
+    return {"ok": True, "payment_id": payment_id, "refunded_at": historico.refunded_at}
