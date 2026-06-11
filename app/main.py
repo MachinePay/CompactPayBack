@@ -1,6 +1,7 @@
 import threading
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.core.config import settings
 from app.services.mqtt_worker import start_mqtt_worker
 from app.api.v1.routes import router as api_router
 from app.db.base import Base
@@ -11,14 +12,24 @@ import app.models.produto  # noqa: F401
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
+def _normalize_origin(origin: str) -> str:
+    return origin.strip().rstrip("/")
+
+
+def _build_allowed_origins() -> list[str]:
+    origins = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",
         "https://compactpay.com.br",
         "https://compactpay.vercel.app",
-    ],
+        settings.FRONTEND_URL,
+    ]
+    return list(dict.fromkeys(origin for origin in (_normalize_origin(item) for item in origins) if origin))
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_build_allowed_origins(),
     allow_origin_regex=r"^https://compact-pay-front(-[a-z0-9-]+)*\.vercel\.app$",
     allow_credentials=True,
     allow_methods=["*"],
