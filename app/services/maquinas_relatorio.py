@@ -125,6 +125,75 @@ def status_operacional(status_online: bool, ultima_atividade_em: datetime | None
     return "operando"
 
 
+def serialize_machine_summary(
+    db: Session,
+    maquina: Maquina,
+    periodo: str = "mes",
+    data_inicio: str = None,
+    data_fim: str = None,
+):
+    agora = datetime.utcnow()
+    status_online = bool(maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < timedelta(minutes=3))
+    start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
+    faturamento, _ = real_revenue_totals(db, [maquina.id_hardware], start_dt, end_dt)
+    ultimo_pagamento_em = (
+        db.query(func.max(Transacao.data_hora))
+        .filter(
+            Transacao.maquina_id == maquina.id_hardware,
+            Transacao.tipo == "IN",
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+        )
+        .scalar()
+    )
+    ultima_saida_em = (
+        db.query(func.max(Transacao.data_hora))
+        .filter(
+            Transacao.maquina_id == maquina.id_hardware,
+            Transacao.tipo == "OUT",
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+        )
+        .scalar()
+    )
+    ultimo_teste_em = (
+        db.query(func.max(HistoricoOperacao.created_at))
+        .filter(
+            HistoricoOperacao.maquina_id == maquina.id_hardware,
+            HistoricoOperacao.categoria == "TESTE",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
+        )
+        .scalar()
+    )
+    ultima_atividade_em = max(
+        [item for item in [ultimo_pagamento_em, ultima_saida_em, ultimo_teste_em] if item is not None],
+        default=None,
+    )
+
+    return {
+        "id_hardware": maquina.id_hardware,
+        "cliente_id": maquina.cliente_id,
+        "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
+        "nome": maquina.nome_local,
+        "localizacao": maquina.localizacao,
+        "banco_pagamento": maquina.banco_pagamento or "mercado_pago",
+        "mp_store_id": maquina.mp_store_id,
+        "mp_store_external_id": maquina.mp_store_external_id,
+        "mp_pos_id": maquina.mp_pos_id,
+        "mp_pos_external_id": maquina.mp_pos_external_id,
+        "mp_qr_image": maquina.mp_qr_image,
+        "ultimo_sinal": maquina.ultimo_sinal,
+        "ultimo_pagamento_em": ultimo_pagamento_em,
+        "ultimo_teste_em": ultimo_teste_em,
+        "ultima_saida_em": ultima_saida_em,
+        "ultima_atividade_em": ultima_atividade_em,
+        "status_online": status_online,
+        "status_operacional": status_operacional(status_online, ultima_atividade_em),
+        "faturamento": float(faturamento),
+    }
+
+
 def build_machine_history_payload(
     db: Session,
     maquina: Maquina,
