@@ -4,6 +4,7 @@ from fastapi import APIRouter, HTTPException
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.config import settings
 from app.db.session import SessionLocal
 
 router = APIRouter()
@@ -20,6 +21,8 @@ def health_check():
             detail={
                 "status": "degraded",
                 "service": "compactpay-backend",
+                "version": settings.APP_VERSION,
+                "revision": settings.APP_REVISION,
                 "database": "unavailable",
                 "timestamp": datetime.utcnow().isoformat(),
             },
@@ -30,6 +33,18 @@ def health_check():
     return {
         "status": "ok",
         "service": "compactpay-backend",
+        "version": settings.APP_VERSION,
+        "revision": settings.APP_REVISION,
         "database": "ok",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+@router.get("/version")
+def version():
+    return {
+        "service": "compactpay-backend",
+        "version": settings.APP_VERSION,
+        "revision": settings.APP_REVISION,
         "timestamp": datetime.utcnow().isoformat(),
     }
