@@ -128,6 +128,7 @@ class VendaPagamento(Base):
     taxa = Column(Float, nullable=True)
     valor_liquido = Column(Float, default=0.0, nullable=False)
     status_pulso = Column(String, nullable=True, index=True)
+    command_id = Column(String, nullable=True, index=True)
     conta_faturamento = Column(Boolean, default=True, nullable=False)
     conta_ticket_medio = Column(Boolean, default=True, nullable=False)
     is_teste = Column(Boolean, default=False, nullable=False)
@@ -149,6 +150,7 @@ class HistoricoOperacao(Base):
     card_brand = Column(String, nullable=True)
     bank_name = Column(String, nullable=True)
     pulse_status = Column(String, nullable=True)
+    command_id = Column(String, nullable=True, index=True)
     refunded_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 

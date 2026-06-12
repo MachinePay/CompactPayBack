@@ -279,6 +279,13 @@ def build_machine_history_payload(
         .limit(20)
         .all()
     )
+    eventos_dispositivo = (
+        db.query(HistoricoOperacao)
+        .filter(HistoricoOperacao.maquina_id == machine_id, HistoricoOperacao.categoria == "DISPOSITIVO")
+        .order_by(HistoricoOperacao.created_at.desc())
+        .limit(30)
+        .all()
+    )
 
     timeline = []
     for transacao in pagamentos:
@@ -356,13 +363,14 @@ def build_machine_history_payload(
                 "bank_name": item.bank_name,
                 "provider_payment_id": provider_payment_id,
                 "pulse_status": pulse_status,
+                "command_id": item.command_id,
                 "situacao": "Extornado" if item.refunded_at else "Venda Aprovada",
                 "refunded_at": item.refunded_at,
                 "can_refund": bool(
                     provider_payment_id
                     and item.provider in {None, "mercado_pago"}
                     and not item.refunded_at
-                    and pulse_status == "falha"
+                    and str(pulse_status).startswith("falha")
                 ),
                 "descricao": item.descricao,
             }
@@ -383,7 +391,8 @@ def build_machine_history_payload(
                 "card_brand": None,
                 "bank_name": None,
                 "provider_payment_id": None,
-                "pulse_status": "teste",
+                "pulse_status": item.pulse_status or "teste",
+                "command_id": item.command_id,
                 "situacao": "TESTE",
                 "refunded_at": None,
                 "can_refund": False,
@@ -468,6 +477,8 @@ def build_machine_history_payload(
                 "descricao": teste.descricao,
                 "valor": teste.valor,
                 "created_at": teste.created_at,
+                "pulse_status": teste.pulse_status,
+                "command_id": teste.command_id,
             }
             for teste in testes
         ],
@@ -481,6 +492,17 @@ def build_machine_history_payload(
                 "created_at": item.created_at,
             }
             for item in observacoes
+        ],
+        "eventos_dispositivo": [
+            {
+                "id": item.id,
+                "maquina_id": item.maquina_id,
+                "descricao": item.descricao,
+                "pulse_status": item.pulse_status,
+                "command_id": item.command_id,
+                "created_at": item.created_at,
+            }
+            for item in eventos_dispositivo
         ],
         "fechamentos": [
             {

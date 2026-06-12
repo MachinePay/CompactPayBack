@@ -1,5 +1,6 @@
 from datetime import datetime
 import re
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -10,6 +11,7 @@ from app.models.models import AuditoriaOperacao, HistoricoOperacao, Maquina
 from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit
+from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_confirmation
 
 router = APIRouter()
 
@@ -46,10 +48,7 @@ def enviar_credito_teste(
     _, role, cliente_id = user
     _get_maquina_visivel(db, machine_id, role, cliente_id)
 
-    try:
-        payload = publish_machine_credit(machine_id, action="paid")
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
+    command_id = str(uuid4())
 
     db.add(
         HistoricoOperacao(
@@ -57,6 +56,8 @@ def enviar_credito_teste(
             categoria="TESTE",
             descricao="Credito de teste enviado pelo painel",
             valor=None,
+            command_id=command_id,
+            pulse_status="pendente",
             created_at=datetime.utcnow(),
         )
     )
@@ -75,15 +76,31 @@ def enviar_credito_teste(
         acao="TESTE_CREDITO",
         entidade_tipo="maquina",
         entidade_id=machine_id,
-        descricao=f"Credito de teste enviado pelo painel payload={payload}",
+        descricao=f"Credito de teste enviado pelo painel command_id={command_id}",
     )
     db.commit()
+
+    try:
+        update_pulse_status(command_id, "comando_enviado")
+        payload = publish_machine_credit(machine_id, action="paid", command_id=command_id)
+        pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=8)
+    except Exception as exc:
+        update_pulse_status(command_id, "falha_publicacao")
+        raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
+
+    if pulse_status != "liberado":
+        raise HTTPException(
+            status_code=504,
+            detail=f"Comando enviado, mas a maquina nao confirmou o pulso ({pulse_status})",
+        )
 
     return {
         "ok": True,
         "machine_id": machine_id,
         "topic": f"/TEF/{machine_id}/cmd",
         "payload": payload,
+        "command_id": command_id,
+        "pulse_status": pulse_status,
     }
 
 

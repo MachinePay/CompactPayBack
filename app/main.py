@@ -178,11 +178,15 @@ def startup_event():
             "card_brand",
             "bank_name",
             "pulse_status",
+            "command_id",
         ]:
             if column_name not in historico_columns:
                 connection.execute(text(f"ALTER TABLE historico_operacoes ADD COLUMN {column_name} VARCHAR"))
         if "refunded_at" not in historico_columns:
             connection.execute(text("ALTER TABLE historico_operacoes ADD COLUMN refunded_at TIMESTAMP"))
+        vendas_columns = {column["name"] for column in inspector.get_columns("vendas_pagamentos")}
+        if "command_id" not in vendas_columns:
+            connection.execute(text("ALTER TABLE vendas_pagamentos ADD COLUMN command_id VARCHAR"))
     if settings.START_MQTT_WORKER:
         mqtt_thread = threading.Thread(target=run_mqtt, daemon=True)
         mqtt_thread.start()

@@ -1,4 +1,5 @@
 from datetime import datetime
+from uuid import uuid4
 
 from app.db.session import SessionLocal
 from app.models.models import EscutaTerminal, EventoTipo, HistoricoOperacao, MetodoPagamento, Transacao, VendaPagamento
@@ -10,6 +11,7 @@ from app.services.pagamentos_helpers import (
     parse_machine_id_from_external_reference,
     payment_metadata,
 )
+from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_confirmation
 from app.services.vendas import registrar_venda_pagamento
 
 PROCESSED_PAYMENT_IDS: set[str] = set()
@@ -37,6 +39,7 @@ def processar_callback_mercado_pago(dados: dict):
         id_hardware = dados.get("id_hardware")
         valor = float(dados.get("valor", 1.0))
         db = SessionLocal()
+        command_id = str(uuid4())
         try:
             nova_transacao = Transacao(
                 maquina_id=id_hardware,
@@ -53,6 +56,7 @@ def processar_callback_mercado_pago(dados: dict):
                 valor=valor,
                 provider="mercado_pago",
                 pulse_status="pendente",
+                command_id=command_id,
                 created_at=nova_transacao.data_hora,
             )
             db.add(historico)
@@ -66,6 +70,7 @@ def processar_callback_mercado_pago(dados: dict):
                 historico_id=historico.id,
                 provider="mercado_pago",
                 status_pulso="pendente",
+                command_id=command_id,
                 created_at=nova_transacao.data_hora,
             )
             db.commit()
@@ -73,9 +78,10 @@ def processar_callback_mercado_pago(dados: dict):
             db.close()
 
         pulsos = calcular_pulsos_por_valor(valor)
-        publish_machine_credit_pulses(id_hardware, pulses=pulsos, action="paid")
+        publish_machine_credit_pulses(id_hardware, pulses=pulsos, action="paid", command_id=command_id)
+        pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=max(8, pulsos * 2))
         print(f"[MP webhook] callback simplificado aprovado maquina={id_hardware} valor={valor} pulsos={pulsos}")
-        return {"status": "sucesso", "detalhe": "Pagamento digital registrado", "pulsos": pulsos}
+        return {"status": "sucesso", "detalhe": "Pagamento digital registrado", "pulsos": pulsos, "pulse_status": pulse_status}
 
     topic = dados.get("topic") or dados.get("type") or ""
     action = dados.get("action") or ""
@@ -114,6 +120,7 @@ def processar_callback_mercado_pago(dados: dict):
             amount = float(payments[0].get("amount") or 1.0)
 
         db = SessionLocal()
+        command_id = str(uuid4())
         try:
             duplicado = (
                 db.query(HistoricoOperacao)
@@ -145,6 +152,7 @@ def processar_callback_mercado_pago(dados: dict):
                 provider_payment_id=str(order_id),
                 payment_type="order",
                 pulse_status="pendente",
+                command_id=command_id,
                 created_at=transacao.data_hora,
             )
             db.add(historico)
@@ -160,6 +168,7 @@ def processar_callback_mercado_pago(dados: dict):
                 provider_payment_id=str(order_id),
                 tipo_pagamento="order",
                 status_pulso="pendente",
+                command_id=command_id,
                 created_at=transacao.data_hora,
             )
             db.commit()
@@ -168,10 +177,10 @@ def processar_callback_mercado_pago(dados: dict):
             db.close()
 
         pulsos = calcular_pulsos_por_valor(amount)
-        publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid")
-        _atualizar_status_pulso(historico_id, "liberado")
+        publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id)
+        pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=max(8, pulsos * 2))
         print(f"[MP webhook] order processada machine={machine_id} amount={amount} pulsos={pulsos}")
-        return {"status": "sucesso", "detalhe": "Pagamento aprovado e pulsos enviados", "pulsos": pulsos}
+        return {"status": "sucesso", "detalhe": "Pagamento aprovado e pulsos enviados", "pulsos": pulsos, "pulse_status": pulse_status}
 
     is_payment_event = topic in {"payment"} or action.startswith("payment.")
     if is_payment_event:
@@ -197,6 +206,7 @@ def processar_callback_mercado_pago(dados: dict):
         amount = float(payment_data.get("transaction_amount") or 1.0)
 
         db = SessionLocal()
+        command_id = str(uuid4())
         try:
             duplicado = (
                 db.query(HistoricoOperacao)
@@ -255,6 +265,7 @@ def processar_callback_mercado_pago(dados: dict):
                 valor=amount,
                 created_at=transacao.data_hora,
                 **payment_metadata(payment_data),
+                command_id=command_id,
             )
             db.add(historico)
             db.flush()
@@ -271,6 +282,7 @@ def processar_callback_mercado_pago(dados: dict):
                 bandeira_cartao=historico.card_brand,
                 banco=historico.bank_name,
                 status_pulso="pendente",
+                command_id=command_id,
                 created_at=transacao.data_hora,
             )
             db.commit()
@@ -281,10 +293,10 @@ def processar_callback_mercado_pago(dados: dict):
 
         pulsos = calcular_pulsos_por_valor(amount)
         try:
-            publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid")
-            _atualizar_status_pulso(historico_id, "liberado")
+            publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id)
+            pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=max(8, pulsos * 2))
         except Exception:
-            _atualizar_status_pulso(historico_id, "falha")
+            update_pulse_status(command_id, "falha_publicacao")
             raise
         PROCESSED_PAYMENT_IDS.add(payment_id)
         print(
@@ -296,6 +308,7 @@ def processar_callback_mercado_pago(dados: dict):
             "machine_id": machine_id,
             "terminal_id": terminal_id,
             "pulsos": pulsos,
+            "pulse_status": pulse_status,
         }
 
     print(f"[MP webhook] ignorado: evento nao tratado topic={topic} action={action}")

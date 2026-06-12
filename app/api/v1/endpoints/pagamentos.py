@@ -1,5 +1,6 @@
 from datetime import datetime
 import time
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ from app.services.mercado_pago import mp_request
 from app.services.mercado_pago_webhook import processar_callback_mercado_pago
 from app.services.mqtt_commands import publish_machine_credit_pulses
 from app.services.pagamentos_helpers import calcular_pulsos_por_valor
+from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_confirmation
 from app.services.vendas import registrar_venda_pagamento
 
 router = APIRouter()
@@ -72,6 +74,7 @@ def lancar_pagamento(
         data_hora=datetime.utcnow(),
     )
     db.add(transacao)
+    command_id = str(uuid4())
     historico = HistoricoOperacao(
         maquina_id=pagamento.maquina_id,
         categoria="PAGAMENTO",
@@ -80,6 +83,7 @@ def lancar_pagamento(
         provider="manual",
         payment_type="lancamento_painel",
         pulse_status="pendente",
+        command_id=command_id,
         created_at=transacao.data_hora,
     )
     db.add(historico)
@@ -94,6 +98,7 @@ def lancar_pagamento(
         provider="manual",
         tipo_pagamento="lancamento_painel",
         status_pulso="pendente",
+        command_id=command_id,
         conta_faturamento=False,
         conta_ticket_medio=False,
         is_manual=True,
@@ -116,23 +121,23 @@ def lancar_pagamento(
 
     try:
         pulsos = calcular_pulsos_por_valor(pagamento.valor)
+        update_pulse_status(command_id, "comando_enviado")
         payload = publish_machine_credit_pulses(
             pagamento.maquina_id,
             pulses=pulsos,
             action="paid",
+            command_id=command_id,
         )
-        historico.pulse_status = "liberado"
-        venda = db.query(VendaPagamento).filter(VendaPagamento.historico_id == historico.id).first()
-        if venda:
-            venda.status_pulso = "liberado"
-        db.commit()
+        pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=max(8, pulsos * 2))
     except Exception as exc:
-        historico.pulse_status = "falha"
-        venda = db.query(VendaPagamento).filter(VendaPagamento.historico_id == historico.id).first()
-        if venda:
-            venda.status_pulso = "falha"
-        db.commit()
+        update_pulse_status(command_id, "falha_publicacao")
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
+
+    if pulse_status != "liberado":
+        raise HTTPException(
+            status_code=504,
+            detail=f"Comando enviado, mas a maquina nao confirmou o pulso ({pulse_status})",
+        )
 
     return {
         "ok": True,
@@ -142,6 +147,8 @@ def lancar_pagamento(
         "pulsos": pulsos,
         "topic": f"/TEF/{pagamento.maquina_id}/cmd",
         "payload": payload,
+        "command_id": command_id,
+        "pulse_status": pulse_status,
         "data_hora": transacao.data_hora,
     }
 

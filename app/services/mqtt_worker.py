@@ -4,11 +4,35 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.models import HistoricoOperacao, Maquina, Transacao, EventoTipo, MetodoPagamento
 from app.models.logs import Logs
+from app.services.pulse_tracking import device_event_description, update_pulse_status
 from app.services.vendas import registrar_venda_pagamento
 from sqlalchemy.orm import Session
 from datetime import datetime
 
 TOPIC = "/TEF/+/attrs"
+
+
+def _parse_status_payload(payload: str) -> tuple[str | None, dict[str, str]]:
+    if not payload.startswith("STATUS|"):
+        return None, {}
+    parts = payload.split("|")
+    status = parts[1] if len(parts) > 1 else ""
+    fields = {}
+    for part in parts[2:]:
+        if "=" in part:
+            key, value = part.split("=", 1)
+            fields[key.strip()] = value.strip()
+    return status, fields
+
+
+def _status_to_pulse_status(status: str) -> str | None:
+    return {
+        "CMD_RECEBIDO": "cmd_recebido",
+        "PULSO_INICIADO": "pulso_iniciado",
+        "LIBERADO": "liberado",
+        "CMD_IGNORADO": "falha_cmd_ignorado",
+        "PULSO_BLOQUEADO_SEGURANCA": "falha_bloqueado",
+    }.get(status)
 
 def on_connect(client, userdata, flags, rc):
     print(f"MQTT conectado com código {rc}")
@@ -34,13 +58,20 @@ def on_message(client, userdata, msg):
         from datetime import datetime
         maquina.ultimo_sinal = datetime.utcnow()
         db.commit()
-        if payload.startswith("STATUS|"):
+        status, status_fields = _parse_status_payload(payload)
+        if status:
+            command_id = status_fields.get("cmd")
+            pulse_status = _status_to_pulse_status(status)
+            if command_id and pulse_status:
+                update_pulse_status(command_id, pulse_status)
             db.add(
                 HistoricoOperacao(
                     maquina_id=id_extraido,
-                    categoria="MANUTENCAO",
-                    descricao=f"Diagnostico ESP: {payload}",
+                    categoria="DISPOSITIVO",
+                    descricao=device_event_description(status, command_id),
                     valor=None,
+                    command_id=command_id,
+                    pulse_status=pulse_status,
                     created_at=datetime.utcnow(),
                 )
             )

@@ -5,9 +5,11 @@ import logging
 from app.core.config import settings
 
 
-def publish_machine_credit(machine_id: str, action: str = "paid") -> str:
+def publish_machine_credit(machine_id: str, action: str = "paid", command_id: str | None = None) -> str:
     topic = f"/TEF/{machine_id}/cmd"
     payload = f"{machine_id}@{action.lower()}|"
+    if command_id:
+        payload += f"cmd={command_id}|"
 
     auth = None
     if getattr(settings, "MQTT_USERNAME", None):
@@ -39,11 +41,12 @@ def publish_machine_credit_pulses(
     pulses: int,
     action: str = "paid",
     interval_ms: int = 350,
+    command_id: str | None = None,
 ) -> str:
     pulses_count = max(1, int(pulses))
     last_payload = ""
     for idx in range(pulses_count):
-        last_payload = publish_machine_credit(machine_id=machine_id, action=action)
+        last_payload = publish_machine_credit(machine_id=machine_id, action=action, command_id=command_id)
         if idx < pulses_count - 1 and interval_ms > 0:
             time.sleep(interval_ms / 1000)
     return last_payload

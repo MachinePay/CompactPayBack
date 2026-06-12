@@ -19,4 +19,6 @@ class PagamentoOut(BaseModel):
     pulsos: int
     topic: Optional[str] = None
     payload: str
+    command_id: Optional[str] = None
+    pulse_status: Optional[str] = None
     data_hora: datetime
