@@ -2,7 +2,7 @@ import paho.mqtt.client as mqtt
 import json
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.models import Maquina, Transacao, EventoTipo, MetodoPagamento
+from app.models.models import HistoricoOperacao, Maquina, Transacao, EventoTipo, MetodoPagamento
 from app.models.logs import Logs
 from app.services.vendas import registrar_venda_pagamento
 from sqlalchemy.orm import Session
@@ -34,6 +34,20 @@ def on_message(client, userdata, msg):
         from datetime import datetime
         maquina.ultimo_sinal = datetime.utcnow()
         db.commit()
+        if payload.startswith("STATUS|"):
+            db.add(
+                HistoricoOperacao(
+                    maquina_id=id_extraido,
+                    categoria="MANUTENCAO",
+                    descricao=f"Diagnostico ESP: {payload}",
+                    valor=None,
+                    created_at=datetime.utcnow(),
+                )
+            )
+            db.commit()
+            print(f"Status MQTT registrado para maquina {id_extraido}: {payload}")
+            db.close()
+            return
         # Processamento de pulso
         if payload == "MOEDA DETECTADA (IN)":
             nova_transacao = Transacao(
