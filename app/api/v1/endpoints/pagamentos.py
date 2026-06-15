@@ -127,11 +127,11 @@ def lancar_pagamento(
             pulses=pulsos,
             action="paid",
             command_id=command_id,
+            amount=pagamento.valor,
         )
         pulse_status = wait_for_pulse_confirmation(
             command_id,
             timeout_seconds=max(8, pulsos * 2),
-            expected_confirmations=pulsos,
         )
     except Exception as exc:
         update_pulse_status(command_id, "falha_publicacao")

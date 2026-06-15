@@ -1,15 +1,24 @@
 import paho.mqtt.publish as publish
-import time
 import logging
 
 from app.core.config import settings
 
 
-def publish_machine_credit(machine_id: str, action: str = "paid", command_id: str | None = None) -> str:
+def publish_machine_credit(
+    machine_id: str,
+    action: str = "paid",
+    command_id: str | None = None,
+    pulses: int | None = None,
+    amount: float | None = None,
+) -> str:
     topic = f"/TEF/{machine_id}/cmd"
     payload = f"{machine_id}@{action.lower()}|"
     if command_id:
         payload += f"cmd={command_id}|"
+    if pulses is not None:
+        payload += f"pulses={max(1, int(pulses))}|"
+    if amount is not None:
+        payload += f"amount={float(amount):.2f}|"
 
     auth = None
     if getattr(settings, "MQTT_USERNAME", None):
@@ -26,13 +35,7 @@ def publish_machine_credit(machine_id: str, action: str = "paid", command_id: st
         port=int(settings.MQTT_BROKER_PORT),
         auth=auth,
     )
-    logging.info(
-        "MQTT comando publicado machine_id=%s topic=%s payload=%s qos=%s",
-        machine_id,
-        topic,
-        payload,
-        settings.MQTT_COMMAND_QOS,
-    )
+    logging.info("MQTT comando publicado machine_id=%s topic=%s payload=%s qos=%s", machine_id, topic, payload, settings.MQTT_COMMAND_QOS)
     return payload
 
 
@@ -42,11 +45,14 @@ def publish_machine_credit_pulses(
     action: str = "paid",
     interval_ms: int = 350,
     command_id: str | None = None,
+    amount: float | None = None,
 ) -> str:
     pulses_count = max(1, int(pulses))
-    last_payload = ""
-    for idx in range(pulses_count):
-        last_payload = publish_machine_credit(machine_id=machine_id, action=action, command_id=command_id)
-        if idx < pulses_count - 1 and interval_ms > 0:
-            time.sleep(interval_ms / 1000)
-    return last_payload
+    pulses_payload = None if amount is not None else pulses_count
+    return publish_machine_credit(
+        machine_id=machine_id,
+        action=action,
+        command_id=command_id,
+        pulses=pulses_payload,
+        amount=amount,
+    )

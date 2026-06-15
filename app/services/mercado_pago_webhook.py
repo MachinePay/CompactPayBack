@@ -78,11 +78,10 @@ def processar_callback_mercado_pago(dados: dict):
             db.close()
 
         pulsos = calcular_pulsos_por_valor(valor)
-        publish_machine_credit_pulses(id_hardware, pulses=pulsos, action="paid", command_id=command_id)
+        publish_machine_credit_pulses(id_hardware, pulses=pulsos, action="paid", command_id=command_id, amount=valor)
         pulse_status = wait_for_pulse_confirmation(
             command_id,
             timeout_seconds=max(8, pulsos * 2),
-            expected_confirmations=pulsos,
         )
         print(f"[MP webhook] callback simplificado aprovado maquina={id_hardware} valor={valor} pulsos={pulsos}")
         return {"status": "sucesso", "detalhe": "Pagamento digital registrado", "pulsos": pulsos, "pulse_status": pulse_status}
@@ -181,11 +180,10 @@ def processar_callback_mercado_pago(dados: dict):
             db.close()
 
         pulsos = calcular_pulsos_por_valor(amount)
-        publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id)
+        publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id, amount=amount)
         pulse_status = wait_for_pulse_confirmation(
             command_id,
             timeout_seconds=max(8, pulsos * 2),
-            expected_confirmations=pulsos,
         )
         print(f"[MP webhook] order processada machine={machine_id} amount={amount} pulsos={pulsos}")
         return {"status": "sucesso", "detalhe": "Pagamento aprovado e pulsos enviados", "pulsos": pulsos, "pulse_status": pulse_status}
@@ -301,11 +299,10 @@ def processar_callback_mercado_pago(dados: dict):
 
         pulsos = calcular_pulsos_por_valor(amount)
         try:
-            publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id)
+            publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id, amount=amount)
             pulse_status = wait_for_pulse_confirmation(
                 command_id,
                 timeout_seconds=max(8, pulsos * 2),
-                expected_confirmations=pulsos,
             )
         except Exception:
             update_pulse_status(command_id, "falha_publicacao")
