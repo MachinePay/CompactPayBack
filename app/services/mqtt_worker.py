@@ -35,6 +35,7 @@ def _status_to_pulse_status(status: str) -> str | None:
         "PULSOS_CONCLUIDOS": "pulso_confirmado",
         "PULSOS_ENVIADOS_SEM_RETORNO": "pulso_confirmado",
         "PULSO_NAO_CONFIRMADO": "pulso_sem_retorno",
+        "SALDO_PENDENTE": "saldo_pendente",
         "CMD_IGNORADO": "falha_cmd_ignorado",
         "PULSO_BLOQUEADO_SEGURANCA": "falha_bloqueado",
     }.get(status)

@@ -137,7 +137,7 @@ def lancar_pagamento(
         update_pulse_status(command_id, "falha_publicacao")
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
 
-    if pulse_status != "pulso_confirmado":
+    if pulse_status not in {"pulso_confirmado", "saldo_pendente"}:
         raise HTTPException(
             status_code=504,
             detail=f"Comando enviado, mas a maquina nao confirmou o pulso ({pulse_status})",

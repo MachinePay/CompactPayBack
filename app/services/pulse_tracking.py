@@ -13,6 +13,7 @@ FINAL_PULSE_STATUSES = {
     "falha_cmd_ignorado",
     "falha_bloqueado",
     "falha_sem_confirmacao",
+    "saldo_pendente",
 }
 
 
