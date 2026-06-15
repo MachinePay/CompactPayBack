@@ -68,6 +68,44 @@ def extract_terminal_id(payload: dict) -> str | None:
     return None
 
 
+def _normalize_mp_identifier(value) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    return normalized or None
+
+
+def _collect_values_by_key(payload, keys: set[str]) -> set[str]:
+    found = set()
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            normalized_key = str(key).lower()
+            if normalized_key in keys:
+                normalized_value = _normalize_mp_identifier(value)
+                if normalized_value:
+                    found.add(normalized_value)
+            found.update(_collect_values_by_key(value, keys))
+    elif isinstance(payload, list):
+        for item in payload:
+            found.update(_collect_values_by_key(item, keys))
+    return found
+
+
+def extract_mp_location_ids(payload: dict) -> dict[str, set[str]]:
+    return {
+        "store_ids": _collect_values_by_key(payload, {"store_id", "storeid", "loja_id", "loja"}),
+        "store_external_ids": _collect_values_by_key(
+            payload,
+            {"external_store_id", "store_external_id", "external_storeid", "mp_store_external_id"},
+        ),
+        "pos_ids": _collect_values_by_key(payload, {"pos_id", "posid", "point_id", "caixa_id", "caixa"}),
+        "pos_external_ids": _collect_values_by_key(
+            payload,
+            {"external_pos_id", "pos_external_id", "external_posid", "mp_pos_external_id"},
+        ),
+    }
+
+
 def payment_metadata(payment_data: dict) -> dict:
     issuer = payment_data.get("issuer") or {}
     card = payment_data.get("card") or {}

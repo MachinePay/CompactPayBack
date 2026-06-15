@@ -2,10 +2,11 @@ from datetime import datetime
 from uuid import uuid4
 
 from app.db.session import SessionLocal
-from app.models.models import EscutaTerminal, EventoTipo, HistoricoOperacao, MetodoPagamento, Transacao, VendaPagamento
+from app.models.models import EscutaTerminal, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao, VendaPagamento
 from app.services.mqtt_commands import publish_machine_credit_pulses
 from app.services.pagamentos_helpers import (
     calcular_pulsos_por_valor,
+    extract_mp_location_ids,
     extract_terminal_id,
     mp_request_with_known_tokens,
     parse_machine_id_from_external_reference,
@@ -15,6 +16,46 @@ from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_conf
 from app.services.vendas import registrar_venda_pagamento
 
 PROCESSED_PAYMENT_IDS: set[str] = set()
+
+
+def _matches_any(saved_value: str | None, received_values: set[str]) -> bool:
+    value = str(saved_value or "").strip()
+    return bool(value and value in received_values)
+
+
+def _resolve_machine_by_mp_location(db, payment_data: dict):
+    ids = extract_mp_location_ids(payment_data)
+    has_pos = bool(ids["pos_ids"] or ids["pos_external_ids"])
+    has_store = bool(ids["store_ids"] or ids["store_external_ids"])
+    if not has_pos and not has_store:
+        return None, ids, "sem_caixa_loja"
+
+    candidates = []
+    for maquina in db.query(Maquina).all():
+        if (maquina.banco_pagamento or "mercado_pago") != "mercado_pago":
+            continue
+        pos_match = _matches_any(maquina.mp_pos_id, ids["pos_ids"]) or _matches_any(
+            maquina.mp_pos_external_id,
+            ids["pos_external_ids"],
+        )
+        store_match = _matches_any(maquina.mp_store_id, ids["store_ids"]) or _matches_any(
+            maquina.mp_store_external_id,
+            ids["store_external_ids"],
+        )
+        if has_pos and has_store:
+            matched = pos_match and store_match
+        elif has_pos:
+            matched = pos_match
+        else:
+            matched = store_match
+        if matched:
+            candidates.append(maquina)
+
+    if len(candidates) == 1:
+        return candidates[0], ids, "match_unico"
+    if len(candidates) > 1:
+        return None, ids, "match_multiplo"
+    return None, ids, "sem_match"
 
 
 def _atualizar_status_pulso(historico_id: int, status: str) -> None:
@@ -233,29 +274,33 @@ def processar_callback_mercado_pago(dados: dict):
                     .filter(EscutaTerminal.terminal_id == terminal_id, EscutaTerminal.ativo.is_(True))
                     .first()
                 )
+            machine_id = escuta.maquina_id if escuta else None
             if not escuta:
-                escutas_ativas = (
-                    db.query(EscutaTerminal)
-                    .filter(EscutaTerminal.ativo.is_(True))
-                    .order_by(EscutaTerminal.updated_at.desc())
-                    .all()
-                )
-                if escutas_ativas:
-                    escuta = escutas_ativas[0]
+                maquina_por_caixa, mp_location_ids, match_reason = _resolve_machine_by_mp_location(db, payment_data)
+                if maquina_por_caixa:
+                    machine_id = maquina_por_caixa.id_hardware
                     print(
-                        f"[MP webhook] terminal sem match exato ({terminal_id}); usando escuta mais recente terminal={escuta.terminal_id} maquina={escuta.maquina_id}"
+                        f"[MP webhook] payment vinculado por caixa/loja payment_id={payment_id} maquina={machine_id} ids={mp_location_ids}"
                     )
+                elif terminal_id:
+                    print(
+                        f"[MP webhook] payment ignorado: terminal sem escuta ativa e sem match de caixa/loja terminal_id={terminal_id} payment_id={payment_id} motivo={match_reason} ids={mp_location_ids}"
+                    )
+                    detalhe = "Terminal sem escuta ativa e sem match seguro de caixa/loja"
                 else:
                     print(
-                        f"[MP webhook] payment ignorado: sem escuta ativa terminal_id={terminal_id} payment_id={payment_id}"
+                        f"[MP webhook] payment ignorado: sem terminal_id e sem match seguro de caixa/loja payment_id={payment_id} motivo={match_reason} ids={mp_location_ids}"
                     )
+                    detalhe = "Mercado Pago nao retornou terminal_id nem caixa/loja compativel com uma unica maquina"
+                if not machine_id:
                     return {
                         "status": "ignorado",
-                        "detalhe": "Sem vinculo ativo para este terminal",
+                        "detalhe": detalhe,
                         "terminal_id": terminal_id,
+                        "payment_id": payment_id,
+                        "mp_location_ids": {key: sorted(value) for key, value in mp_location_ids.items()},
                     }
 
-            machine_id = escuta.maquina_id
             transacao = Transacao(
                 maquina_id=machine_id,
                 tipo=EventoTipo.in_flux,
