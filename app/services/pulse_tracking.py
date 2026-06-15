@@ -51,7 +51,14 @@ def wait_for_pulse_confirmation(
     while time.monotonic() < deadline:
         db = SessionLocal()
         try:
-            item = db.query(HistoricoOperacao).filter(HistoricoOperacao.command_id == command_id).first()
+            item = (
+                db.query(HistoricoOperacao)
+                .filter(
+                    HistoricoOperacao.command_id == command_id,
+                    HistoricoOperacao.categoria != "DISPOSITIVO",
+                )
+                .first()
+            )
             if item and item.pulse_status:
                 last_status = item.pulse_status
                 if item.pulse_status == "pulso_confirmado":
