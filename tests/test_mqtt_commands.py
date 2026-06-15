@@ -44,6 +44,7 @@ def test_device_liberado_is_not_final_confirmation():
     assert _status_to_pulse_status("PULSO_CONFIRMADO") == "pulso_unitario"
     assert "pulso_unitario" not in FINAL_PULSE_STATUSES
     assert _status_to_pulse_status("PULSOS_CONCLUIDOS") == "pulso_confirmado"
+    assert _status_to_pulse_status("PULSOS_ENVIADOS_SEM_RETORNO") == "pulso_confirmado"
     assert "pulso_confirmado" in FINAL_PULSE_STATUSES
-    assert _status_to_pulse_status("PULSO_NAO_CONFIRMADO") == "falha_sem_confirmacao"
-    assert "falha_sem_confirmacao" in FINAL_PULSE_STATUSES
+    assert _status_to_pulse_status("PULSO_NAO_CONFIRMADO") == "pulso_sem_retorno"
+    assert "pulso_sem_retorno" not in FINAL_PULSE_STATUSES

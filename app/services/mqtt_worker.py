@@ -33,7 +33,8 @@ def _status_to_pulse_status(status: str) -> str | None:
         "LIBERADO": "pulso_enviado",
         "PULSO_CONFIRMADO": "pulso_unitario",
         "PULSOS_CONCLUIDOS": "pulso_confirmado",
-        "PULSO_NAO_CONFIRMADO": "falha_sem_confirmacao",
+        "PULSOS_ENVIADOS_SEM_RETORNO": "pulso_confirmado",
+        "PULSO_NAO_CONFIRMADO": "pulso_sem_retorno",
         "CMD_IGNORADO": "falha_cmd_ignorado",
         "PULSO_BLOQUEADO_SEGURANCA": "falha_bloqueado",
     }.get(status)
