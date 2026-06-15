@@ -128,12 +128,16 @@ def lancar_pagamento(
             action="paid",
             command_id=command_id,
         )
-        pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=max(8, pulsos * 2))
+        pulse_status = wait_for_pulse_confirmation(
+            command_id,
+            timeout_seconds=max(8, pulsos * 2),
+            expected_confirmations=pulsos,
+        )
     except Exception as exc:
         update_pulse_status(command_id, "falha_publicacao")
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
 
-    if pulse_status != "liberado":
+    if pulse_status != "pulso_confirmado":
         raise HTTPException(
             status_code=504,
             detail=f"Comando enviado, mas a maquina nao confirmou o pulso ({pulse_status})",

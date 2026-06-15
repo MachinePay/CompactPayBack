@@ -88,7 +88,7 @@ def enviar_credito_teste(
         update_pulse_status(command_id, "falha_publicacao")
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
 
-    if pulse_status != "liberado":
+    if pulse_status != "pulso_confirmado":
         raise HTTPException(
             status_code=504,
             detail=f"Comando enviado, mas a maquina nao confirmou o pulso ({pulse_status})",
@@ -177,7 +177,7 @@ def estornar_pagamento_maquina(
         raise HTTPException(status_code=404, detail="Pagamento nao encontrado")
     if historico.refunded_at:
         raise HTTPException(status_code=400, detail="Pagamento ja foi estornado")
-    if (historico.pulse_status or "").lower() != "falha":
+    if not (historico.pulse_status or "").lower().startswith("falha"):
         raise HTTPException(status_code=422, detail="Extorno automatico permitido apenas quando o pulso falhou")
 
     payment_id = historico.provider_payment_id

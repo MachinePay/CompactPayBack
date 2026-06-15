@@ -6,12 +6,13 @@ from app.models.models import HistoricoOperacao, VendaPagamento
 
 
 FINAL_PULSE_STATUSES = {
-    "liberado",
+    "pulso_confirmado",
     "falha",
     "falha_timeout",
     "falha_publicacao",
     "falha_cmd_ignorado",
     "falha_bloqueado",
+    "falha_sem_confirmacao",
 }
 
 
@@ -20,7 +21,14 @@ def update_pulse_status(command_id: str | None, status: str) -> None:
         return
     db = SessionLocal()
     try:
-        historicos = db.query(HistoricoOperacao).filter(HistoricoOperacao.command_id == command_id).all()
+        historicos = (
+            db.query(HistoricoOperacao)
+            .filter(
+                HistoricoOperacao.command_id == command_id,
+                HistoricoOperacao.categoria != "DISPOSITIVO",
+            )
+            .all()
+        )
         vendas = db.query(VendaPagamento).filter(VendaPagamento.command_id == command_id).all()
         for item in historicos:
             item.pulse_status = status
@@ -31,16 +39,34 @@ def update_pulse_status(command_id: str | None, status: str) -> None:
         db.close()
 
 
-def wait_for_pulse_confirmation(command_id: str, timeout_seconds: float = 8.0, poll_seconds: float = 0.25) -> str:
+def wait_for_pulse_confirmation(
+    command_id: str,
+    timeout_seconds: float = 8.0,
+    poll_seconds: float = 0.25,
+    expected_confirmations: int = 1,
+) -> str:
     deadline = time.monotonic() + timeout_seconds
     last_status = "comando_enviado"
+    expected_confirmations = max(1, int(expected_confirmations or 1))
     while time.monotonic() < deadline:
         db = SessionLocal()
         try:
             item = db.query(HistoricoOperacao).filter(HistoricoOperacao.command_id == command_id).first()
             if item and item.pulse_status:
                 last_status = item.pulse_status
-                if item.pulse_status in FINAL_PULSE_STATUSES:
+                if item.pulse_status == "pulso_confirmado":
+                    confirmations = (
+                        db.query(HistoricoOperacao)
+                        .filter(
+                            HistoricoOperacao.command_id == command_id,
+                            HistoricoOperacao.categoria == "DISPOSITIVO",
+                            HistoricoOperacao.pulse_status == "pulso_confirmado",
+                        )
+                        .count()
+                    )
+                    if confirmations >= expected_confirmations:
+                        return item.pulse_status
+                elif item.pulse_status in FINAL_PULSE_STATUSES:
                     return item.pulse_status
         finally:
             db.close()

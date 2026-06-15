@@ -29,7 +29,9 @@ def _status_to_pulse_status(status: str) -> str | None:
     return {
         "CMD_RECEBIDO": "cmd_recebido",
         "PULSO_INICIADO": "pulso_iniciado",
-        "LIBERADO": "liberado",
+        "LIBERADO": "pulso_enviado",
+        "PULSO_CONFIRMADO": "pulso_confirmado",
+        "PULSO_NAO_CONFIRMADO": "falha_sem_confirmacao",
         "CMD_IGNORADO": "falha_cmd_ignorado",
         "PULSO_BLOQUEADO_SEGURANCA": "falha_bloqueado",
     }.get(status)
