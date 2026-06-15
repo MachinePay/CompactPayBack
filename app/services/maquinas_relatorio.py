@@ -117,6 +117,9 @@ def real_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime,
     )
 
 
+ONLINE_SIGNAL_WINDOW = timedelta(seconds=90)
+
+
 def status_operacional(status_online: bool, ultima_atividade_em: datetime | None) -> str:
     if not status_online:
         return "offline"
@@ -133,7 +136,7 @@ def serialize_machine_summary(
     data_fim: str = None,
 ):
     agora = datetime.utcnow()
-    status_online = bool(maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < timedelta(minutes=3))
+    status_online = bool(maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
     faturamento, _ = real_revenue_totals(db, [maquina.id_hardware], start_dt, end_dt)
     ultimo_pagamento_em = (
@@ -401,7 +404,7 @@ def build_machine_history_payload(
         )
     vendas.sort(key=lambda item: item["data"], reverse=True)
 
-    status_online = bool(maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < timedelta(minutes=3))
+    status_online = bool(maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
     ultima_atividade = max(
         [
             item
