@@ -28,6 +28,7 @@ def _parse_status_payload(payload: str) -> tuple[str | None, dict[str, str]]:
 def _status_to_pulse_status(status: str) -> str | None:
     return {
         "CMD_RECEBIDO": "cmd_recebido",
+        "CMD_DUPLICADO": "cmd_duplicado",
         "PULSO_INICIADO": "pulso_iniciado",
         "LIBERADO": "pulso_enviado",
         "PULSO_CONFIRMADO": "pulso_unitario",
