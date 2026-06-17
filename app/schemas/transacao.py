@@ -11,6 +11,7 @@ class TransacaoOut(BaseModel):
     tipo: str
     metodo: str
     valor: float
+    taxa: Optional[float] = None
     data_hora: datetime
 
     class Config:
