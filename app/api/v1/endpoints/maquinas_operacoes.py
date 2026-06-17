@@ -115,9 +115,10 @@ def enviar_atualizacao_firmware(
     _, role, cliente_id = user
     if role != "admin":
         raise HTTPException(status_code=403, detail="Apenas admin pode enviar atualizacao de firmware")
-    _get_maquina_visivel(db, machine_id, role, cliente_id)
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
 
     firmware_url = ((payload or {}).get("url") or settings.OTA_FIRMWARE_URL or "").strip()
+    firmware_version = ((payload or {}).get("version") or "").strip()
     if not firmware_url:
         raise HTTPException(
             status_code=422,
@@ -126,15 +127,23 @@ def enviar_atualizacao_firmware(
 
     command_id = str(uuid4())
     try:
-        mqtt_payload = publish_machine_update(machine_id, firmware_url, command_id=command_id)
+        mqtt_payload = publish_machine_update(
+            machine_id,
+            firmware_url,
+            firmware_version=firmware_version or None,
+            command_id=command_id,
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT de atualizacao") from exc
+
+    if firmware_version:
+        maquina.firmware_target_version = firmware_version
 
     db.add(
         AuditoriaOperacao(
             maquina_id=machine_id,
             acao="ATUALIZACAO_FIRMWARE",
-            descricao=f"Atualizacao OTA enviada command_id={command_id}",
+            descricao=f"Atualizacao OTA enviada command_id={command_id} version={firmware_version or 'n/a'}",
             executado_por_email=_get_user_email(user),
             created_at=datetime.utcnow(),
         )
@@ -145,7 +154,7 @@ def enviar_atualizacao_firmware(
         acao="ATUALIZACAO_FIRMWARE",
         entidade_tipo="maquina",
         entidade_id=machine_id,
-        descricao=f"Atualizacao OTA enviada command_id={command_id}",
+        descricao=f"Atualizacao OTA enviada command_id={command_id} version={firmware_version or 'n/a'}",
     )
     db.commit()
 
@@ -155,6 +164,7 @@ def enviar_atualizacao_firmware(
         "topic": f"/TEF/{machine_id}/cmd",
         "payload": mqtt_payload,
         "command_id": command_id,
+        "firmware_version": firmware_version or None,
     }
 
 

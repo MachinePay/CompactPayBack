@@ -71,6 +71,10 @@ def on_message(client, userdata, msg):
         status, status_fields = _parse_status_payload(payload)
         if status:
             command_id = status_fields.get("cmd")
+            firmware_version = status_fields.get("fw")
+            if firmware_version:
+                maquina.firmware_version = firmware_version
+                maquina.firmware_updated_at = datetime.utcnow()
             pulse_status = _status_to_pulse_status(status)
             if command_id and pulse_status:
                 update_pulse_status(command_id, pulse_status)

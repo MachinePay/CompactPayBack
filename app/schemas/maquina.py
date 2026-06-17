@@ -31,6 +31,9 @@ class MaquinaOut(BaseModel):
     mp_pos_id: Optional[str] = None
     mp_pos_external_id: Optional[str] = None
     mp_qr_image: Optional[str] = None
+    firmware_version: Optional[str] = None
+    firmware_target_version: Optional[str] = None
+    firmware_updated_at: Optional[datetime] = None
     ultimo_sinal: Optional[datetime] = None
     ultimo_pagamento_em: Optional[datetime] = None
     ultimo_teste_em: Optional[datetime] = None

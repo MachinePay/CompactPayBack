@@ -61,12 +61,15 @@ def publish_machine_credit_pulses(
 def publish_machine_update(
     machine_id: str,
     firmware_url: str,
+    firmware_version: str | None = None,
     command_id: str | None = None,
 ) -> str:
     topic = f"/TEF/{machine_id}/cmd"
     payload = f"{machine_id}@update|"
     if command_id:
         payload += f"cmd={command_id}|"
+    if firmware_version:
+        payload += f"version={firmware_version}|"
     payload += f"url={firmware_url}|"
 
     auth = None

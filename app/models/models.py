@@ -98,6 +98,9 @@ class Maquina(Base):
     mp_pos_external_id = Column(String, nullable=True)
     mp_qr_image = Column(String, nullable=True)
     ultimo_sinal = Column(DateTime, nullable=True)
+    firmware_version = Column(String, nullable=True)
+    firmware_target_version = Column(String, nullable=True)
+    firmware_updated_at = Column(DateTime, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")
 
