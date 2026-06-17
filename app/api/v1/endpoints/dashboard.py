@@ -7,7 +7,12 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import Maquina, Transacao
-from app.services.maquinas_relatorio import apply_transacao_periodo, real_revenue_totals, resolve_date_window
+from app.services.maquinas_relatorio import (
+    ONLINE_SIGNAL_WINDOW,
+    apply_transacao_periodo,
+    real_revenue_totals,
+    resolve_date_window,
+)
 
 router = APIRouter()
 
@@ -97,7 +102,7 @@ def dashboard_overview(
     maquinas_online = [
         maquina
         for maquina in maquinas
-        if maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < timedelta(minutes=3)
+        if maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW
     ]
     ticket_medio = float(faturamento) / int(quantidade_vendas_reais) if quantidade_vendas_reais else 0.0
 
@@ -137,7 +142,7 @@ def dashboard_overview(
 
     alerts = []
     for maquina in maquinas:
-        if not maquina.ultimo_sinal or (agora - maquina.ultimo_sinal) >= timedelta(minutes=3):
+        if not maquina.ultimo_sinal or (agora - maquina.ultimo_sinal) >= ONLINE_SIGNAL_WINDOW:
             alerts.append(
                 {
                     "title": f"Verificar conectividade da {maquina.nome_local or maquina.id_hardware}",
@@ -175,7 +180,7 @@ def dashboard_overview(
                 "maquinas_online": 0,
             }
         clientes_map[key]["maquinas"].append(maquina)
-        if maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < timedelta(minutes=3):
+        if maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW:
             clientes_map[key]["maquinas_online"] += 1
 
     for item in clientes_map.values():
