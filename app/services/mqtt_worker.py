@@ -75,6 +75,27 @@ def on_message(client, userdata, msg):
             if firmware_version:
                 maquina.firmware_version = firmware_version
                 maquina.firmware_updated_at = datetime.utcnow()
+                if maquina.firmware_update_status in {"sent", "downloading", "restarting", "failed", "no_update"}:
+                    maquina.firmware_update_status = "updated"
+                    maquina.firmware_update_finished_at = datetime.utcnow()
+                if maquina.firmware_target_version and maquina.firmware_target_version == firmware_version:
+                    maquina.firmware_target_version = None
+            if status == "UPDATE_INICIADO":
+                maquina.firmware_update_status = "downloading"
+                maquina.firmware_update_started_at = datetime.utcnow()
+                if command_id:
+                    maquina.firmware_update_command_id = command_id
+                if status_fields.get("url"):
+                    maquina.firmware_update_url = status_fields.get("url")
+            elif status == "UPDATE_OK":
+                maquina.firmware_update_status = "restarting"
+                maquina.firmware_update_finished_at = datetime.utcnow()
+            elif status == "UPDATE_SEM_NOVIDADE":
+                maquina.firmware_update_status = "no_update"
+                maquina.firmware_update_finished_at = datetime.utcnow()
+            elif status == "UPDATE_FALHOU":
+                maquina.firmware_update_status = "failed"
+                maquina.firmware_update_finished_at = datetime.utcnow()
             pulse_status = _status_to_pulse_status(status)
             if command_id and pulse_status:
                 update_pulse_status(command_id, pulse_status)
@@ -82,7 +103,11 @@ def on_message(client, userdata, msg):
                 HistoricoOperacao(
                     maquina_id=id_extraido,
                     categoria="DISPOSITIVO",
-                    descricao=device_event_description(status, command_id),
+                    descricao=device_event_description(
+                        status,
+                        command_id,
+                        " ".join(f"{key}={value}" for key, value in status_fields.items() if key != "cmd") or None,
+                    ),
                     valor=None,
                     command_id=command_id,
                     pulse_status=pulse_status,

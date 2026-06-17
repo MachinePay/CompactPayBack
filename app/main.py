@@ -175,11 +175,43 @@ def startup_event():
             "mp_qr_image",
             "firmware_version",
             "firmware_target_version",
+            "firmware_update_status",
+            "firmware_update_command_id",
+            "firmware_update_url",
         ]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
-        if "firmware_updated_at" not in maquina_columns:
-            connection.execute(text("ALTER TABLE maquinas ADD COLUMN firmware_updated_at TIMESTAMP"))
+        for column_name in [
+            "firmware_updated_at",
+            "firmware_update_requested_at",
+            "firmware_update_started_at",
+            "firmware_update_finished_at",
+        ]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} TIMESTAMP"))
+        if "firmware_versions" not in inspector.get_table_names():
+            connection.execute(text("""
+                CREATE TABLE firmware_versions (
+                    id INTEGER PRIMARY KEY,
+                    nome VARCHAR NOT NULL,
+                    url_bin VARCHAR NOT NULL,
+                    observacao VARCHAR,
+                    ativo BOOLEAN NOT NULL DEFAULT TRUE,
+                    created_at TIMESTAMP NOT NULL,
+                    updated_at TIMESTAMP NOT NULL
+                )
+            """))
+        else:
+            firmware_columns = {column["name"] for column in inspector.get_columns("firmware_versions")}
+            for column_name in ["nome", "url_bin", "observacao"]:
+                if column_name not in firmware_columns:
+                    nullable = "" if column_name == "observacao" else " NOT NULL DEFAULT ''"
+                    connection.execute(text(f"ALTER TABLE firmware_versions ADD COLUMN {column_name} VARCHAR{nullable}"))
+            if "ativo" not in firmware_columns:
+                connection.execute(text("ALTER TABLE firmware_versions ADD COLUMN ativo BOOLEAN NOT NULL DEFAULT TRUE"))
+            for column_name in ["created_at", "updated_at"]:
+                if column_name not in firmware_columns:
+                    connection.execute(text(f"ALTER TABLE firmware_versions ADD COLUMN {column_name} TIMESTAMP"))
         historico_columns = {column["name"] for column in inspector.get_columns("historico_operacoes")}
         for column_name in [
             "provider",

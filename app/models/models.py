@@ -101,6 +101,12 @@ class Maquina(Base):
     firmware_version = Column(String, nullable=True)
     firmware_target_version = Column(String, nullable=True)
     firmware_updated_at = Column(DateTime, nullable=True)
+    firmware_update_status = Column(String, nullable=True)
+    firmware_update_command_id = Column(String, nullable=True)
+    firmware_update_url = Column(String, nullable=True)
+    firmware_update_requested_at = Column(DateTime, nullable=True)
+    firmware_update_started_at = Column(DateTime, nullable=True)
+    firmware_update_finished_at = Column(DateTime, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")
 
@@ -193,6 +199,17 @@ class AuditoriaSistema(Base):
     descricao = Column(String, nullable=False)
     executado_por_email = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class FirmwareVersion(Base):
+    __tablename__ = "firmware_versions"
+    id = Column(Integer, primary_key=True)
+    nome = Column(String, nullable=False)
+    url_bin = Column(String, nullable=False)
+    observacao = Column(String, nullable=True)
+    ativo = Column(Boolean, default=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 
 class EscutaTerminal(Base):

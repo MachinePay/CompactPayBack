@@ -34,6 +34,12 @@ class MaquinaOut(BaseModel):
     firmware_version: Optional[str] = None
     firmware_target_version: Optional[str] = None
     firmware_updated_at: Optional[datetime] = None
+    firmware_update_status: Optional[str] = None
+    firmware_update_command_id: Optional[str] = None
+    firmware_update_url: Optional[str] = None
+    firmware_update_requested_at: Optional[datetime] = None
+    firmware_update_started_at: Optional[datetime] = None
+    firmware_update_finished_at: Optional[datetime] = None
     ultimo_sinal: Optional[datetime] = None
     ultimo_pagamento_em: Optional[datetime] = None
     ultimo_teste_em: Optional[datetime] = None

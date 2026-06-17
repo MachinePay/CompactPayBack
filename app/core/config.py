@@ -14,6 +14,8 @@ class Settings(BaseSettings):
     START_MQTT_WORKER: bool = os.getenv("START_MQTT_WORKER", "true").lower() == "true"
     MQTT_COMMAND_QOS: int = int(os.getenv("MQTT_COMMAND_QOS", "1"))
     OTA_FIRMWARE_URL: str = os.getenv("OTA_FIRMWARE_URL", "")
+    FIRMWARE_UPLOAD_DIR: str = os.getenv("FIRMWARE_UPLOAD_DIR", "firmware_uploads")
+    BACKEND_PUBLIC_URL: str = os.getenv("BACKEND_PUBLIC_URL", "")
     MP_ACCESS_TOKEN: str = os.getenv("MP_ACCESS_TOKEN", "")
     MP_WEBHOOK_SECRET: str = os.getenv("MP_WEBHOOK_SECRET", "")
     MP_APP_ID: str = os.getenv("MP_APP_ID", os.getenv("MP_CLIENT_ID", ""))

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 from uuid import uuid4
 
@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import AuditoriaOperacao, HistoricoOperacao, Maquina
+from app.models.models import AuditoriaOperacao, FirmwareVersion, HistoricoOperacao, Maquina
 from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit, publish_machine_update
@@ -117,12 +117,39 @@ def enviar_atualizacao_firmware(
         raise HTTPException(status_code=403, detail="Apenas admin pode enviar atualizacao de firmware")
     maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
 
-    firmware_url = ((payload or {}).get("url") or settings.OTA_FIRMWARE_URL or "").strip()
-    firmware_version = ((payload or {}).get("version") or "").strip()
+    if not maquina.ultimo_sinal or datetime.utcnow() - maquina.ultimo_sinal > timedelta(seconds=90):
+        raise HTTPException(status_code=409, detail="Maquina offline. Aguarde ela ficar online para atualizar.")
+
+    firmware_record = None
+    firmware_version_id = (payload or {}).get("firmware_version_id")
+    if firmware_version_id:
+        try:
+            firmware_version_id = int(firmware_version_id)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="Versao de firmware invalida") from exc
+        firmware_record = (
+            db.query(FirmwareVersion)
+            .filter(FirmwareVersion.id == firmware_version_id, FirmwareVersion.ativo.is_(True))
+            .first()
+        )
+        if not firmware_record:
+            raise HTTPException(status_code=404, detail="Versao de firmware nao encontrada ou inativa")
+
+    firmware_url = (
+        (firmware_record.url_bin if firmware_record else None)
+        or (payload or {}).get("url")
+        or settings.OTA_FIRMWARE_URL
+        or ""
+    ).strip()
+    firmware_version = (
+        (firmware_record.nome if firmware_record else None)
+        or (payload or {}).get("version")
+        or ""
+    ).strip()
     if not firmware_url:
         raise HTTPException(
             status_code=422,
-            detail="Configure OTA_FIRMWARE_URL no backend ou envie a url do firmware",
+            detail="Cadastre uma versao de firmware ou configure OTA_FIRMWARE_URL no backend",
         )
 
     command_id = str(uuid4())
@@ -136,14 +163,31 @@ def enviar_atualizacao_firmware(
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT de atualizacao") from exc
 
-    if firmware_version:
-        maquina.firmware_target_version = firmware_version
+    maquina.firmware_target_version = firmware_version or None
+    maquina.firmware_update_status = "sent"
+    maquina.firmware_update_command_id = command_id
+    maquina.firmware_update_url = firmware_url
+    maquina.firmware_update_requested_at = datetime.utcnow()
+    maquina.firmware_update_started_at = None
+    maquina.firmware_update_finished_at = None
+
+    db.add(
+        HistoricoOperacao(
+            maquina_id=machine_id,
+            categoria="DISPOSITIVO",
+            descricao=f"Atualizacao OTA enviada url={firmware_url} version={firmware_version or 'n/a'}",
+            valor=None,
+            command_id=command_id,
+            pulse_status="update_enviado",
+            created_at=datetime.utcnow(),
+        )
+    )
 
     db.add(
         AuditoriaOperacao(
             maquina_id=machine_id,
             acao="ATUALIZACAO_FIRMWARE",
-            descricao=f"Atualizacao OTA enviada command_id={command_id} version={firmware_version or 'n/a'}",
+            descricao=f"Atualizacao OTA enviada command_id={command_id} version={firmware_version or 'n/a'} url={firmware_url}",
             executado_por_email=_get_user_email(user),
             created_at=datetime.utcnow(),
         )
@@ -154,7 +198,7 @@ def enviar_atualizacao_firmware(
         acao="ATUALIZACAO_FIRMWARE",
         entidade_tipo="maquina",
         entidade_id=machine_id,
-        descricao=f"Atualizacao OTA enviada command_id={command_id} version={firmware_version or 'n/a'}",
+        descricao=f"Atualizacao OTA enviada command_id={command_id} version={firmware_version or 'n/a'} url={firmware_url}",
     )
     db.commit()
 
@@ -165,6 +209,7 @@ def enviar_atualizacao_firmware(
         "payload": mqtt_payload,
         "command_id": command_id,
         "firmware_version": firmware_version or None,
+        "firmware_url": firmware_url,
     }
 
 
