@@ -56,3 +56,33 @@ def publish_machine_credit_pulses(
         pulses=pulses_payload,
         amount=amount,
     )
+
+
+def publish_machine_update(
+    machine_id: str,
+    firmware_url: str,
+    command_id: str | None = None,
+) -> str:
+    topic = f"/TEF/{machine_id}/cmd"
+    payload = f"{machine_id}@update|"
+    if command_id:
+        payload += f"cmd={command_id}|"
+    payload += f"url={firmware_url}|"
+
+    auth = None
+    if getattr(settings, "MQTT_USERNAME", None):
+        auth = {
+            "username": settings.MQTT_USERNAME,
+            "password": settings.MQTT_PASSWORD,
+        }
+
+    publish.single(
+        topic,
+        payload=payload,
+        qos=int(settings.MQTT_COMMAND_QOS),
+        hostname=settings.MQTT_BROKER_URL,
+        port=int(settings.MQTT_BROKER_PORT),
+        auth=auth,
+    )
+    logging.info("MQTT update publicado machine_id=%s topic=%s payload=%s qos=%s", machine_id, topic, payload, settings.MQTT_COMMAND_QOS)
+    return payload

@@ -5,12 +5,13 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import AuditoriaOperacao, HistoricoOperacao, Maquina
 from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
-from app.services.mqtt_commands import publish_machine_credit
+from app.services.mqtt_commands import publish_machine_credit, publish_machine_update
 from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_confirmation
 
 router = APIRouter()
@@ -101,6 +102,59 @@ def enviar_credito_teste(
         "payload": payload,
         "command_id": command_id,
         "pulse_status": pulse_status,
+    }
+
+
+@router.post("/maquinas/{machine_id}/atualizacao")
+def enviar_atualizacao_firmware(
+    machine_id: str,
+    payload: dict | None = None,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, cliente_id = user
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas admin pode enviar atualizacao de firmware")
+    _get_maquina_visivel(db, machine_id, role, cliente_id)
+
+    firmware_url = ((payload or {}).get("url") or settings.OTA_FIRMWARE_URL or "").strip()
+    if not firmware_url:
+        raise HTTPException(
+            status_code=422,
+            detail="Configure OTA_FIRMWARE_URL no backend ou envie a url do firmware",
+        )
+
+    command_id = str(uuid4())
+    try:
+        mqtt_payload = publish_machine_update(machine_id, firmware_url, command_id=command_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT de atualizacao") from exc
+
+    db.add(
+        AuditoriaOperacao(
+            maquina_id=machine_id,
+            acao="ATUALIZACAO_FIRMWARE",
+            descricao=f"Atualizacao OTA enviada command_id={command_id}",
+            executado_por_email=_get_user_email(user),
+            created_at=datetime.utcnow(),
+        )
+    )
+    registrar_auditoria(
+        db,
+        user,
+        acao="ATUALIZACAO_FIRMWARE",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=f"Atualizacao OTA enviada command_id={command_id}",
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "machine_id": machine_id,
+        "topic": f"/TEF/{machine_id}/cmd",
+        "payload": mqtt_payload,
+        "command_id": command_id,
     }
 
 
