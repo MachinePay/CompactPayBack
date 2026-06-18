@@ -195,9 +195,37 @@ def get_active_terminal_for_machine(cliente, maquina) -> dict:
             or terminal.get("terminal_id")
             or terminal.get("external_id")
         )
+        raw_connection_status = str(
+            terminal.get("connection_status")
+            or terminal.get("connectivity_status")
+            or terminal.get("status")
+            or ""
+        ).strip().lower()
+        explicit_online = (
+            terminal.get("online") is True
+            or terminal.get("connected") is True
+            or raw_connection_status in {"online", "connected"}
+        )
+        explicit_offline = (
+            terminal.get("online") is False
+            or terminal.get("connected") is False
+            or raw_connection_status in {"offline", "disconnected"}
+        )
+
+        if not terminal:
+            status = "offline"
+        elif explicit_online:
+            status = "online"
+        elif explicit_offline:
+            status = "offline"
+        else:
+            # A API publica confirma o vinculo, mas nao informa em tempo real
+            # se a maquininha esta ligada. Nao devemos exibir falso "Online".
+            status = "linked"
+
         result = {
-            "status": "online" if terminal else "offline",
-            "online": bool(terminal),
+            "status": status,
+            "online": status == "online",
             "terminal_id": str(terminal_id) if terminal_id is not None else None,
         }
     except Exception as exc:
