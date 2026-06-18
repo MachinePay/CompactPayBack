@@ -1,16 +1,17 @@
 from datetime import datetime
 from pathlib import Path
 from typing import List
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import FirmwareVersion
+from app.models.models import FirmwareVersion, Maquina
 from app.schemas.firmware import FirmwareVersionCreate, FirmwareVersionOut, FirmwareVersionUpdate
 from app.services.auditoria import registrar_auditoria
 
@@ -31,6 +32,15 @@ def _firmware_file_path(filename: str) -> Path:
     if upload_dir not in file_path.parents:
         raise HTTPException(status_code=400, detail="Nome de arquivo invalido")
     return file_path
+
+
+def _uploaded_firmware_path(url_bin: str) -> Path | None:
+    path = unquote(urlparse(url_bin or "").path)
+    marker = "/api/v1/firmware-files/"
+    if marker not in path:
+        return None
+    filename = path.split(marker, 1)[1].split("/", 1)[0]
+    return _firmware_file_path(filename) if filename else None
 
 
 def get_db():
@@ -233,3 +243,55 @@ def remover_firmware(
     )
     db.commit()
     return {"ok": True}
+
+
+@router.delete("/firmware-versions/{firmware_id}/permanent")
+def excluir_firmware_permanentemente(
+    firmware_id: int,
+    confirmacao: str = Query(...),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _require_admin(user)
+    if confirmacao.strip().upper() != "EXCLUIR":
+        raise HTTPException(status_code=422, detail='Digite "EXCLUIR" para confirmar')
+
+    firmware = db.query(FirmwareVersion).filter(FirmwareVersion.id == firmware_id).first()
+    if not firmware:
+        raise HTTPException(status_code=404, detail="Firmware nao encontrado")
+    if firmware.ativo:
+        raise HTTPException(status_code=409, detail="Desative o firmware antes de excluir")
+
+    update_in_progress = (
+        db.query(Maquina)
+        .filter(
+            Maquina.firmware_update_url == firmware.url_bin,
+            Maquina.firmware_update_status.in_(["sent", "downloading", "restarting"]),
+        )
+        .first()
+    )
+    if update_in_progress:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Firmware ainda esta em atualizacao na maquina {update_in_progress.id_hardware}",
+        )
+
+    firmware_name = firmware.nome
+    uploaded_file = _uploaded_firmware_path(firmware.url_bin)
+    registrar_auditoria(
+        db,
+        user,
+        acao="FIRMWARE_EXCLUIDO",
+        entidade_tipo="firmware",
+        entidade_id=firmware.id,
+        descricao=f"Firmware excluido permanentemente nome={firmware_name}",
+    )
+    db.delete(firmware)
+    db.commit()
+
+    file_removed = False
+    if uploaded_file and uploaded_file.exists() and uploaded_file.is_file():
+        uploaded_file.unlink()
+        file_removed = True
+
+    return {"ok": True, "arquivo_removido": file_removed}

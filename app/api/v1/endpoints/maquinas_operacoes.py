@@ -43,20 +43,31 @@ def _get_user_email(user) -> str:
 @router.post("/maquinas/{machine_id}/credito-teste")
 def enviar_credito_teste(
     machine_id: str,
+    payload: dict,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
     _, role, cliente_id = user
     _get_maquina_visivel(db, machine_id, role, cliente_id)
 
+    try:
+        valor = round(float(payload.get("valor")), 2)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=422, detail="Informe um valor valido") from None
+    if valor <= 0:
+        raise HTTPException(status_code=422, detail="O valor deve ser maior que zero")
+    if valor > 10000:
+        raise HTTPException(status_code=422, detail="O valor maximo para teste e R$ 10.000,00")
+
     command_id = str(uuid4())
+    descricao = f"Pagamento de teste enviado pelo painel no valor de R$ {valor:.2f}"
 
     db.add(
         HistoricoOperacao(
             maquina_id=machine_id,
             categoria="TESTE",
-            descricao="Credito de teste enviado pelo painel",
-            valor=None,
+            descricao=descricao,
+            valor=valor,
             command_id=command_id,
             pulse_status="pendente",
             created_at=datetime.utcnow(),
@@ -66,7 +77,7 @@ def enviar_credito_teste(
         AuditoriaOperacao(
             maquina_id=machine_id,
             acao="TESTE_CREDITO",
-            descricao="Credito de teste enviado pelo painel",
+            descricao=descricao,
             executado_por_email=_get_user_email(user),
             created_at=datetime.utcnow(),
         )
@@ -77,13 +88,18 @@ def enviar_credito_teste(
         acao="TESTE_CREDITO",
         entidade_tipo="maquina",
         entidade_id=machine_id,
-        descricao=f"Credito de teste enviado pelo painel command_id={command_id}",
+        descricao=f"{descricao} command_id={command_id}",
     )
     db.commit()
 
     try:
         update_pulse_status(command_id, "comando_enviado")
-        payload = publish_machine_credit(machine_id, action="paid", command_id=command_id)
+        mqtt_payload = publish_machine_credit(
+            machine_id,
+            action="paid",
+            command_id=command_id,
+            amount=valor,
+        )
         pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=8)
     except Exception as exc:
         update_pulse_status(command_id, "falha_publicacao")
@@ -99,7 +115,8 @@ def enviar_credito_teste(
         "ok": True,
         "machine_id": machine_id,
         "topic": f"/TEF/{machine_id}/cmd",
-        "payload": payload,
+        "payload": mqtt_payload,
+        "valor": valor,
         "command_id": command_id,
         "pulse_status": pulse_status,
     }
