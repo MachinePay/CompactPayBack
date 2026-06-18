@@ -144,17 +144,20 @@ def verificar_maquina_online(
     responded = False
     while time.monotonic() < deadline:
         db.expire_all()
-        pong = (
+        response = (
             db.query(HistoricoOperacao)
             .filter(
                 HistoricoOperacao.maquina_id == machine_id,
                 HistoricoOperacao.categoria == "DISPOSITIVO",
                 HistoricoOperacao.command_id == command_id,
-                HistoricoOperacao.descricao.ilike("%status=PONG%"),
+                (
+                    HistoricoOperacao.descricao.ilike("%status=PONG%")
+                    | HistoricoOperacao.descricao.ilike("%status=CMD_RECEBIDO%")
+                ),
             )
             .first()
         )
-        if pong:
+        if response:
             responded = True
             break
         time.sleep(0.25)
