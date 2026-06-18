@@ -20,6 +20,7 @@ from app.services.usuarios_helpers import (
 )
 
 router = APIRouter()
+PROTECTED_ADMIN_EMAILS = {"admin@compactpay.com.br"}
 
 
 def get_db():
@@ -149,6 +150,11 @@ def deletar_usuario(
     db_usuario = db.query(Usuario).filter(Usuario.id == usuario_id).first()
     if not db_usuario:
         raise HTTPException(status_code=404, detail="Usuario nao encontrado")
+    if (db_usuario.email or "").strip().lower() in PROTECTED_ADMIN_EMAILS:
+        raise HTTPException(
+            status_code=409,
+            detail="Esta conta administrativa e protegida e nao pode ser excluida",
+        )
 
     email = db_usuario.email
     role_value = db_usuario.role.value if hasattr(db_usuario.role, "value") else str(db_usuario.role)
