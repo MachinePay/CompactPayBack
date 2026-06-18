@@ -89,3 +89,26 @@ def publish_machine_update(
     )
     logging.info("MQTT update publicado machine_id=%s topic=%s payload=%s qos=%s", machine_id, topic, payload, settings.MQTT_COMMAND_QOS)
     return payload
+
+
+def publish_machine_ping(machine_id: str, command_id: str) -> str:
+    topic = f"/TEF/{machine_id}/cmd"
+    payload = f"{machine_id}@ping|cmd={command_id}|"
+
+    auth = None
+    if getattr(settings, "MQTT_USERNAME", None):
+        auth = {
+            "username": settings.MQTT_USERNAME,
+            "password": settings.MQTT_PASSWORD,
+        }
+
+    publish.single(
+        topic,
+        payload=payload,
+        qos=int(settings.MQTT_COMMAND_QOS),
+        hostname=settings.MQTT_BROKER_URL,
+        port=int(settings.MQTT_BROKER_PORT),
+        auth=auth,
+    )
+    logging.info("MQTT ping publicado machine_id=%s command_id=%s", machine_id, command_id)
+    return payload

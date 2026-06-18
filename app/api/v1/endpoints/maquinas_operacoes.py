@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 import re
+import time
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,7 +12,7 @@ from app.db.session import SessionLocal
 from app.models.models import AuditoriaOperacao, FirmwareVersion, HistoricoOperacao, Maquina
 from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
-from app.services.mqtt_commands import publish_machine_credit, publish_machine_update
+from app.services.mqtt_commands import publish_machine_credit, publish_machine_ping, publish_machine_update
 from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_confirmation
 
 router = APIRouter()
@@ -119,6 +120,55 @@ def enviar_credito_teste(
         "valor": valor,
         "command_id": command_id,
         "pulse_status": pulse_status,
+    }
+
+
+@router.post("/maquinas/{machine_id}/verificar-online")
+def verificar_maquina_online(
+    machine_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, cliente_id = user
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
+    command_id = str(uuid4())
+
+    try:
+        publish_machine_ping(machine_id, command_id)
+    except Exception as exc:
+        maquina.ultimo_sinal = None
+        db.commit()
+        raise HTTPException(status_code=502, detail="Falha ao enviar verificacao para a placa") from exc
+
+    deadline = time.monotonic() + 6
+    responded = False
+    while time.monotonic() < deadline:
+        db.expire_all()
+        pong = (
+            db.query(HistoricoOperacao)
+            .filter(
+                HistoricoOperacao.maquina_id == machine_id,
+                HistoricoOperacao.categoria == "DISPOSITIVO",
+                HistoricoOperacao.command_id == command_id,
+                HistoricoOperacao.descricao.ilike("%status=PONG%"),
+            )
+            .first()
+        )
+        if pong:
+            responded = True
+            break
+        time.sleep(0.25)
+
+    db.refresh(maquina)
+    maquina.ultimo_sinal = datetime.utcnow() if responded else None
+    db.commit()
+
+    return {
+        "ok": True,
+        "machine_id": machine_id,
+        "online": responded,
+        "command_id": command_id,
+        "message": "Placa online" if responded else "Placa nao respondeu e foi marcada como offline",
     }
 
 
