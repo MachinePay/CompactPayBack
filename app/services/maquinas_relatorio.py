@@ -5,6 +5,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.models.models import AuditoriaOperacao, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
+from app.services.mercado_pago import get_active_terminal_for_machine
 
 
 def apply_transacao_periodo(
@@ -414,6 +415,10 @@ def build_machine_history_payload(
     vendas.sort(key=lambda item: item["data"], reverse=True)
 
     status_online = bool(maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
+    terminal_status = get_active_terminal_for_machine(
+        getattr(maquina, "dono", None),
+        maquina,
+    )
     ultima_atividade = max(
         [
             item
@@ -436,6 +441,9 @@ def build_machine_history_payload(
             "banco_pagamento": maquina.banco_pagamento or "mercado_pago",
             "mp_pos_id": maquina.mp_pos_id,
             "mp_pos_external_id": maquina.mp_pos_external_id,
+            "terminal_id": terminal_status["terminal_id"],
+            "terminal_online": terminal_status["online"],
+            "terminal_status": terminal_status["status"],
             "firmware_version": maquina.firmware_version,
             "firmware_target_version": maquina.firmware_target_version,
             "firmware_updated_at": maquina.firmware_updated_at,

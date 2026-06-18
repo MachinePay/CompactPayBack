@@ -9,6 +9,9 @@ from fastapi import HTTPException
 
 from app.core.config import settings
 
+_terminal_status_cache: dict[str, tuple[float, dict]] = {}
+_TERMINAL_STATUS_CACHE_SECONDS = 30
+
 
 def _mp_error_payload(error_body: str) -> dict:
     if not error_body:
@@ -144,6 +147,72 @@ def search_pos_by_external_id(access_token: str, external_id: str) -> dict | Non
         return None
     results = data.get("results") or []
     return results[0] if results else None
+
+
+def get_active_terminal_for_machine(cliente, maquina) -> dict:
+    access_token = ((getattr(cliente, "mp_access_token", None) or "") if cliente else "").strip()
+    store_id = (getattr(maquina, "mp_store_id", None) or "").strip()
+    pos_id = (getattr(maquina, "mp_pos_id", None) or "").strip()
+
+    if not access_token or not store_id or not pos_id:
+        return {
+            "status": "not_linked",
+            "online": False,
+            "terminal_id": None,
+        }
+
+    cache_key = f"{store_id}:{pos_id}"
+    cached = _terminal_status_cache.get(cache_key)
+    if cached and time.monotonic() - cached[0] < _TERMINAL_STATUS_CACHE_SECONDS:
+        return cached[1]
+
+    query = urllib.parse.urlencode({"store_id": store_id, "pos_id": pos_id})
+    try:
+        payload = mp_request(
+            "GET",
+            f"https://api.mercadopago.com/point/integration-api/devices?{query}",
+            access_token,
+        )
+
+        candidates = []
+        if isinstance(payload, list):
+            candidates = payload
+        elif isinstance(payload, dict):
+            for key in ("devices", "results", "terminals"):
+                if isinstance(payload.get(key), list):
+                    candidates = payload[key]
+                    break
+            if not candidates and isinstance(payload.get("data"), dict):
+                for key in ("devices", "results", "terminals"):
+                    if isinstance(payload["data"].get(key), list):
+                        candidates = payload["data"][key]
+                        break
+
+        terminal = candidates[0] if candidates and isinstance(candidates[0], dict) else {}
+        terminal_id = (
+            terminal.get("id")
+            or terminal.get("device_id")
+            or terminal.get("terminal_id")
+            or terminal.get("external_id")
+        )
+        result = {
+            "status": "online" if terminal else "offline",
+            "online": bool(terminal),
+            "terminal_id": str(terminal_id) if terminal_id is not None else None,
+        }
+    except Exception as exc:
+        print(
+            f"[Mercado Pago] status da maquininha indisponivel "
+            f"maquina={maquina.id_hardware}: {exc}"
+        )
+        result = {
+            "status": "unavailable",
+            "online": False,
+            "terminal_id": None,
+        }
+
+    _terminal_status_cache[cache_key] = (time.monotonic(), result)
+    return result
 
 
 def create_default_store(cliente) -> dict:
