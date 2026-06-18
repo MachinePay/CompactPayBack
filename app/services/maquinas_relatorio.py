@@ -119,6 +119,38 @@ def real_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime,
 
 
 ONLINE_SIGNAL_WINDOW = timedelta(seconds=90)
+TERMINAL_PAYMENT_ONLINE_WINDOW = timedelta(minutes=5)
+
+
+def recent_terminal_payment_status(db: Session, machine_id: str) -> dict:
+    terminal_payment = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.categoria == "PAGAMENTO",
+            HistoricoOperacao.descricao.ilike("%terminal_id=%"),
+        )
+        .order_by(HistoricoOperacao.created_at.desc())
+        .first()
+    )
+    if not terminal_payment:
+        return {"online": False, "terminal_id": None, "last_payment_at": None}
+
+    match = re.search(
+        r"terminal_id=([^,\)\s]+)",
+        terminal_payment.descricao or "",
+        flags=re.IGNORECASE,
+    )
+    terminal_id = match.group(1) if match else None
+    is_recent = bool(
+        terminal_payment.created_at
+        and datetime.utcnow() - terminal_payment.created_at < TERMINAL_PAYMENT_ONLINE_WINDOW
+    )
+    return {
+        "online": is_recent,
+        "terminal_id": terminal_id,
+        "last_payment_at": terminal_payment.created_at,
+    }
 
 
 def status_operacional(status_online: bool, ultima_atividade_em: datetime | None) -> str:
@@ -419,6 +451,14 @@ def build_machine_history_payload(
         getattr(maquina, "dono", None),
         maquina,
     )
+    terminal_payment = recent_terminal_payment_status(db, machine_id)
+    if terminal_payment["online"]:
+        terminal_status = {
+            **terminal_status,
+            "status": "online",
+            "online": True,
+            "terminal_id": terminal_payment["terminal_id"] or terminal_status["terminal_id"],
+        }
     ultima_atividade = max(
         [
             item
@@ -444,6 +484,7 @@ def build_machine_history_payload(
             "terminal_id": terminal_status["terminal_id"],
             "terminal_online": terminal_status["online"],
             "terminal_status": terminal_status["status"],
+            "terminal_last_payment_at": terminal_payment["last_payment_at"],
             "firmware_version": maquina.firmware_version,
             "firmware_target_version": maquina.firmware_target_version,
             "firmware_updated_at": maquina.firmware_updated_at,
