@@ -1,12 +1,12 @@
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import Maquina, Transacao
+from app.models.models import Maquina, Transacao, VendaPagamento
 from app.services.maquinas_relatorio import (
     ONLINE_SIGNAL_WINDOW,
     apply_transacao_periodo,
@@ -29,6 +29,32 @@ def _maquina_query_por_usuario(db: Session, role: str, cliente_id):
     if role == "admin":
         return db.query(Maquina)
     return db.query(Maquina).filter(Maquina.cliente_id == cliente_id)
+
+
+def _total_dinheiro_fisico(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> float:
+    if not machine_ids:
+        return 0.0
+
+    vendas_fisicas = db.query(VendaPagamento).filter(
+        VendaPagamento.maquina_id.in_(machine_ids),
+        VendaPagamento.created_at >= start_dt,
+        VendaPagamento.created_at <= end_dt,
+        VendaPagamento.conta_faturamento.is_(True),
+        or_(VendaPagamento.origem == "fisico", VendaPagamento.provider == "fisico"),
+    )
+    total_vendas = vendas_fisicas.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0
+
+    transacoes_com_venda = db.query(VendaPagamento.transacao_id).filter(VendaPagamento.transacao_id.isnot(None))
+    fisico_legado = db.query(Transacao).filter(
+        Transacao.maquina_id.in_(machine_ids),
+        Transacao.tipo == "IN",
+        Transacao.metodo == "FISICO",
+        Transacao.data_hora >= start_dt,
+        Transacao.data_hora <= end_dt,
+        ~Transacao.id.in_(transacoes_com_venda),
+    )
+    total_legado = fisico_legado.with_entities(func.sum(Transacao.valor)).scalar() or 0.0
+    return float(total_vendas or 0.0) + float(total_legado or 0.0)
 
 
 @router.get("/dashboard/stats")
@@ -91,6 +117,7 @@ def dashboard_overview(
 
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
     faturamento, quantidade_vendas_reais = real_revenue_totals(db, maquinas_ids, start_dt, end_dt)
+    total_fisico = _total_dinheiro_fisico(db, maquinas_ids, start_dt, end_dt)
     premios = (
         transacoes_periodo.filter(Transacao.tipo == "OUT")
         .with_entities(func.count(Transacao.id))
@@ -210,6 +237,7 @@ def dashboard_overview(
     return {
         "stats": {
             "faturamento_total": float(faturamento),
+            "total_fisico": float(total_fisico),
             "premios_entregues": int(premios),
             "maquinas_ativas": len(maquinas_online),
             "total_maquinas": len(maquinas),
