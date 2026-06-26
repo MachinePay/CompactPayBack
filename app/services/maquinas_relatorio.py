@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from app.models.models import AuditoriaOperacao, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.services.mercado_pago import get_active_terminal_for_machine
 
-OTA_TIMEOUT = timedelta(minutes=20)
+OTA_TIMEOUT = timedelta(minutes=3)
 OTA_ACTIVE_STATUSES = {"sent", "downloading", "restarting"}
 
 
