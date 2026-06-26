@@ -48,6 +48,7 @@ class MaquinaOut(BaseModel):
     status_online: bool = False
     status_operacional: str = "offline"
     faturamento: float = 0.0
+    quantidade_saidas: int = 0
 
     class Config:
         from_attributes = True

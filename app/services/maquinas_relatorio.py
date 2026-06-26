@@ -192,6 +192,17 @@ def serialize_machine_summary(
         )
         .scalar()
     )
+    quantidade_saidas = (
+        db.query(func.count(Transacao.id))
+        .filter(
+            Transacao.maquina_id == maquina.id_hardware,
+            Transacao.tipo == "OUT",
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+        )
+        .scalar()
+        or 0
+    )
     ultimo_teste_em = (
         db.query(func.max(HistoricoOperacao.created_at))
         .filter(
@@ -236,6 +247,7 @@ def serialize_machine_summary(
         "status_online": status_online,
         "status_operacional": status_operacional(status_online, ultima_atividade_em),
         "faturamento": float(faturamento),
+        "quantidade_saidas": int(quantidade_saidas),
     }
 
 
