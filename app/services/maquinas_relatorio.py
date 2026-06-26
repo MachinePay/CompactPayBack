@@ -81,15 +81,28 @@ def real_payment_history_query(db: Session, machine_ids: list[str], start_dt: da
 
 
 def real_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> tuple[float, int]:
+    breakdown = real_revenue_breakdown(db, machine_ids, start_dt, end_dt)
+    return float(breakdown["total"]), int(breakdown["count"])
+
+
+def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
     if not machine_ids:
-        return 0.0, 0
+        return {"total": 0.0, "digital": 0.0, "fisico": 0.0, "count": 0}
+
     vendas_query = db.query(VendaPagamento).filter(
         VendaPagamento.maquina_id.in_(machine_ids),
         VendaPagamento.created_at >= start_dt,
         VendaPagamento.created_at <= end_dt,
         VendaPagamento.conta_faturamento.is_(True),
     )
-    vendas_total = vendas_query.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0
+    vendas_total = float(vendas_query.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0)
+    vendas_fisicas = float(
+        vendas_query.filter(or_(VendaPagamento.origem == "fisico", VendaPagamento.provider == "fisico"))
+        .with_entities(func.sum(VendaPagamento.valor_liquido))
+        .scalar()
+        or 0.0
+    )
+    vendas_digitais = max(0.0, vendas_total - vendas_fisicas)
     vendas_count = (
         vendas_query.filter(VendaPagamento.conta_ticket_medio.is_(True))
         .with_entities(func.count(VendaPagamento.id))
@@ -98,14 +111,14 @@ def real_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime,
     )
 
     historicos_com_venda = db.query(VendaPagamento.historico_id).filter(VendaPagamento.historico_id.isnot(None))
-    digital_query = real_payment_history_query(db, machine_ids, start_dt, end_dt).filter(
+    digital_legado_query = real_payment_history_query(db, machine_ids, start_dt, end_dt).filter(
         ~HistoricoOperacao.id.in_(historicos_com_venda)
     )
-    digital_total = digital_query.with_entities(func.sum(HistoricoOperacao.valor)).scalar() or 0.0
-    digital_count = digital_query.with_entities(func.count(HistoricoOperacao.id)).scalar() or 0
+    digital_legado = float(digital_legado_query.with_entities(func.sum(HistoricoOperacao.valor)).scalar() or 0.0)
+    digital_legado_count = digital_legado_query.with_entities(func.count(HistoricoOperacao.id)).scalar() or 0
 
     transacoes_com_venda = db.query(VendaPagamento.transacao_id).filter(VendaPagamento.transacao_id.isnot(None))
-    fisico_query = db.query(Transacao).filter(
+    fisico_legado_query = db.query(Transacao).filter(
         Transacao.maquina_id.in_(machine_ids),
         Transacao.tipo == "IN",
         Transacao.metodo == "FISICO",
@@ -113,12 +126,17 @@ def real_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime,
         Transacao.data_hora <= end_dt,
         ~Transacao.id.in_(transacoes_com_venda),
     )
-    fisico_total = fisico_query.with_entities(func.sum(Transacao.valor)).scalar() or 0.0
-    fisico_count = fisico_query.with_entities(func.count(Transacao.id)).scalar() or 0
-    return (
-        float(vendas_total or 0.0) + float(digital_total or 0.0) + float(fisico_total or 0.0),
-        int(vendas_count or 0) + int(digital_count or 0) + int(fisico_count or 0),
-    )
+    fisico_legado = float(fisico_legado_query.with_entities(func.sum(Transacao.valor)).scalar() or 0.0)
+    fisico_legado_count = fisico_legado_query.with_entities(func.count(Transacao.id)).scalar() or 0
+
+    total_digital = vendas_digitais + digital_legado
+    total_fisico = vendas_fisicas + fisico_legado
+    return {
+        "total": total_digital + total_fisico,
+        "digital": total_digital,
+        "fisico": total_fisico,
+        "count": int(vendas_count or 0) + int(digital_legado_count or 0) + int(fisico_legado_count or 0),
+    }
 
 
 ONLINE_SIGNAL_WINDOW = timedelta(seconds=90)
@@ -308,18 +326,11 @@ def build_machine_history_payload(
         .all()
     )
 
-    total_pagamentos, quantidade_pagamentos_reais = real_revenue_totals(db, [machine_id], start_dt, end_dt)
-    total_digital = (
-        real_payment_history_query(db, [machine_id], start_dt, end_dt)
-        .with_entities(func.sum(HistoricoOperacao.valor))
-        .scalar()
-        or 0.0
-    )
-    total_fisico = sum(
-        float(item.valor or 0)
-        for item in pagamentos
-        if (item.metodo.value if hasattr(item.metodo, "value") else str(item.metodo)) == "FISICO"
-    )
+    resumo_faturamento = real_revenue_breakdown(db, [machine_id], start_dt, end_dt)
+    total_pagamentos = resumo_faturamento["total"]
+    total_digital = resumo_faturamento["digital"]
+    total_fisico = resumo_faturamento["fisico"]
+    quantidade_pagamentos_reais = resumo_faturamento["count"]
     ultimo_pagamento = pagamentos[0] if pagamentos else None
     ultimo_teste = testes[0] if testes else None
     ultima_saida = saidas[0] if saidas else None

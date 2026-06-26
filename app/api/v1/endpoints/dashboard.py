@@ -10,6 +10,7 @@ from app.models.models import Maquina, Transacao, VendaPagamento
 from app.services.maquinas_relatorio import (
     ONLINE_SIGNAL_WINDOW,
     apply_transacao_periodo,
+    real_revenue_breakdown,
     real_revenue_totals,
     resolve_date_window,
 )
@@ -116,8 +117,10 @@ def dashboard_overview(
     )
 
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
-    faturamento, quantidade_vendas_reais = real_revenue_totals(db, maquinas_ids, start_dt, end_dt)
-    total_fisico = _total_dinheiro_fisico(db, maquinas_ids, start_dt, end_dt)
+    resumo_faturamento = real_revenue_breakdown(db, maquinas_ids, start_dt, end_dt)
+    faturamento = resumo_faturamento["total"]
+    total_fisico = resumo_faturamento["fisico"]
+    quantidade_vendas_reais = resumo_faturamento["count"]
     premios = (
         transacoes_periodo.filter(Transacao.tipo == "OUT")
         .with_entities(func.count(Transacao.id))
