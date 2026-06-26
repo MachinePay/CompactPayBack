@@ -7,6 +7,9 @@ from sqlalchemy.orm import Session
 from app.models.models import AuditoriaOperacao, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.services.mercado_pago import get_active_terminal_for_machine
 
+OTA_TIMEOUT = timedelta(minutes=20)
+OTA_ACTIVE_STATUSES = {"sent", "downloading", "restarting"}
+
 
 def apply_transacao_periodo(
     query,
@@ -217,6 +220,17 @@ def serialize_machine_summary(
         [item for item in [ultimo_pagamento_em, ultima_saida_em, ultimo_teste_em] if item is not None],
         default=None,
     )
+    firmware_update_status = maquina.firmware_update_status
+    update_started_at = maquina.firmware_update_started_at or maquina.firmware_update_requested_at
+    if (
+        firmware_update_status in OTA_ACTIVE_STATUSES
+        and update_started_at
+        and agora - update_started_at > OTA_TIMEOUT
+    ):
+        firmware_update_status = "failed"
+        maquina.firmware_update_status = "failed"
+        maquina.firmware_update_finished_at = agora
+        db.commit()
 
     return {
         "id_hardware": maquina.id_hardware,
@@ -233,7 +247,7 @@ def serialize_machine_summary(
         "firmware_version": maquina.firmware_version,
         "firmware_target_version": maquina.firmware_target_version,
         "firmware_updated_at": maquina.firmware_updated_at,
-        "firmware_update_status": maquina.firmware_update_status,
+        "firmware_update_status": firmware_update_status,
         "firmware_update_command_id": maquina.firmware_update_command_id,
         "firmware_update_url": maquina.firmware_update_url,
         "firmware_update_requested_at": maquina.firmware_update_requested_at,
