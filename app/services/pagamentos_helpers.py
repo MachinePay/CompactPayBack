@@ -1,11 +1,24 @@
+import re
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models.models import Cliente
+from app.models.models import Cliente, HistoricoOperacao, VendaPagamento
 from app.services.mercado_pago import mp_request
+
+NON_RELEASED_PULSE_STATUSES = {
+    "falha",
+    "falha_timeout",
+    "falha_publicacao",
+    "falha_cmd_ignorado",
+    "falha_bloqueado",
+    "falha_sem_confirmacao",
+    "saldo_pendente",
+    "pulso_sem_retorno",
+}
 
 
 def calcular_pulsos_por_valor(valor: float) -> int:
@@ -15,6 +28,64 @@ def calcular_pulsos_por_valor(valor: float) -> int:
         return 1
     pulsos = int(quantia)
     return max(1, pulsos)
+
+
+def should_auto_refund_on_pulse_failure(pulse_status: str | None) -> bool:
+    normalized = str(pulse_status or "").strip().lower()
+    return normalized in NON_RELEASED_PULSE_STATUSES
+
+
+def should_allow_refund(pulse_status: str | None, refunded_at, provider_payment_id: str | None, provider: str | None) -> bool:
+    if refunded_at:
+        return False
+    if not provider_payment_id:
+        return False
+    normalized_provider = str(provider or "").strip().lower()
+    return normalized_provider in {"", "mercado_pago", "manual"}
+
+
+def extract_provider_payment_id(historico: HistoricoOperacao | None) -> str | None:
+    if not historico:
+        return None
+    if historico.provider_payment_id:
+        return historico.provider_payment_id
+    match = re.search(r"(?:payment_id|mp_order_id)=([^,\)\s]+)", historico.descricao or "")
+    return match.group(1) if match else None
+
+
+def auto_refund_failed_pulse(db: Session, historico: HistoricoOperacao | None, maquina=None) -> bool:
+    if not historico or historico.refunded_at:
+        return False
+    if not should_auto_refund_on_pulse_failure(getattr(historico, "pulse_status", None)):
+        return False
+
+    payment_id = extract_provider_payment_id(historico)
+    if not payment_id:
+        return False
+
+    token = ""
+    if maquina is not None:
+        token = (getattr(maquina, "dono", None).mp_access_token if getattr(maquina, "dono", None) else "") or ""
+    if not token:
+        return False
+
+    mp_request(
+        "POST",
+        f"https://api.mercadopago.com/v1/payments/{payment_id}/refunds",
+        token.strip(),
+        body={},
+        headers={"X-Idempotency-Key": f"refund-{payment_id}-{historico.id}"},
+    )
+    refunded_at = datetime.utcnow()
+    historico.refunded_at = refunded_at
+    venda = db.query(VendaPagamento).filter(VendaPagamento.historico_id == historico.id).first()
+    if venda:
+        venda.refunded_at = refunded_at
+    db.add(historico)
+    if venda:
+        db.add(venda)
+    db.commit()
+    return True
 
 
 def iter_mp_tokens(db: Session):

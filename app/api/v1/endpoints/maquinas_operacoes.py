@@ -9,10 +9,11 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import AuditoriaOperacao, FirmwareVersion, HistoricoOperacao, Maquina
+from app.models.models import AuditoriaOperacao, FirmwareVersion, HistoricoOperacao, Maquina, VendaPagamento
 from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit, publish_machine_ping, publish_machine_update
+from app.services.pagamentos_helpers import extract_provider_payment_id, should_allow_refund
 from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_confirmation
 
 router = APIRouter()
@@ -356,13 +357,9 @@ def estornar_pagamento_maquina(
         raise HTTPException(status_code=404, detail="Pagamento nao encontrado")
     if historico.refunded_at:
         raise HTTPException(status_code=400, detail="Pagamento ja foi estornado")
-    if not (historico.pulse_status or "").lower().startswith("falha"):
-        raise HTTPException(status_code=422, detail="Extorno automatico permitido apenas quando o pulso falhou")
-
-    payment_id = historico.provider_payment_id
-    if not payment_id:
-        match = re.search(r"payment_id=([^,\)\s]+)", historico.descricao or "")
-        payment_id = match.group(1) if match else None
+    payment_id = extract_provider_payment_id(historico)
+    if not should_allow_refund(historico.pulse_status, historico.refunded_at, payment_id, historico.provider):
+        raise HTTPException(status_code=422, detail="Extorno permitido apenas para pagamentos com identificador do Mercado Pago e ainda nao estornados")
     if not payment_id:
         raise HTTPException(status_code=422, detail="Pagamento sem payment_id do Mercado Pago para estorno automatico")
 
@@ -377,7 +374,11 @@ def estornar_pagamento_maquina(
         body={},
         headers={"X-Idempotency-Key": f"refund-{payment_id}-{historico_id}"},
     )
-    historico.refunded_at = datetime.utcnow()
+    refunded_at = datetime.utcnow()
+    historico.refunded_at = refunded_at
+    venda = db.query(VendaPagamento).filter(VendaPagamento.historico_id == historico.id).first()
+    if venda:
+        venda.refunded_at = refunded_at
     db.add(
         AuditoriaOperacao(
             maquina_id=machine_id,

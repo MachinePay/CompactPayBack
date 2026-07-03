@@ -2,7 +2,7 @@ from datetime import datetime
 from uuid import uuid4
 
 from app.db.session import SessionLocal
-from app.models.models import EscutaTerminal, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao, VendaPagamento
+from app.models.models import EscutaTerminal, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao
 from app.services.mqtt_commands import publish_machine_credit_pulses
 from app.services.pagamentos_helpers import (
     calcular_pulsos_por_valor,
@@ -56,20 +56,6 @@ def _resolve_machine_by_mp_location(db, payment_data: dict):
     if len(candidates) > 1:
         return None, ids, "match_multiplo"
     return None, ids, "sem_match"
-
-
-def _atualizar_status_pulso(historico_id: int, status: str) -> None:
-    db_status = SessionLocal()
-    try:
-        item = db_status.query(HistoricoOperacao).filter(HistoricoOperacao.id == historico_id).first()
-        venda = db_status.query(VendaPagamento).filter(VendaPagamento.historico_id == historico_id).first()
-        if item:
-            item.pulse_status = status
-        if venda:
-            venda.status_pulso = status
-        db_status.commit()
-    finally:
-        db_status.close()
 
 
 def processar_callback_mercado_pago(dados: dict):

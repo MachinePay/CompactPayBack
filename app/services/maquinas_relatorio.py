@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import AuditoriaOperacao, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.services.mercado_pago import get_active_terminal_for_machine
+from app.services.pagamentos_helpers import should_allow_refund
 
 OTA_TIMEOUT = timedelta(minutes=3)
 OTA_ACTIVE_STATUSES = {"sent", "downloading", "restarting"}
@@ -448,11 +449,11 @@ def build_machine_history_payload(
                 "command_id": item.command_id,
                 "situacao": "Extornado" if item.refunded_at else "Venda Aprovada",
                 "refunded_at": item.refunded_at,
-                "can_refund": bool(
-                    provider_payment_id
-                    and item.provider in {None, "mercado_pago"}
-                    and not item.refunded_at
-                    and str(pulse_status).startswith("falha")
+                "can_refund": should_allow_refund(
+                    pulse_status,
+                    item.refunded_at,
+                    provider_payment_id,
+                    item.provider,
                 ),
                 "descricao": item.descricao,
             }
