@@ -2,6 +2,7 @@ from datetime import datetime, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
@@ -34,6 +35,10 @@ PULSE_ABSENT_STATUSES = {
     "pulso_sem_retorno",
 }
 OTA_ACTIVE_STATUSES = {"sent", "downloading", "restarting"}
+OFFLINE_ALERT_AFTER = timedelta(minutes=5)
+NO_PAYMENT_ALERT_AFTER = timedelta(days=7)
+NOISE_ALERT_WINDOW = timedelta(hours=24)
+NOISE_ALERT_THRESHOLD = 10
 
 
 def get_db():
@@ -216,6 +221,160 @@ def _matches_health_filters(item: dict, status: str, wifi: str, firmware: str, p
     return True
 
 
+def _noise_count(db: Session, machine_id: str, since: datetime) -> int:
+    return (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.categoria == "DISPOSITIVO",
+            HistoricoOperacao.created_at >= since,
+            or_(
+                HistoricoOperacao.descricao.ilike("%PULSE_CURTO%"),
+                HistoricoOperacao.descricao.ilike("%CURTO_IGNORADO%"),
+                HistoricoOperacao.descricao.ilike("%COIN_RETURN_IGNORADO%"),
+            ),
+        )
+        .count()
+    )
+
+
+def _make_alert(machine: dict, tipo: str, severidade: str, titulo: str, mensagem: str, detected_at, extra: dict | None = None):
+    return {
+        "id": f"{machine['id_hardware']}:{tipo}",
+        "tipo": tipo,
+        "severidade": severidade,
+        "titulo": titulo,
+        "mensagem": mensagem,
+        "detected_at": detected_at,
+        "maquina": {
+            "id_hardware": machine["id_hardware"],
+            "nome": machine["nome"],
+            "cliente_nome": machine["cliente_nome"],
+            "localizacao": machine["localizacao"],
+        },
+        "extra": extra or {},
+    }
+
+
+def _build_machine_alerts(db: Session, machine: dict, now: datetime):
+    alerts = []
+    last_signal = machine.get("ultimo_sinal")
+    if not machine["status_online"] and last_signal and now - last_signal >= OFFLINE_ALERT_AFTER:
+        minutes = int((now - last_signal).total_seconds() // 60)
+        alerts.append(
+            _make_alert(
+                machine,
+                "offline",
+                "critico",
+                "Maquina offline",
+                f"Sem sinal ha {minutes} minuto(s).",
+                last_signal,
+                {"offline_minutos": minutes},
+            )
+        )
+
+    if machine["wifi_status"] == "ruim":
+        alerts.append(
+            _make_alert(
+                machine,
+                "wifi_ruim",
+                "aviso",
+                "Wi-Fi ruim",
+                f"Sinal em {machine.get('wifi_quality')}% ({machine.get('wifi_rssi')} dBm).",
+                last_signal,
+                {"wifi_quality": machine.get("wifi_quality"), "wifi_rssi": machine.get("wifi_rssi")},
+            )
+        )
+
+    pulse = machine.get("ultimo_pulso")
+    pulse_status = str((pulse or {}).get("status") or "").lower()
+    if machine["pulse_alert"] and pulse:
+        alerts.append(
+            _make_alert(
+                machine,
+                "pulso_ausente",
+                "critico",
+                "Pagamento com pulso ausente",
+                f"Ultimo pulso registrado como {pulse_status}.",
+                pulse.get("data"),
+                {"pulse_status": pulse_status, "command_id": pulse.get("command_id")},
+            )
+        )
+
+    if machine["firmware_alert"]:
+        status = machine.get("firmware_update_status") or "pendente"
+        severity = "critico" if status == "failed" else "aviso"
+        alerts.append(
+            _make_alert(
+                machine,
+                "firmware",
+                severity,
+                "Firmware requer atencao",
+                f"Versao atual {machine.get('firmware_version') or 'sem versao'}; alvo {machine.get('firmware_target_version') or 'nao definido'}; status {status}.",
+                last_signal,
+                {
+                    "firmware_version": machine.get("firmware_version"),
+                    "firmware_target_version": machine.get("firmware_target_version"),
+                    "firmware_update_status": status,
+                },
+            )
+        )
+
+    payment = machine.get("ultimo_pagamento")
+    if payment and payment.get("data") and now - payment["data"] >= NO_PAYMENT_ALERT_AFTER:
+        days = int((now - payment["data"]).total_seconds() // 86400)
+        alerts.append(
+            _make_alert(
+                machine,
+                "sem_pagamento_recente",
+                "info",
+                "Sem pagamento recente",
+                f"Ultimo pagamento ha {days} dia(s).",
+                payment["data"],
+                {"dias": days, "valor": payment.get("valor")},
+            )
+        )
+
+    noise_count = _noise_count(db, machine["id_hardware"], now - NOISE_ALERT_WINDOW)
+    if noise_count >= NOISE_ALERT_THRESHOLD:
+        alerts.append(
+            _make_alert(
+                machine,
+                "ruido_contador",
+                "aviso",
+                "Ruido no contador",
+                f"{noise_count} pulsos curtos/ignorados nas ultimas 24h.",
+                now,
+                {"eventos_24h": noise_count},
+            )
+        )
+
+    return alerts
+
+
+def _matches_alert_filters(alert: dict, tipo: str, severidade: str, busca: str) -> bool:
+    if tipo != "todos" and alert["tipo"] != tipo:
+        return False
+    if severidade != "todos" and alert["severidade"] != severidade:
+        return False
+    if busca:
+        machine = alert.get("maquina") or {}
+        haystack = " ".join(
+            str(value or "")
+            for value in [
+                alert.get("titulo"),
+                alert.get("mensagem"),
+                machine.get("id_hardware"),
+                machine.get("nome"),
+                machine.get("cliente_nome"),
+                machine.get("localizacao"),
+            ]
+        ).lower()
+        if busca not in haystack:
+            return False
+    return True
+
+
 @router.get("/maquinas", response_model=List[MaquinaOut])
 def listar_maquinas(
     db: Session = Depends(get_db),
@@ -290,6 +449,52 @@ def listar_saude_maquinas(
         "filtradas": len(filtered),
     }
     return {"resumo": resumo, "maquinas": filtered}
+
+
+@router.get("/maquinas/alertas")
+def listar_alertas_maquinas(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    cliente_id: int = None,
+    tipo: str = "todos",
+    severidade: str = "todos",
+    busca: str = "",
+):
+    _, role, user_cliente_id = user
+    query = _maquina_query_por_usuario(db, role, user_cliente_id)
+    if role == "admin" and cliente_id is not None:
+        query = query.filter(Maquina.cliente_id == cliente_id)
+
+    now = datetime.utcnow()
+    normalized_tipo = (tipo or "todos").strip().lower()
+    normalized_severidade = (severidade or "todos").strip().lower()
+    normalized_busca = (busca or "").strip().lower()
+    machines = [
+        _serialize_health_machine(db, maquina, now)
+        for maquina in query.order_by(Maquina.nome_local.asc(), Maquina.id_hardware.asc()).all()
+    ]
+    alerts = []
+    for machine in machines:
+        alerts.extend(_build_machine_alerts(db, machine, now))
+    alerts.sort(key=lambda item: item.get("detected_at") or datetime.min, reverse=True)
+    filtered = [
+        alert
+        for alert in alerts
+        if _matches_alert_filters(alert, normalized_tipo, normalized_severidade, normalized_busca)
+    ]
+    resumo = {
+        "total": len(alerts),
+        "criticos": sum(1 for item in alerts if item["severidade"] == "critico"),
+        "avisos": sum(1 for item in alerts if item["severidade"] == "aviso"),
+        "infos": sum(1 for item in alerts if item["severidade"] == "info"),
+        "offline": sum(1 for item in alerts if item["tipo"] == "offline"),
+        "wifi_ruim": sum(1 for item in alerts if item["tipo"] == "wifi_ruim"),
+        "pulso_ausente": sum(1 for item in alerts if item["tipo"] == "pulso_ausente"),
+        "firmware": sum(1 for item in alerts if item["tipo"] == "firmware"),
+        "ruido_contador": sum(1 for item in alerts if item["tipo"] == "ruido_contador"),
+        "filtrados": len(filtered),
+    }
+    return {"resumo": resumo, "alertas": filtered}
 
 
 @router.post("/maquinas", response_model=MaquinaOut)
