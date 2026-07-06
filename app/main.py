@@ -167,6 +167,9 @@ def startup_event():
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN localizacao VARCHAR"))
         if "banco_pagamento" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN banco_pagamento VARCHAR"))
+        for column_name in ["wifi_rssi", "wifi_quality"]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} INTEGER"))
         for column_name in [
             "mp_store_id",
             "mp_store_external_id",

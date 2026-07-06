@@ -98,6 +98,8 @@ class Maquina(Base):
     mp_pos_external_id = Column(String, nullable=True)
     mp_qr_image = Column(String, nullable=True)
     ultimo_sinal = Column(DateTime, nullable=True)
+    wifi_rssi = Column(Integer, nullable=True)
+    wifi_quality = Column(Integer, nullable=True)
     firmware_version = Column(String, nullable=True)
     firmware_target_version = Column(String, nullable=True)
     firmware_updated_at = Column(DateTime, nullable=True)

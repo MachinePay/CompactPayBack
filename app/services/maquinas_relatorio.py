@@ -273,6 +273,8 @@ def serialize_machine_summary(
         "firmware_update_started_at": maquina.firmware_update_started_at,
         "firmware_update_finished_at": maquina.firmware_update_finished_at,
         "ultimo_sinal": maquina.ultimo_sinal,
+        "wifi_rssi": maquina.wifi_rssi,
+        "wifi_quality": maquina.wifi_quality,
         "ultimo_pagamento_em": ultimo_pagamento_em,
         "ultimo_teste_em": ultimo_teste_em,
         "ultima_saida_em": ultima_saida_em,

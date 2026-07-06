@@ -41,6 +41,8 @@ class MaquinaOut(BaseModel):
     firmware_update_started_at: Optional[datetime] = None
     firmware_update_finished_at: Optional[datetime] = None
     ultimo_sinal: Optional[datetime] = None
+    wifi_rssi: Optional[int] = None
+    wifi_quality: Optional[int] = None
     ultimo_pagamento_em: Optional[datetime] = None
     ultimo_teste_em: Optional[datetime] = None
     ultima_saida_em: Optional[datetime] = None

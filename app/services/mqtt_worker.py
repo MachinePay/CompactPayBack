@@ -44,6 +44,16 @@ def _status_to_pulse_status(status: str) -> str | None:
         "PULSO_BLOQUEADO_SEGURANCA": "falha_bloqueado",
     }.get(status)
 
+
+def _parse_int_field(fields: dict[str, str], key: str) -> int | None:
+    value = fields.get(key)
+    if value is None:
+        return None
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
 def on_connect(client, userdata, flags, rc):
     print(f"MQTT conectado com código {rc}")
     client.subscribe(TOPIC)
@@ -72,6 +82,12 @@ def on_message(client, userdata, msg):
         if status:
             command_id = status_fields.get("cmd")
             firmware_version = status_fields.get("fw")
+            wifi_rssi = _parse_int_field(status_fields, "rssi")
+            wifi_quality = _parse_int_field(status_fields, "wifi")
+            if wifi_rssi is not None:
+                maquina.wifi_rssi = wifi_rssi
+            if wifi_quality is not None:
+                maquina.wifi_quality = max(0, min(100, wifi_quality))
             if firmware_version:
                 maquina.firmware_version = firmware_version
                 maquina.firmware_updated_at = datetime.utcnow()
