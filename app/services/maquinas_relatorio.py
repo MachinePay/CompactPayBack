@@ -426,10 +426,7 @@ def build_machine_history_payload(
     timeline.sort(key=lambda item: item["created_at"], reverse=True)
 
     vendas = []
-    historico_transacao_ids = set()
     for item in pagamentos_historico:
-        if item.transacao_id:
-            historico_transacao_ids.add(item.transacao_id)
         provider_payment_id = item.provider_payment_id
         if not provider_payment_id:
             match = re.search(r"(?:payment_id|mp_order_id)=([^,\)\s]+)", item.descricao or "")
@@ -464,9 +461,9 @@ def build_machine_history_payload(
             }
         )
     for transacao in pagamentos:
-        if transacao.id in historico_transacao_ids:
-            continue
         metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
+        if str(metodo).upper() != "FISICO":
+            continue
         vendas.append(
             {
                 "id": transacao.id,

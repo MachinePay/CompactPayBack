@@ -1,4 +1,5 @@
 import logging
+import re
 import threading
 import time
 from uuid import uuid4
@@ -35,11 +36,12 @@ def _build_allowed_origins() -> list[str]:
 
 ALLOWED_ORIGINS = _build_allowed_origins()
 logging.info("CORS allow_origins configurado: %s", ", ".join(ALLOWED_ORIGINS))
+ALLOWED_ORIGIN_REGEX = r"^https://compact-pay-front(-[a-z0-9-]+)*\.vercel\.app$"
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"^https://compact-pay-front(-[a-z0-9-]+)*\.vercel\.app$",
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -81,13 +83,26 @@ async def log_requests(request, call_next):
 async def unhandled_exception_handler(request: Request, exc: Exception):
     request_id = getattr(request.state, "request_id", str(uuid4()))
     logging.exception("Unhandled exception request_id=%s path=%s", request_id, request.url.path)
+    headers = {"X-Request-ID": request_id}
+    origin = request.headers.get("origin")
+    if origin and (
+        _normalize_origin(origin) in ALLOWED_ORIGINS
+        or re.match(ALLOWED_ORIGIN_REGEX, origin)
+    ):
+        headers.update(
+            {
+                "Access-Control-Allow-Origin": origin,
+                "Access-Control-Allow-Credentials": "true",
+                "Vary": "Origin",
+            }
+        )
     return JSONResponse(
         status_code=500,
         content={
             "detail": "Erro interno no servidor.",
             "request_id": request_id,
         },
-        headers={"X-Request-ID": request_id},
+        headers=headers,
     )
 
 
