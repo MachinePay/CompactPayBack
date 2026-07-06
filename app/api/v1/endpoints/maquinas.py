@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -22,6 +23,17 @@ from app.services.maquinas_relatorio import serialize_machine_summary
 from app.services.mercado_pago import create_pos_for_machine
 
 router = APIRouter()
+ONLINE_SIGNAL_WINDOW = timedelta(seconds=90)
+PULSE_ABSENT_STATUSES = {
+    "falha",
+    "falha_timeout",
+    "falha_sem_confirmacao",
+    "falha_publicacao",
+    "falha_cmd_ignorado",
+    "falha_bloqueado",
+    "pulso_sem_retorno",
+}
+OTA_ACTIVE_STATUSES = {"sent", "downloading", "restarting"}
 
 
 def get_db():
@@ -60,6 +72,150 @@ def _get_maquina_visivel(db: Session, machine_id: str, role: str, cliente_id):
     return maquina
 
 
+def _wifi_health(quality) -> str:
+    if quality is None:
+        return "sem_leitura"
+    if quality >= 70:
+        return "otimo"
+    if quality >= 40:
+        return "bom"
+    return "ruim"
+
+
+def _machine_health_status(status_online: bool, wifi_status: str, firmware_alert: bool, pulse_alert: bool) -> str:
+    if not status_online:
+        return "offline"
+    if wifi_status == "ruim" or firmware_alert or pulse_alert:
+        return "atencao"
+    return "online"
+
+
+def _latest_payment(db: Session, machine_id: str):
+    venda = (
+        db.query(VendaPagamento)
+        .filter(VendaPagamento.maquina_id == machine_id)
+        .order_by(VendaPagamento.created_at.desc())
+        .first()
+    )
+    if venda:
+        return {
+            "data": venda.created_at,
+            "valor": float(venda.valor_liquido or venda.valor_bruto or 0),
+            "origem": venda.origem,
+            "provider": venda.provider,
+            "payment_type": venda.tipo_pagamento,
+            "pulse_status": venda.status_pulso,
+            "is_teste": bool(venda.is_teste),
+        }
+
+    transacao = (
+        db.query(Transacao)
+        .filter(Transacao.maquina_id == machine_id, Transacao.tipo == "IN")
+        .order_by(Transacao.data_hora.desc())
+        .first()
+    )
+    if not transacao:
+        return None
+    metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
+    return {
+        "data": transacao.data_hora,
+        "valor": float(transacao.valor or 0),
+        "origem": metodo.lower(),
+        "provider": metodo.lower(),
+        "payment_type": metodo,
+        "pulse_status": "fisico",
+        "is_teste": False,
+    }
+
+
+def _latest_pulse(db: Session, machine_id: str):
+    historico = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.maquina_id == machine_id,
+            HistoricoOperacao.pulse_status.isnot(None),
+        )
+        .order_by(HistoricoOperacao.created_at.desc())
+        .first()
+    )
+    if not historico:
+        return None
+    return {
+        "data": historico.created_at,
+        "status": historico.pulse_status,
+        "categoria": historico.categoria,
+        "descricao": historico.descricao,
+        "command_id": historico.command_id,
+    }
+
+
+def _serialize_health_machine(db: Session, maquina: Maquina, now: datetime):
+    status_online = bool(maquina.ultimo_sinal and (now - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
+    wifi_status = _wifi_health(maquina.wifi_quality)
+    firmware_update_status = maquina.firmware_update_status or ""
+    firmware_alert = (
+        firmware_update_status in OTA_ACTIVE_STATUSES
+        or firmware_update_status == "failed"
+        or bool(maquina.firmware_target_version and maquina.firmware_target_version != maquina.firmware_version)
+    )
+    ultimo_pagamento = _latest_payment(db, maquina.id_hardware)
+    ultimo_pulso = _latest_pulse(db, maquina.id_hardware)
+    pulse_status = str((ultimo_pulso or {}).get("status") or "").lower()
+    pulse_alert = pulse_status.startswith("falha") or pulse_status in PULSE_ABSENT_STATUSES
+    health_status = _machine_health_status(status_online, wifi_status, firmware_alert, pulse_alert)
+
+    return {
+        "id_hardware": maquina.id_hardware,
+        "cliente_id": maquina.cliente_id,
+        "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
+        "nome": maquina.nome_local,
+        "localizacao": maquina.localizacao,
+        "health_status": health_status,
+        "status_online": status_online,
+        "mqtt_status": "conectado" if status_online else "sem_sinal",
+        "ultimo_sinal": maquina.ultimo_sinal,
+        "wifi_quality": maquina.wifi_quality,
+        "wifi_rssi": maquina.wifi_rssi,
+        "wifi_status": wifi_status,
+        "firmware_version": maquina.firmware_version,
+        "firmware_target_version": maquina.firmware_target_version,
+        "firmware_update_status": firmware_update_status,
+        "firmware_alert": firmware_alert,
+        "ultimo_pagamento": ultimo_pagamento,
+        "ultimo_pulso": ultimo_pulso,
+        "pulse_alert": pulse_alert,
+    }
+
+
+def _matches_health_filters(item: dict, status: str, wifi: str, firmware: str, pulso: str, busca: str) -> bool:
+    if status != "todos" and item["health_status"] != status:
+        return False
+    if wifi != "todos" and item["wifi_status"] != wifi:
+        return False
+    if firmware == "pendente" and not item["firmware_alert"]:
+        return False
+    if firmware == "ok" and item["firmware_alert"]:
+        return False
+    if pulso == "ausente" and not item["pulse_alert"]:
+        return False
+    if pulso == "confirmado" and item["pulse_alert"]:
+        return False
+    if busca:
+        haystack = " ".join(
+            str(value or "")
+            for value in [
+                item.get("id_hardware"),
+                item.get("nome"),
+                item.get("localizacao"),
+                item.get("cliente_nome"),
+                item.get("firmware_version"),
+            ]
+        ).lower()
+        if busca not in haystack:
+            return False
+    return True
+
+
 @router.get("/maquinas", response_model=List[MaquinaOut])
 def listar_maquinas(
     db: Session = Depends(get_db),
@@ -88,6 +244,52 @@ def listar_maquinas(
         )
         for maquina in maquinas
     ]
+
+
+@router.get("/maquinas/saude")
+def listar_saude_maquinas(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    cliente_id: int = None,
+    status: str = "todos",
+    wifi: str = "todos",
+    firmware: str = "todos",
+    pulso: str = "todos",
+    busca: str = "",
+):
+    _, role, user_cliente_id = user
+    query = _maquina_query_por_usuario(db, role, user_cliente_id)
+    if role == "admin" and cliente_id is not None:
+        query = query.filter(Maquina.cliente_id == cliente_id)
+
+    now = datetime.utcnow()
+    normalized_filters = {
+        "status": (status or "todos").strip().lower(),
+        "wifi": (wifi or "todos").strip().lower(),
+        "firmware": (firmware or "todos").strip().lower(),
+        "pulso": (pulso or "todos").strip().lower(),
+        "busca": (busca or "").strip().lower(),
+    }
+    maquinas = [
+        _serialize_health_machine(db, maquina, now)
+        for maquina in query.order_by(Maquina.nome_local.asc(), Maquina.id_hardware.asc()).all()
+    ]
+    filtered = [
+        item
+        for item in maquinas
+        if _matches_health_filters(item, **normalized_filters)
+    ]
+    resumo = {
+        "total": len(maquinas),
+        "online": sum(1 for item in maquinas if item["health_status"] == "online"),
+        "atencao": sum(1 for item in maquinas if item["health_status"] == "atencao"),
+        "offline": sum(1 for item in maquinas if item["health_status"] == "offline"),
+        "wifi_ruim": sum(1 for item in maquinas if item["wifi_status"] == "ruim"),
+        "pulso_ausente": sum(1 for item in maquinas if item["pulse_alert"]),
+        "firmware_pendente": sum(1 for item in maquinas if item["firmware_alert"]),
+        "filtradas": len(filtered),
+    }
+    return {"resumo": resumo, "maquinas": filtered}
 
 
 @router.post("/maquinas", response_model=MaquinaOut)
