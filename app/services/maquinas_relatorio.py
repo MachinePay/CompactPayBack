@@ -426,7 +426,10 @@ def build_machine_history_payload(
     timeline.sort(key=lambda item: item["created_at"], reverse=True)
 
     vendas = []
+    historico_transacao_ids = set()
     for item in pagamentos_historico:
+        if item.transacao_id:
+            historico_transacao_ids.add(item.transacao_id)
         provider_payment_id = item.provider_payment_id
         if not provider_payment_id:
             match = re.search(r"(?:payment_id|mp_order_id)=([^,\)\s]+)", item.descricao or "")
@@ -458,6 +461,33 @@ def build_machine_history_payload(
                     item.provider,
                 ),
                 "descricao": item.descricao,
+            }
+        )
+    for transacao in pagamentos:
+        if transacao.id in historico_transacao_ids:
+            continue
+        metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
+        vendas.append(
+            {
+                "id": transacao.id,
+                "kind": "pagamento_fisico",
+                "is_test": False,
+                "data": transacao.data_hora,
+                "valor": float(transacao.valor or 0),
+                "taxa": None,
+                "total": float(transacao.valor or 0),
+                "ponto": maquina.nome_local,
+                "provider": "fisico",
+                "payment_type": metodo,
+                "card_brand": None,
+                "bank_name": None,
+                "provider_payment_id": None,
+                "pulse_status": "fisico",
+                "command_id": None,
+                "situacao": "Pagamento fisico",
+                "refunded_at": None,
+                "can_refund": False,
+                "descricao": "Pagamento fisico registrado pela maquina",
             }
         )
     for item in testes:
