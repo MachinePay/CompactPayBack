@@ -142,6 +142,116 @@ def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: dateti
 
 ONLINE_SIGNAL_WINDOW = timedelta(seconds=90)
 TERMINAL_PAYMENT_ONLINE_WINDOW = timedelta(minutes=5)
+PULSE_CONFIRMED_STATUSES = {
+    "pulso_confirmado",
+    "pulsos_confirmados",
+    "pulso_enviado",
+    "pulso_unitario",
+    "liberado",
+    "fisico",
+}
+PULSE_ABSENT_STATUSES = {
+    "falha",
+    "falha_timeout",
+    "falha_sem_confirmacao",
+    "falha_publicacao",
+    "falha_cmd_ignorado",
+    "falha_bloqueado",
+    "pulso_sem_retorno",
+}
+
+
+def _normalize_filter(value: str | None, default: str = "todos") -> str:
+    return (value or default).strip().lower()
+
+
+def _payment_method_conditions(forma: str):
+    if forma == "todos":
+        return []
+    if forma == "pix":
+        patterns = ["%pix%"]
+    elif forma == "cartao":
+        patterns = [
+            "%card%",
+            "%cartao%",
+            "%credito%",
+            "%credit%",
+            "%debito%",
+            "%debit%",
+            "%visa%",
+            "%master%",
+            "%elo%",
+            "%amex%",
+            "%hiper%",
+        ]
+    elif forma == "credito":
+        patterns = ["%credit%", "%credito%"]
+    elif forma == "debito":
+        patterns = ["%debit%", "%debito%"]
+    else:
+        return []
+    fields = [
+        HistoricoOperacao.payment_type,
+        HistoricoOperacao.card_brand,
+        HistoricoOperacao.bank_name,
+        HistoricoOperacao.provider,
+    ]
+    return [field.ilike(pattern) for field in fields for pattern in patterns]
+
+
+def _apply_history_sale_filters(query, origem: str, forma: str, pulso: str, busca: str):
+    if origem == "fisico":
+        return query.filter(HistoricoOperacao.id.is_(None))
+
+    if pulso == "confirmados":
+        query = query.filter(
+            or_(
+                HistoricoOperacao.pulse_status.is_(None),
+                HistoricoOperacao.pulse_status.in_(PULSE_CONFIRMED_STATUSES),
+            )
+        )
+    elif pulso == "ausentes":
+        query = query.filter(
+            or_(
+                HistoricoOperacao.pulse_status.in_(PULSE_ABSENT_STATUSES),
+                HistoricoOperacao.pulse_status.ilike("falha%"),
+            )
+        )
+
+    method_conditions = _payment_method_conditions(forma)
+    if method_conditions:
+        query = query.filter(or_(*method_conditions))
+
+    if busca:
+        search = f"%{busca}%"
+        query = query.filter(
+            or_(
+                HistoricoOperacao.descricao.ilike(search),
+                HistoricoOperacao.provider_payment_id.ilike(search),
+                HistoricoOperacao.payment_type.ilike(search),
+                HistoricoOperacao.card_brand.ilike(search),
+                HistoricoOperacao.bank_name.ilike(search),
+                HistoricoOperacao.provider.ilike(search),
+                HistoricoOperacao.pulse_status.ilike(search),
+            )
+        )
+    return query
+
+
+def _should_include_tests(registro: str, origem: str, forma: str, pulso: str, busca: str) -> bool:
+    if registro == "reais":
+        return False
+    if origem != "todos" or forma != "todos" or pulso != "todos":
+        return False
+    return True
+
+
+def _should_include_physical_sales(registro: str, origem: str, forma: str, pulso: str, busca: str) -> bool:
+    if registro == "testes" or origem == "digital" or forma != "todos" or pulso == "ausentes":
+        return False
+    if busca and not any(term in busca for term in ["fisico", "físico", "pagamento", "maquina", "máquina"]):
+        return False
+    return True
 
 
 def recent_terminal_payment_status(db: Session, machine_id: str) -> dict:
@@ -292,8 +402,18 @@ def build_machine_history_payload(
     periodo: str = "mes",
     data_inicio: str = None,
     data_fim: str = None,
+    registro: str = "todos",
+    origem: str = "todos",
+    forma: str = "todos",
+    pulso: str = "todos",
+    busca: str = "",
 ):
     machine_id = maquina.id_hardware
+    registro_filter = _normalize_filter(registro)
+    origem_filter = _normalize_filter(origem)
+    forma_filter = _normalize_filter(forma)
+    pulso_filter = _normalize_filter(pulso)
+    busca_filter = (busca or "").strip().lower()
     transacoes_query = db.query(Transacao).filter(Transacao.maquina_id == machine_id)
     transacoes_query = apply_transacao_periodo(
         transacoes_query,
@@ -306,6 +426,14 @@ def build_machine_history_payload(
     saidas = transacoes_query.filter(Transacao.tipo == "OUT").order_by(Transacao.data_hora.desc()).all()
 
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
+    testes_query = db.query(HistoricoOperacao).filter(
+        HistoricoOperacao.maquina_id == machine_id,
+        HistoricoOperacao.categoria == "TESTE",
+        HistoricoOperacao.created_at >= start_dt,
+        HistoricoOperacao.created_at <= end_dt,
+    )
+    if busca_filter and "teste" not in busca_filter:
+        testes_query = testes_query.filter(HistoricoOperacao.descricao.ilike(f"%{busca_filter}%"))
     testes = (
         db.query(HistoricoOperacao)
         .filter(
@@ -317,7 +445,12 @@ def build_machine_history_payload(
         .order_by(HistoricoOperacao.created_at.desc())
         .all()
     )
-    pagamentos_historico = (
+    testes_vendas = (
+        testes_query.order_by(HistoricoOperacao.created_at.desc()).all()
+        if _should_include_tests(registro_filter, origem_filter, forma_filter, pulso_filter, busca_filter)
+        else []
+    )
+    pagamentos_historico_query = (
         db.query(HistoricoOperacao)
         .filter(
             HistoricoOperacao.maquina_id == machine_id,
@@ -325,8 +458,19 @@ def build_machine_history_payload(
             HistoricoOperacao.created_at >= start_dt,
             HistoricoOperacao.created_at <= end_dt,
         )
+    )
+    pagamentos_historico = (
+        _apply_history_sale_filters(
+            pagamentos_historico_query,
+            origem_filter,
+            forma_filter,
+            pulso_filter,
+            busca_filter,
+        )
         .order_by(HistoricoOperacao.created_at.desc())
         .all()
+        if registro_filter != "testes"
+        else []
     )
 
     resumo_faturamento = real_revenue_breakdown(db, [machine_id], start_dt, end_dt)
@@ -460,34 +604,35 @@ def build_machine_history_payload(
                 "descricao": item.descricao,
             }
         )
-    for transacao in pagamentos:
-        metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
-        if str(metodo).upper() != "FISICO":
-            continue
-        vendas.append(
-            {
-                "id": transacao.id,
-                "kind": "pagamento_fisico",
-                "is_test": False,
-                "data": transacao.data_hora,
-                "valor": float(transacao.valor or 0),
-                "taxa": None,
-                "total": float(transacao.valor or 0),
-                "ponto": maquina.nome_local,
-                "provider": "fisico",
-                "payment_type": metodo,
-                "card_brand": None,
-                "bank_name": None,
-                "provider_payment_id": None,
-                "pulse_status": "fisico",
-                "command_id": None,
-                "situacao": "Pagamento fisico",
-                "refunded_at": None,
-                "can_refund": False,
-                "descricao": "Pagamento fisico registrado pela maquina",
-            }
-        )
-    for item in testes:
+    if _should_include_physical_sales(registro_filter, origem_filter, forma_filter, pulso_filter, busca_filter):
+        for transacao in pagamentos:
+            metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
+            if str(metodo).upper() != "FISICO":
+                continue
+            vendas.append(
+                {
+                    "id": transacao.id,
+                    "kind": "pagamento_fisico",
+                    "is_test": False,
+                    "data": transacao.data_hora,
+                    "valor": float(transacao.valor or 0),
+                    "taxa": None,
+                    "total": float(transacao.valor or 0),
+                    "ponto": maquina.nome_local,
+                    "provider": "fisico",
+                    "payment_type": metodo,
+                    "card_brand": None,
+                    "bank_name": None,
+                    "provider_payment_id": None,
+                    "pulse_status": "fisico",
+                    "command_id": None,
+                    "situacao": "Pagamento fisico",
+                    "refunded_at": None,
+                    "can_refund": False,
+                    "descricao": "Pagamento fisico registrado pela maquina",
+                }
+            )
+    for item in testes_vendas:
         vendas.append(
             {
                 "id": item.id,

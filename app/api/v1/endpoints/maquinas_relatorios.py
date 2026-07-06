@@ -116,6 +116,11 @@ def obter_historico_maquina(
     periodo: str = "mes",
     data_inicio: str = None,
     data_fim: str = None,
+    registro: str = "todos",
+    origem: str = "todos",
+    forma: str = "todos",
+    pulso: str = "todos",
+    busca: str = "",
 ):
     _, role, cliente_id = user
     maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
@@ -125,6 +130,11 @@ def obter_historico_maquina(
         periodo=periodo,
         data_inicio=data_inicio,
         data_fim=data_fim,
+        registro=registro,
+        origem=origem,
+        forma=forma,
+        pulso=pulso,
+        busca=busca,
     )
     return {key: value for key, value in payload.items() if key != "range"}
 
