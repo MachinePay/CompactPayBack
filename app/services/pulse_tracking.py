@@ -3,6 +3,7 @@ from datetime import datetime
 
 from app.db.session import SessionLocal
 from app.models.models import HistoricoOperacao, Maquina, VendaPagamento
+from app.services.command_queue import update_command_from_pulse_status
 from app.services.pagamentos_helpers import auto_refund_failed_pulse
 
 
@@ -21,6 +22,7 @@ FINAL_PULSE_STATUSES = {
 def update_pulse_status(command_id: str | None, status: str) -> None:
     if not command_id:
         return
+    update_command_from_pulse_status(command_id, status)
     db = SessionLocal()
     try:
         historicos = (

@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
+from app.services.command_queue import start_command_queue_worker
 from app.services.mqtt_worker import start_mqtt_worker
 from app.api.v1.routes import router as api_router
 from app.db.base import Base
@@ -247,8 +248,22 @@ def startup_event():
         vendas_columns = {column["name"] for column in inspector.get_columns("vendas_pagamentos")}
         if "command_id" not in vendas_columns:
             connection.execute(text("ALTER TABLE vendas_pagamentos ADD COLUMN command_id VARCHAR"))
+        if "comandos_maquina" in inspector.get_table_names():
+            comandos_columns = {column["name"] for column in inspector.get_columns("comandos_maquina")}
+            for column_name in ["command_id", "maquina_id", "tipo", "topic", "payload", "status", "detalhe_status", "ultimo_erro"]:
+                if column_name not in comandos_columns:
+                    nullable = " NOT NULL DEFAULT ''" if column_name in {"command_id", "maquina_id", "tipo", "topic", "payload", "status"} else ""
+                    connection.execute(text(f"ALTER TABLE comandos_maquina ADD COLUMN {column_name} VARCHAR{nullable}"))
+            for column_name in ["tentativas", "max_tentativas"]:
+                if column_name not in comandos_columns:
+                    default_value = 3 if column_name == "max_tentativas" else 0
+                    connection.execute(text(f"ALTER TABLE comandos_maquina ADD COLUMN {column_name} INTEGER NOT NULL DEFAULT {default_value}"))
+            for column_name in ["next_retry_at", "sent_at", "ack_at", "finished_at", "created_at", "updated_at"]:
+                if column_name not in comandos_columns:
+                    connection.execute(text(f"ALTER TABLE comandos_maquina ADD COLUMN {column_name} TIMESTAMP"))
     if settings.START_MQTT_WORKER:
         mqtt_thread = threading.Thread(target=run_mqtt, daemon=True)
         mqtt_thread.start()
     else:
         logging.info("MQTT worker desativado por START_MQTT_WORKER=false")
+    start_command_queue_worker()

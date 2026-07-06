@@ -4,6 +4,7 @@ from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.models import HistoricoOperacao, Maquina, Transacao, EventoTipo, MetodoPagamento
 from app.models.logs import Logs
+from app.services.command_queue import update_command_from_device_status
 from app.services.pulse_tracking import device_event_description, update_pulse_status
 from app.services.vendas import registrar_venda_pagamento
 from sqlalchemy.orm import Session
@@ -113,6 +114,8 @@ def on_message(client, userdata, msg):
                 maquina.firmware_update_status = "failed"
                 maquina.firmware_update_finished_at = datetime.utcnow()
             pulse_status = _status_to_pulse_status(status)
+            if command_id:
+                update_command_from_device_status(command_id, status)
             if command_id and pulse_status:
                 update_pulse_status(command_id, pulse_status)
             db.add(

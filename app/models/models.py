@@ -203,6 +203,27 @@ class AuditoriaSistema(Base):
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 
+class ComandoMaquina(Base):
+    __tablename__ = "comandos_maquina"
+    id = Column(Integer, primary_key=True)
+    command_id = Column(String, unique=True, index=True, nullable=False)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    tipo = Column(String, nullable=False, index=True)
+    topic = Column(String, nullable=False)
+    payload = Column(String, nullable=False)
+    status = Column(String, default="pendente", nullable=False, index=True)
+    detalhe_status = Column(String, nullable=True)
+    tentativas = Column(Integer, default=0, nullable=False)
+    max_tentativas = Column(Integer, default=3, nullable=False)
+    ultimo_erro = Column(String, nullable=True)
+    next_retry_at = Column(DateTime, nullable=True, index=True)
+    sent_at = Column(DateTime, nullable=True)
+    ack_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
 class FirmwareVersion(Base):
     __tablename__ = "firmware_versions"
     id = Column(Integer, primary_key=True)

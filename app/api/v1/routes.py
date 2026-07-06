@@ -4,6 +4,7 @@ from app.api.v1.endpoints import (
     auditoria,
     auth,
     clientes,
+    comandos_maquinas,
     dashboard,
     firmware_versions,
     health,
@@ -26,6 +27,7 @@ router.include_router(usuarios.router)
 router.include_router(mercado_pago.router)
 router.include_router(auditoria.router)
 router.include_router(clientes.router)
+router.include_router(comandos_maquinas.router)
 router.include_router(firmware_versions.router)
 router.include_router(maquinas.router)
 router.include_router(maquinas_operacoes.router)
