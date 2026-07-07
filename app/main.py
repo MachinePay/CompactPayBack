@@ -220,6 +220,11 @@ def startup_event():
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} INTEGER"))
         if "last_reset_reason" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN last_reset_reason VARCHAR"))
+        if "firmware_update_progress" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN firmware_update_progress INTEGER"))
+        for column_name in ["firmware_update_error", "firmware_last_good_version"]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
         if "firmware_versions" not in inspector.get_table_names():
             connection.execute(text("""
                 CREATE TABLE firmware_versions (

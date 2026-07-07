@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 TOPIC = "/TEF/+/attrs"
 ONLINE_HEARTBEAT_STATUS = "ONLINE"
 ONLINE_HEARTBEAT_GAP_THRESHOLD = timedelta(seconds=90)
+NOISY_STATUSES_NOT_LOGGED = {"UPDATE_PROGRESSO"}
 
 
 def _parse_status_payload(payload: str) -> tuple[str | None, dict[str, str]]:
@@ -116,24 +117,35 @@ def on_message(client, userdata, msg):
                 if maquina.firmware_update_status in {"sent", "downloading", "restarting", "failed", "no_update"}:
                     maquina.firmware_update_status = "updated"
                     maquina.firmware_update_finished_at = datetime.utcnow()
+                    maquina.firmware_update_progress = 100
+                    maquina.firmware_update_error = None
+                    maquina.firmware_last_good_version = firmware_version
                 if maquina.firmware_target_version and maquina.firmware_target_version == firmware_version:
                     maquina.firmware_target_version = None
             if status == "UPDATE_INICIADO":
                 maquina.firmware_update_status = "downloading"
                 maquina.firmware_update_started_at = datetime.utcnow()
+                maquina.firmware_update_progress = 0
+                maquina.firmware_update_error = None
                 if command_id:
                     maquina.firmware_update_command_id = command_id
                 if status_fields.get("url"):
                     maquina.firmware_update_url = status_fields.get("url")
+            elif status == "UPDATE_PROGRESSO":
+                progress = _parse_int_field(status_fields, "percent")
+                if progress is not None:
+                    maquina.firmware_update_progress = max(0, min(100, progress))
             elif status == "UPDATE_OK":
                 maquina.firmware_update_status = "restarting"
                 maquina.firmware_update_finished_at = datetime.utcnow()
+                maquina.firmware_update_progress = 100
             elif status == "UPDATE_SEM_NOVIDADE":
                 maquina.firmware_update_status = "no_update"
                 maquina.firmware_update_finished_at = datetime.utcnow()
             elif status == "UPDATE_FALHOU":
                 maquina.firmware_update_status = "failed"
                 maquina.firmware_update_finished_at = datetime.utcnow()
+                maquina.firmware_update_error = (status_fields.get("erro") or "falha_desconhecida")[:500]
             pulse_status = _status_to_pulse_status(status)
             if command_id:
                 update_command_from_device_status(command_id, status)
@@ -143,7 +155,7 @@ def on_message(client, userdata, msg):
                 status == ONLINE_HEARTBEAT_STATUS
                 and sinal_anterior is not None
                 and (agora - sinal_anterior) < ONLINE_HEARTBEAT_GAP_THRESHOLD
-            )
+            ) or status in NOISY_STATUSES_NOT_LOGGED
             if not is_routine_heartbeat:
                 db.add(
                     HistoricoOperacao(

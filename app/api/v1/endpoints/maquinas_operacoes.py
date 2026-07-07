@@ -18,6 +18,9 @@ from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_conf
 
 router = APIRouter()
 
+FIRMWARE_UPDATE_IN_FLIGHT_STATUSES = {"sent", "downloading", "restarting"}
+FIRMWARE_UPDATE_LOCK_TIMEOUT = timedelta(minutes=10)
+
 
 def get_db():
     db = SessionLocal()
@@ -191,6 +194,19 @@ def enviar_atualizacao_firmware(
     if not maquina.ultimo_sinal or datetime.utcnow() - maquina.ultimo_sinal > timedelta(seconds=90):
         raise HTTPException(status_code=409, detail="Maquina offline. Aguarde ela ficar online para atualizar.")
 
+    if maquina.firmware_update_status in FIRMWARE_UPDATE_IN_FLIGHT_STATUSES:
+        started_at = maquina.firmware_update_requested_at or maquina.firmware_update_started_at
+        if started_at and datetime.utcnow() - started_at < FIRMWARE_UPDATE_LOCK_TIMEOUT:
+            raise HTTPException(
+                status_code=409,
+                detail="Ja existe uma atualizacao de firmware em andamento para esta maquina. Aguarde ela terminar.",
+            )
+        # Trava presa ha mais tempo que o razoavel: provavelmente a placa nunca respondeu
+        # a esse comando. Marca como falha por timeout para liberar um novo envio.
+        maquina.firmware_update_status = "failed"
+        maquina.firmware_update_error = "timeout_sem_resposta_da_placa"
+        maquina.firmware_update_finished_at = datetime.utcnow()
+
     firmware_record = None
     firmware_version_id = (payload or {}).get("firmware_version_id")
     if firmware_version_id:
@@ -234,6 +250,7 @@ def enviar_atualizacao_firmware(
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT de atualizacao") from exc
 
+    maquina.firmware_last_good_version = maquina.firmware_last_good_version or maquina.firmware_version
     maquina.firmware_target_version = firmware_version or None
     maquina.firmware_update_status = "sent"
     maquina.firmware_update_command_id = command_id
@@ -241,6 +258,8 @@ def enviar_atualizacao_firmware(
     maquina.firmware_update_requested_at = datetime.utcnow()
     maquina.firmware_update_started_at = None
     maquina.firmware_update_finished_at = None
+    maquina.firmware_update_progress = None
+    maquina.firmware_update_error = None
 
     db.add(
         HistoricoOperacao(
