@@ -11,8 +11,13 @@ from app.services.maquinas_relatorio import (
     ONLINE_SIGNAL_WINDOW,
     apply_transacao_periodo,
     compute_financial_summary,
+    compute_financial_summary_by_machine,
+    daily_revenue_totals,
+    latest_activity_by_machine,
+    movement_counts_by_machine,
     real_revenue_totals,
     resolve_date_window,
+    sum_financial_summaries,
 )
 
 router = APIRouter()
@@ -117,7 +122,11 @@ def dashboard_overview(
     )
 
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
-    resumo_periodo = compute_financial_summary(db, maquinas_ids, start_dt, end_dt)
+
+    # Uma unica leva de queries agregadas para todas as maquinas do filtro, em vez
+    # de uma chamada por maquina/cliente (evita N+1 quando a frota cresce).
+    resumo_por_maquina = compute_financial_summary_by_machine(db, maquinas_ids, start_dt, end_dt)
+    resumo_periodo = sum_financial_summaries(list(resumo_por_maquina.values()))
     faturamento = resumo_periodo["faturamento_total"]
     total_fisico = resumo_periodo["faturamento_fisico"]
     premios = (
@@ -143,39 +152,22 @@ def dashboard_overview(
     ]
     ticket_medio = resumo_periodo["ticket_medio"]
 
+    daily_totals = daily_revenue_totals(db, maquinas_ids, start_dt, end_dt)
     total_days = max(1, (end_dt.date() - start_dt.date()).days + 1)
     chart_data = []
     for index in range(total_days):
         current_day = start_dt.date() + timedelta(days=index)
-        day_total = 0.0
-        if maquinas_ids:
-            day_total, _ = real_revenue_totals(
-                db,
-                maquinas_ids,
-                datetime.combine(current_day, datetime.min.time()),
-                datetime.combine(current_day, datetime.max.time()),
-            )
         chart_data.append(
             {
                 "dia": current_day.strftime("%d/%m"),
-                "valor": float(day_total),
+                "valor": float(daily_totals.get(current_day, 0.0)),
             }
         )
 
-    zero_movement = []
-    for maquina in maquinas:
-        movimento = (
-            db.query(func.count(Transacao.id))
-            .filter(
-                Transacao.maquina_id == maquina.id_hardware,
-                Transacao.data_hora >= start_dt,
-                Transacao.data_hora <= end_dt,
-            )
-            .scalar()
-            or 0
-        )
-        if movimento == 0:
-            zero_movement.append(maquina)
+    movimento_por_maquina = movement_counts_by_machine(db, maquinas_ids, start_dt, end_dt)
+    zero_movement = [
+        maquina for maquina in maquinas if movimento_por_maquina.get(maquina.id_hardware, 0) == 0
+    ]
 
     alerts = []
     for maquina in maquinas:
@@ -220,16 +212,13 @@ def dashboard_overview(
         if maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW:
             clientes_map[key]["maquinas_online"] += 1
 
+    ultima_atividade_por_maquina = latest_activity_by_machine(db, maquinas_ids)
+
     for item in clientes_map.values():
         machine_ids = [maquina.id_hardware for maquina in item["maquinas"]]
-        resumo_cliente = compute_financial_summary(db, machine_ids, start_dt, end_dt)
-        ultima_atividade_em = None
-        if machine_ids:
-            ultima_atividade_em = (
-                db.query(func.max(Transacao.data_hora))
-                .filter(Transacao.maquina_id.in_(machine_ids))
-                .scalar()
-            )
+        resumo_cliente = sum_financial_summaries([resumo_por_maquina[mid] for mid in machine_ids])
+        atividades = [ultima_atividade_por_maquina[mid] for mid in machine_ids if mid in ultima_atividade_por_maquina]
+        ultima_atividade_em = max(atividades) if atividades else None
         clientes_resumo.append(
             {
                 "cliente_id": item["cliente_id"],
@@ -253,7 +242,7 @@ def dashboard_overview(
 
     maquinas_resumo = []
     for maquina in maquinas:
-        resumo_maquina = compute_financial_summary(db, [maquina.id_hardware], start_dt, end_dt)
+        resumo_maquina = resumo_por_maquina[maquina.id_hardware]
         maquinas_resumo.append(
             {
                 "id_hardware": maquina.id_hardware,

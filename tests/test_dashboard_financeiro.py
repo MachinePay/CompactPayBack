@@ -16,8 +16,25 @@ from fastapi.testclient import TestClient
 from app.core.security import get_password_hash
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
-from app.models.models import Cliente, HistoricoOperacao, Maquina, UserRole, Usuario, VendaPagamento
-from app.services.maquinas_relatorio import compute_financial_summary
+from app.models.models import (
+    Cliente,
+    EventoTipo,
+    HistoricoOperacao,
+    Maquina,
+    MetodoPagamento,
+    Transacao,
+    UserRole,
+    Usuario,
+    VendaPagamento,
+)
+from app.services.maquinas_relatorio import (
+    compute_financial_summary,
+    compute_financial_summary_by_machine,
+    daily_revenue_totals,
+    latest_activity_by_machine,
+    movement_counts_by_machine,
+    sum_financial_summaries,
+)
 from app.main import app
 
 Base.metadata.create_all(bind=engine)
@@ -156,6 +173,127 @@ def test_compute_financial_summary_returns_zero_summary_for_empty_machine_list()
     assert resumo["vendas_count"] == 0
     assert resumo["ticket_medio"] == 0.0
     assert resumo["pulsos_ausentes"] == 0
+
+
+def test_compute_financial_summary_by_machine_matches_per_machine_calls():
+    # A versao em lote precisa bater exatamente com chamar compute_financial_summary
+    # maquina por maquina - e essa equivalencia que permite trocar o loop de N+1
+    # queries por uma unica leva de queries agregadas sem mudar o resultado.
+    machine_a = "CPM-DASH-BATCH-A"
+    machine_b = "CPM-DASH-BATCH-B"
+    _create_maquina(machine_a)
+    _create_maquina(machine_b)
+
+    _add_venda(machine_a, origem="fisico", provider="fisico", valor_liquido=12.0)
+    _add_venda(machine_a, origem="pix", provider="mercado_pago", valor_liquido=8.0)
+    _add_venda(machine_a, valor_liquido=6.0, refunded_at=datetime.utcnow())
+    _add_venda(machine_a, valor_liquido=3.0, status_pulso="falha_timeout")
+    _add_teste_historico(machine_a, 2.0)
+
+    _add_venda(machine_b, origem="pix", provider="mercado_pago", valor_liquido=50.0)
+    _add_teste_historico(machine_b, 9.0)
+
+    machine_ids = [machine_a, machine_b]
+    db = SessionLocal()
+    try:
+        por_lote = compute_financial_summary_by_machine(db, machine_ids, WINDOW_START, WINDOW_END)
+    finally:
+        db.close()
+
+    for machine_id in machine_ids:
+        individual = _summary([machine_id])
+        assert por_lote[machine_id] == individual, machine_id
+
+
+def test_compute_financial_summary_by_machine_returns_empty_dict_for_no_machines():
+    db = SessionLocal()
+    try:
+        assert compute_financial_summary_by_machine(db, [], WINDOW_START, WINDOW_END) == {}
+    finally:
+        db.close()
+
+
+def test_sum_financial_summaries_recomputes_ticket_medio_from_combined_totals():
+    machine_a = "CPM-DASH-SUM-A"
+    machine_b = "CPM-DASH-SUM-B"
+    _create_maquina(machine_a)
+    _create_maquina(machine_b)
+
+    # Uma maquina com poucas vendas de valor alto e outra com muitas vendas de
+    # valor baixo: a media das duas medias seria diferente da media combinada.
+    _add_venda(machine_a, valor_liquido=100.0)
+    _add_venda(machine_b, valor_liquido=10.0)
+    _add_venda(machine_b, valor_liquido=10.0)
+    _add_venda(machine_b, valor_liquido=10.0)
+
+    db = SessionLocal()
+    try:
+        por_lote = compute_financial_summary_by_machine(db, [machine_a, machine_b], WINDOW_START, WINDOW_END)
+    finally:
+        db.close()
+
+    combinado = sum_financial_summaries([por_lote[machine_a], por_lote[machine_b]])
+
+    assert combinado["faturamento_total"] == 130.0
+    assert combinado["vendas_count"] == 4
+    assert combinado["ticket_medio"] == 32.5
+
+
+def test_daily_revenue_totals_buckets_by_calendar_day():
+    machine_id = "CPM-DASH-DAILY"
+    _create_maquina(machine_id)
+    dia_1 = datetime.utcnow().replace(hour=10, minute=0, second=0, microsecond=0) - timedelta(days=2)
+    dia_2 = datetime.utcnow().replace(hour=15, minute=0, second=0, microsecond=0) - timedelta(days=1)
+    _add_venda(machine_id, valor_liquido=11.0, created_at=dia_1)
+    _add_venda(machine_id, valor_liquido=4.0, created_at=dia_1)
+    _add_venda(machine_id, valor_liquido=7.0, created_at=dia_2)
+
+    db = SessionLocal()
+    try:
+        totais = daily_revenue_totals(
+            db, [machine_id], dia_1 - timedelta(hours=1), datetime.utcnow() + timedelta(hours=1)
+        )
+    finally:
+        db.close()
+
+    assert totais[dia_1.date()] == 15.0
+    assert totais[dia_2.date()] == 7.0
+
+
+def test_movement_and_latest_activity_by_machine():
+    machine_with_movement = "CPM-DASH-MOV-A"
+    machine_without_movement = "CPM-DASH-MOV-B"
+    _create_maquina(machine_with_movement)
+    _create_maquina(machine_without_movement)
+
+    db = SessionLocal()
+    try:
+        db.add(
+            Transacao(
+                maquina_id=machine_with_movement,
+                tipo=EventoTipo.in_flux,
+                metodo=MetodoPagamento.fisico,
+                valor=1.0,
+                data_hora=datetime.utcnow(),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    db = SessionLocal()
+    try:
+        movimento = movement_counts_by_machine(
+            db, [machine_with_movement, machine_without_movement], WINDOW_START, WINDOW_END
+        )
+        ultima_atividade = latest_activity_by_machine(db, [machine_with_movement, machine_without_movement])
+    finally:
+        db.close()
+
+    assert movimento.get(machine_with_movement, 0) == 1
+    assert movimento.get(machine_without_movement, 0) == 0
+    assert machine_with_movement in ultima_atividade
+    assert machine_without_movement not in ultima_atividade
 
 
 def _create_admin_and_token(client):

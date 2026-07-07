@@ -1,3 +1,4 @@
+from collections import defaultdict
 from datetime import date, datetime, timedelta
 import re
 
@@ -202,6 +203,267 @@ def compute_financial_summary(db: Session, machine_ids: list[str], start_dt: dat
         "estornos_valor": estornos_valor,
         "pulsos_ausentes": int(pulsos_ausentes),
     }
+
+
+def _zero_financial_summary() -> dict:
+    return {
+        "faturamento_total": 0.0,
+        "faturamento_fisico": 0.0,
+        "faturamento_digital": 0.0,
+        "ticket_medio": 0.0,
+        "vendas_count": 0,
+        "testes_count": 0,
+        "testes_valor": 0.0,
+        "estornos_count": 0,
+        "estornos_valor": 0.0,
+        "pulsos_ausentes": 0,
+    }
+
+
+def compute_financial_summary_by_machine(
+    db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime
+) -> dict[str, dict]:
+    """Mesma quebra de compute_financial_summary, mas para todas as maquinas de uma
+    vez. Busca cada fonte de dado em uma unica query (em vez de uma query por
+    maquina) e soma tudo em memoria, evitando N+1 quando ha muitas maquinas."""
+    if not machine_ids:
+        return {}
+
+    raw = {
+        machine_id: {
+            "digital": 0.0,
+            "fisico": 0.0,
+            "count": 0,
+            "testes_count": 0,
+            "testes_valor": 0.0,
+            "estornos_count": 0,
+            "estornos_valor": 0.0,
+            "pulsos_ausentes": 0,
+        }
+        for machine_id in machine_ids
+    }
+
+    vendas_rows = (
+        db.query(
+            VendaPagamento.maquina_id,
+            VendaPagamento.origem,
+            VendaPagamento.provider,
+            VendaPagamento.valor_liquido,
+            VendaPagamento.conta_ticket_medio,
+        )
+        .filter(
+            VendaPagamento.maquina_id.in_(machine_ids),
+            VendaPagamento.created_at >= start_dt,
+            VendaPagamento.created_at <= end_dt,
+            VendaPagamento.conta_faturamento.is_(True),
+        )
+        .all()
+    )
+    for maquina_id, origem, provider, valor_liquido, conta_ticket_medio in vendas_rows:
+        bucket = raw[maquina_id]
+        valor = float(valor_liquido or 0.0)
+        if origem == "fisico" or provider == "fisico":
+            bucket["fisico"] += valor
+        else:
+            bucket["digital"] += valor
+        if conta_ticket_medio:
+            bucket["count"] += 1
+
+    historicos_com_venda = db.query(VendaPagamento.historico_id).filter(VendaPagamento.historico_id.isnot(None))
+    digital_legado_rows = (
+        real_payment_history_query(db, machine_ids, start_dt, end_dt)
+        .filter(~HistoricoOperacao.id.in_(historicos_com_venda))
+        .with_entities(HistoricoOperacao.maquina_id, HistoricoOperacao.valor)
+        .all()
+    )
+    for maquina_id, valor in digital_legado_rows:
+        bucket = raw.get(maquina_id)
+        if bucket is None:
+            continue
+        bucket["digital"] += float(valor or 0.0)
+        bucket["count"] += 1
+
+    transacoes_com_venda = db.query(VendaPagamento.transacao_id).filter(VendaPagamento.transacao_id.isnot(None))
+    fisico_legado_rows = (
+        db.query(Transacao.maquina_id, Transacao.valor)
+        .filter(
+            Transacao.maquina_id.in_(machine_ids),
+            Transacao.tipo == "IN",
+            Transacao.metodo == "FISICO",
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+            ~Transacao.id.in_(transacoes_com_venda),
+        )
+        .all()
+    )
+    for maquina_id, valor in fisico_legado_rows:
+        bucket = raw.get(maquina_id)
+        if bucket is None:
+            continue
+        bucket["fisico"] += float(valor or 0.0)
+        bucket["count"] += 1
+
+    testes_rows = (
+        db.query(HistoricoOperacao.maquina_id, HistoricoOperacao.valor)
+        .filter(
+            HistoricoOperacao.maquina_id.in_(machine_ids),
+            HistoricoOperacao.categoria == "TESTE",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
+        )
+        .all()
+    )
+    for maquina_id, valor in testes_rows:
+        bucket = raw[maquina_id]
+        bucket["testes_count"] += 1
+        bucket["testes_valor"] += float(valor or 0.0)
+
+    estornos_rows = (
+        db.query(VendaPagamento.maquina_id, VendaPagamento.valor_liquido)
+        .filter(
+            VendaPagamento.maquina_id.in_(machine_ids),
+            VendaPagamento.refunded_at.isnot(None),
+            VendaPagamento.refunded_at >= start_dt,
+            VendaPagamento.refunded_at <= end_dt,
+        )
+        .all()
+    )
+    for maquina_id, valor_liquido in estornos_rows:
+        bucket = raw[maquina_id]
+        bucket["estornos_count"] += 1
+        bucket["estornos_valor"] += float(valor_liquido or 0.0)
+
+    pulsos_rows = (
+        db.query(VendaPagamento.maquina_id)
+        .filter(
+            VendaPagamento.maquina_id.in_(machine_ids),
+            VendaPagamento.created_at >= start_dt,
+            VendaPagamento.created_at <= end_dt,
+            VendaPagamento.status_pulso.in_(PULSE_ABSENT_STATUSES),
+        )
+        .all()
+    )
+    for (maquina_id,) in pulsos_rows:
+        raw[maquina_id]["pulsos_ausentes"] += 1
+
+    result = {}
+    for machine_id, bucket in raw.items():
+        # O bucket "digital" e somado diretamente (nao por subtracao), entao um
+        # valor_liquido negativo isolado nao pode deixar o total negativo aqui -
+        # mantem o mesmo espirito do clamp em real_revenue_breakdown.
+        digital = max(0.0, bucket["digital"])
+        total = digital + bucket["fisico"]
+        summary = _zero_financial_summary()
+        summary["faturamento_total"] = total
+        summary["faturamento_fisico"] = bucket["fisico"]
+        summary["faturamento_digital"] = digital
+        summary["vendas_count"] = bucket["count"]
+        summary["ticket_medio"] = total / bucket["count"] if bucket["count"] else 0.0
+        summary["testes_count"] = bucket["testes_count"]
+        summary["testes_valor"] = bucket["testes_valor"]
+        summary["estornos_count"] = bucket["estornos_count"]
+        summary["estornos_valor"] = bucket["estornos_valor"]
+        summary["pulsos_ausentes"] = bucket["pulsos_ausentes"]
+        result[machine_id] = summary
+    return result
+
+
+def sum_financial_summaries(summaries: list[dict]) -> dict:
+    """Combina varios resumos (ex.: das maquinas de um cliente) em um so total.
+    Ticket medio nao e uma media das medias - e recalculado a partir dos totais
+    somados, senao maquinas com poucas vendas distorceriam o resultado."""
+    combined = _zero_financial_summary()
+    for summary in summaries:
+        combined["faturamento_total"] += summary["faturamento_total"]
+        combined["faturamento_fisico"] += summary["faturamento_fisico"]
+        combined["faturamento_digital"] += summary["faturamento_digital"]
+        combined["vendas_count"] += summary["vendas_count"]
+        combined["testes_count"] += summary["testes_count"]
+        combined["testes_valor"] += summary["testes_valor"]
+        combined["estornos_count"] += summary["estornos_count"]
+        combined["estornos_valor"] += summary["estornos_valor"]
+        combined["pulsos_ausentes"] += summary["pulsos_ausentes"]
+    combined["ticket_medio"] = (
+        combined["faturamento_total"] / combined["vendas_count"] if combined["vendas_count"] else 0.0
+    )
+    return combined
+
+
+def latest_activity_by_machine(db: Session, machine_ids: list[str]) -> dict:
+    if not machine_ids:
+        return {}
+    rows = (
+        db.query(Transacao.maquina_id, func.max(Transacao.data_hora))
+        .filter(Transacao.maquina_id.in_(machine_ids))
+        .group_by(Transacao.maquina_id)
+        .all()
+    )
+    return dict(rows)
+
+
+def movement_counts_by_machine(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
+    if not machine_ids:
+        return {}
+    rows = (
+        db.query(Transacao.maquina_id, func.count(Transacao.id))
+        .filter(
+            Transacao.maquina_id.in_(machine_ids),
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+        )
+        .group_by(Transacao.maquina_id)
+        .all()
+    )
+    return dict(rows)
+
+
+def daily_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
+    """Faturamento real por dia, buscando cada fonte de dado uma unica vez para
+    todo o periodo (em vez de uma consulta por dia)."""
+    totals: dict = defaultdict(float)
+    if not machine_ids:
+        return totals
+
+    vendas_rows = (
+        db.query(VendaPagamento.created_at, VendaPagamento.valor_liquido)
+        .filter(
+            VendaPagamento.maquina_id.in_(machine_ids),
+            VendaPagamento.created_at >= start_dt,
+            VendaPagamento.created_at <= end_dt,
+            VendaPagamento.conta_faturamento.is_(True),
+        )
+        .all()
+    )
+    for created_at, valor_liquido in vendas_rows:
+        totals[created_at.date()] += float(valor_liquido or 0.0)
+
+    historicos_com_venda = db.query(VendaPagamento.historico_id).filter(VendaPagamento.historico_id.isnot(None))
+    digital_legado_rows = (
+        real_payment_history_query(db, machine_ids, start_dt, end_dt)
+        .filter(~HistoricoOperacao.id.in_(historicos_com_venda))
+        .with_entities(HistoricoOperacao.created_at, HistoricoOperacao.valor)
+        .all()
+    )
+    for created_at, valor in digital_legado_rows:
+        totals[created_at.date()] += float(valor or 0.0)
+
+    transacoes_com_venda = db.query(VendaPagamento.transacao_id).filter(VendaPagamento.transacao_id.isnot(None))
+    fisico_legado_rows = (
+        db.query(Transacao.data_hora, Transacao.valor)
+        .filter(
+            Transacao.maquina_id.in_(machine_ids),
+            Transacao.tipo == "IN",
+            Transacao.metodo == "FISICO",
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+            ~Transacao.id.in_(transacoes_com_venda),
+        )
+        .all()
+    )
+    for data_hora, valor in fisico_legado_rows:
+        totals[data_hora.date()] += float(valor or 0.0)
+
+    return totals
 
 
 ONLINE_SIGNAL_WINDOW = timedelta(seconds=90)
