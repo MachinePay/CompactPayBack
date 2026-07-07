@@ -109,6 +109,12 @@ class Maquina(Base):
     firmware_update_requested_at = Column(DateTime, nullable=True)
     firmware_update_started_at = Column(DateTime, nullable=True)
     firmware_update_finished_at = Column(DateTime, nullable=True)
+    uptime_seconds = Column(Integer, nullable=True)
+    free_heap_bytes = Column(Integer, nullable=True)
+    last_reset_reason = Column(String, nullable=True)
+    wifi_reconnect_count = Column(Integer, nullable=True)
+    mqtt_reconnect_count = Column(Integer, nullable=True)
+    short_pulse_count = Column(Integer, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")
 

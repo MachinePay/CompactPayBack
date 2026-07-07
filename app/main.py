@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.services.command_queue import start_command_queue_worker
 from app.services.mqtt_worker import start_mqtt_worker
+from app.services.retention import start_retention_worker
 from app.api.v1.routes import router as api_router
 from app.db.base import Base
 from app.db.session import engine
@@ -208,6 +209,17 @@ def startup_event():
         ]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} TIMESTAMP"))
+        for column_name in [
+            "uptime_seconds",
+            "free_heap_bytes",
+            "wifi_reconnect_count",
+            "mqtt_reconnect_count",
+            "short_pulse_count",
+        ]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} INTEGER"))
+        if "last_reset_reason" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN last_reset_reason VARCHAR"))
         if "firmware_versions" not in inspector.get_table_names():
             connection.execute(text("""
                 CREATE TABLE firmware_versions (
@@ -267,3 +279,4 @@ def startup_event():
     else:
         logging.info("MQTT worker desativado por START_MQTT_WORKER=false")
     start_command_queue_worker()
+    start_retention_worker()

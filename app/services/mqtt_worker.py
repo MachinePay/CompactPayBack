@@ -8,9 +8,11 @@ from app.services.command_queue import update_command_from_device_status
 from app.services.pulse_tracking import device_event_description, update_pulse_status
 from app.services.vendas import registrar_venda_pagamento
 from sqlalchemy.orm import Session
-from datetime import datetime
+from datetime import datetime, timedelta
 
 TOPIC = "/TEF/+/attrs"
+ONLINE_HEARTBEAT_STATUS = "ONLINE"
+ONLINE_HEARTBEAT_GAP_THRESHOLD = timedelta(seconds=90)
 
 
 def _parse_status_payload(payload: str) -> tuple[str | None, dict[str, str]]:
@@ -76,8 +78,9 @@ def on_message(client, userdata, msg):
             db.commit()
             db.refresh(maquina)
         # Sempre que receber sinal, atualiza o timestamp do último sinal
-        from datetime import datetime
-        maquina.ultimo_sinal = datetime.utcnow()
+        agora = datetime.utcnow()
+        sinal_anterior = maquina.ultimo_sinal
+        maquina.ultimo_sinal = agora
         db.commit()
         status, status_fields = _parse_status_payload(payload)
         if status:
@@ -89,6 +92,24 @@ def on_message(client, userdata, msg):
                 maquina.wifi_rssi = wifi_rssi
             if wifi_quality is not None:
                 maquina.wifi_quality = max(0, min(100, wifi_quality))
+            uptime_seconds = _parse_int_field(status_fields, "uptime")
+            free_heap_bytes = _parse_int_field(status_fields, "heap")
+            wifi_reconnect_count = _parse_int_field(status_fields, "wifi_rc")
+            mqtt_reconnect_count = _parse_int_field(status_fields, "mqtt_rc")
+            short_pulse_count = _parse_int_field(status_fields, "pulsos_curtos")
+            reset_reason = status_fields.get("reset")
+            if uptime_seconds is not None:
+                maquina.uptime_seconds = uptime_seconds
+            if free_heap_bytes is not None:
+                maquina.free_heap_bytes = free_heap_bytes
+            if wifi_reconnect_count is not None:
+                maquina.wifi_reconnect_count = wifi_reconnect_count
+            if mqtt_reconnect_count is not None:
+                maquina.mqtt_reconnect_count = mqtt_reconnect_count
+            if short_pulse_count is not None:
+                maquina.short_pulse_count = short_pulse_count
+            if reset_reason:
+                maquina.last_reset_reason = reset_reason
             if firmware_version:
                 maquina.firmware_version = firmware_version
                 maquina.firmware_updated_at = datetime.utcnow()
@@ -118,21 +139,29 @@ def on_message(client, userdata, msg):
                 update_command_from_device_status(command_id, status)
             if command_id and pulse_status:
                 update_pulse_status(command_id, pulse_status)
-            db.add(
-                HistoricoOperacao(
-                    maquina_id=id_extraido,
-                    categoria="DISPOSITIVO",
-                    descricao=device_event_description(
-                        status,
-                        command_id,
-                        " ".join(f"{key}={value}" for key, value in status_fields.items() if key != "cmd") or None,
-                    ),
-                    valor=None,
-                    command_id=command_id,
-                    pulse_status=pulse_status,
-                    created_at=datetime.utcnow(),
-                )
+            is_routine_heartbeat = (
+                status == ONLINE_HEARTBEAT_STATUS
+                and sinal_anterior is not None
+                and (agora - sinal_anterior) < ONLINE_HEARTBEAT_GAP_THRESHOLD
             )
+            if not is_routine_heartbeat:
+                db.add(
+                    HistoricoOperacao(
+                        maquina_id=id_extraido,
+                        categoria="DISPOSITIVO",
+                        descricao=device_event_description(
+                            status,
+                            command_id,
+                            " ".join(f"{key}={value}" for key, value in status_fields.items() if key != "cmd") or None,
+                        ),
+                        valor=None,
+                        command_id=command_id,
+                        pulse_status=pulse_status,
+                        created_at=datetime.utcnow(),
+                    )
+                )
+            # Commit sempre roda aqui, mesmo em heartbeat de rotina, para nao perder
+            # a telemetria (wifi, uptime, heap, etc.) que foi atualizada em maquina acima.
             db.commit()
             print(f"Status MQTT registrado para maquina {id_extraido}: {payload}")
             db.close()

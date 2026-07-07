@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     MQTT_PASSWORD: str = os.getenv("MQTT_PASSWORD", "")
     START_MQTT_WORKER: bool = os.getenv("START_MQTT_WORKER", "true").lower() == "true"
     START_COMMAND_QUEUE_WORKER: bool = os.getenv("START_COMMAND_QUEUE_WORKER", "true").lower() == "true"
+    START_RETENTION_WORKER: bool = os.getenv("START_RETENTION_WORKER", "true").lower() == "true"
+    DEVICE_STATUS_RETENTION_DAYS: int = int(os.getenv("DEVICE_STATUS_RETENTION_DAYS", "60"))
     MQTT_COMMAND_QOS: int = int(os.getenv("MQTT_COMMAND_QOS", "1"))
     OTA_FIRMWARE_URL: str = os.getenv("OTA_FIRMWARE_URL", "")
     FIRMWARE_UPLOAD_DIR: str = os.getenv("FIRMWARE_UPLOAD_DIR", "firmware_uploads")

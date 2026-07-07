@@ -189,6 +189,12 @@ def _serialize_health_machine(db: Session, maquina: Maquina, now: datetime):
         "ultimo_pagamento": ultimo_pagamento,
         "ultimo_pulso": ultimo_pulso,
         "pulse_alert": pulse_alert,
+        "uptime_seconds": maquina.uptime_seconds,
+        "free_heap_bytes": maquina.free_heap_bytes,
+        "last_reset_reason": maquina.last_reset_reason,
+        "wifi_reconnect_count": maquina.wifi_reconnect_count,
+        "mqtt_reconnect_count": maquina.mqtt_reconnect_count,
+        "short_pulse_count": maquina.short_pulse_count,
     }
 
 
