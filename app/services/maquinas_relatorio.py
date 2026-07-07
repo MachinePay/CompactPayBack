@@ -157,14 +157,16 @@ def compute_financial_summary(db: Session, machine_ids: list[str], start_dt: dat
     if not machine_ids:
         return zero_summary
 
-    testes_query = db.query(VendaPagamento).filter(
-        VendaPagamento.maquina_id.in_(machine_ids),
-        VendaPagamento.created_at >= start_dt,
-        VendaPagamento.created_at <= end_dt,
-        VendaPagamento.is_teste.is_(True),
+    # Creditos de teste (botao "Credito" de teste) sao gravados so em HistoricoOperacao
+    # (categoria=TESTE), nunca em VendaPagamento - por isso a contagem vem de la.
+    testes_query = db.query(HistoricoOperacao).filter(
+        HistoricoOperacao.maquina_id.in_(machine_ids),
+        HistoricoOperacao.categoria == "TESTE",
+        HistoricoOperacao.created_at >= start_dt,
+        HistoricoOperacao.created_at <= end_dt,
     )
-    testes_count = testes_query.with_entities(func.count(VendaPagamento.id)).scalar() or 0
-    testes_valor = float(testes_query.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0)
+    testes_count = testes_query.with_entities(func.count(HistoricoOperacao.id)).scalar() or 0
+    testes_valor = float(testes_query.with_entities(func.sum(HistoricoOperacao.valor)).scalar() or 0.0)
 
     estornos_query = db.query(VendaPagamento).filter(
         VendaPagamento.maquina_id.in_(machine_ids),
