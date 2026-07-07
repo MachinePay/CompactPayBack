@@ -2,8 +2,7 @@ from datetime import datetime, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
@@ -20,7 +19,14 @@ from app.models.models import (
 from app.models.produto import Produto
 from app.schemas.maquina import MaquinaCreate, MaquinaOut, MaquinaUpdate
 from app.services.auditoria import registrar_auditoria
-from app.services.maquinas_relatorio import serialize_machine_summary
+from app.services.maquinas_relatorio import (
+    latest_payment_by_machine,
+    latest_pulse_by_machine,
+    latest_transacao_in_by_machine,
+    noise_counts_by_machine,
+    serialize_machine_summary,
+    serialize_machines_summary_batch,
+)
 from app.services.mercado_pago import create_pos_for_machine
 
 router = APIRouter()
@@ -50,9 +56,12 @@ def get_db():
 
 
 def _maquina_query_por_usuario(db: Session, role: str, cliente_id):
+    # joinedload evita 1 query extra por maquina so para ler o nome do cliente
+    # (maquina.dono) quando a listagem tem varias maquinas de clientes diferentes.
+    query = db.query(Maquina).options(joinedload(Maquina.dono))
     if role == "admin":
-        return db.query(Maquina)
-    return db.query(Maquina).filter(Maquina.cliente_id == cliente_id)
+        return query
+    return query.filter(Maquina.cliente_id == cliente_id)
 
 
 def _generate_machine_id(db: Session) -> str:
@@ -95,66 +104,13 @@ def _machine_health_status(status_online: bool, wifi_status: str, firmware_alert
     return "online"
 
 
-def _latest_payment(db: Session, machine_id: str):
-    venda = (
-        db.query(VendaPagamento)
-        .filter(VendaPagamento.maquina_id == machine_id)
-        .order_by(VendaPagamento.created_at.desc())
-        .first()
-    )
-    if venda:
-        return {
-            "data": venda.created_at,
-            "valor": float(venda.valor_liquido or venda.valor_bruto or 0),
-            "origem": venda.origem,
-            "provider": venda.provider,
-            "payment_type": venda.tipo_pagamento,
-            "pulse_status": venda.status_pulso,
-            "is_teste": bool(venda.is_teste),
-        }
-
-    transacao = (
-        db.query(Transacao)
-        .filter(Transacao.maquina_id == machine_id, Transacao.tipo == "IN")
-        .order_by(Transacao.data_hora.desc())
-        .first()
-    )
-    if not transacao:
-        return None
-    metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
-    return {
-        "data": transacao.data_hora,
-        "valor": float(transacao.valor or 0),
-        "origem": metodo.lower(),
-        "provider": metodo.lower(),
-        "payment_type": metodo,
-        "pulse_status": "fisico",
-        "is_teste": False,
-    }
+def _latest_payment_map(db: Session, machine_ids: list[str]) -> dict[str, dict]:
+    pagamentos = latest_payment_by_machine(db, machine_ids)
+    legado = latest_transacao_in_by_machine(db, machine_ids)
+    return {machine_id: pagamentos.get(machine_id) or legado.get(machine_id) for machine_id in machine_ids}
 
 
-def _latest_pulse(db: Session, machine_id: str):
-    historico = (
-        db.query(HistoricoOperacao)
-        .filter(
-            HistoricoOperacao.maquina_id == machine_id,
-            HistoricoOperacao.pulse_status.isnot(None),
-        )
-        .order_by(HistoricoOperacao.created_at.desc())
-        .first()
-    )
-    if not historico:
-        return None
-    return {
-        "data": historico.created_at,
-        "status": historico.pulse_status,
-        "categoria": historico.categoria,
-        "descricao": historico.descricao,
-        "command_id": historico.command_id,
-    }
-
-
-def _serialize_health_machine(db: Session, maquina: Maquina, now: datetime):
+def _serialize_health_machine(maquina: Maquina, now: datetime, ultimo_pagamento: dict | None, ultimo_pulso: dict | None):
     status_online = bool(maquina.ultimo_sinal and (now - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
     wifi_status = _wifi_health(maquina.wifi_quality)
     firmware_update_status = maquina.firmware_update_status or ""
@@ -163,8 +119,6 @@ def _serialize_health_machine(db: Session, maquina: Maquina, now: datetime):
         or firmware_update_status == "failed"
         or bool(maquina.firmware_target_version and maquina.firmware_target_version != maquina.firmware_version)
     )
-    ultimo_pagamento = _latest_payment(db, maquina.id_hardware)
-    ultimo_pulso = _latest_pulse(db, maquina.id_hardware)
     pulse_status = str((ultimo_pulso or {}).get("status") or "").lower()
     pulse_alert = pulse_status.startswith("falha") or pulse_status in PULSE_ABSENT_STATUSES
     health_status = _machine_health_status(status_online, wifi_status, firmware_alert, pulse_alert)
@@ -227,23 +181,6 @@ def _matches_health_filters(item: dict, status: str, wifi: str, firmware: str, p
     return True
 
 
-def _noise_count(db: Session, machine_id: str, since: datetime) -> int:
-    return (
-        db.query(HistoricoOperacao)
-        .filter(
-            HistoricoOperacao.maquina_id == machine_id,
-            HistoricoOperacao.categoria == "DISPOSITIVO",
-            HistoricoOperacao.created_at >= since,
-            or_(
-                HistoricoOperacao.descricao.ilike("%PULSE_CURTO%"),
-                HistoricoOperacao.descricao.ilike("%CURTO_IGNORADO%"),
-                HistoricoOperacao.descricao.ilike("%COIN_RETURN_IGNORADO%"),
-            ),
-        )
-        .count()
-    )
-
-
 def _make_alert(machine: dict, tipo: str, severidade: str, titulo: str, mensagem: str, detected_at, extra: dict | None = None):
     return {
         "id": f"{machine['id_hardware']}:{tipo}",
@@ -262,7 +199,7 @@ def _make_alert(machine: dict, tipo: str, severidade: str, titulo: str, mensagem
     }
 
 
-def _build_machine_alerts(db: Session, machine: dict, now: datetime):
+def _build_machine_alerts(machine: dict, now: datetime, noise_count: int):
     alerts = []
     last_signal = machine.get("ultimo_sinal")
     if not machine["status_online"] and last_signal and now - last_signal >= OFFLINE_ALERT_AFTER:
@@ -341,7 +278,6 @@ def _build_machine_alerts(db: Session, machine: dict, now: datetime):
             )
         )
 
-    noise_count = _noise_count(db, machine["id_hardware"], now - NOISE_ALERT_WINDOW)
     if noise_count >= NOISE_ALERT_THRESHOLD:
         alerts.append(
             _make_alert(
@@ -399,16 +335,13 @@ def listar_maquinas(
         maquinas_query = maquinas_query.filter(Maquina.id_hardware == id_hardware)
 
     maquinas = maquinas_query.order_by(Maquina.nome_local.asc(), Maquina.id_hardware.asc()).all()
-    return [
-        serialize_machine_summary(
-            db,
-            maquina,
-            periodo=periodo,
-            data_inicio=data_inicio,
-            data_fim=data_fim,
-        )
-        for maquina in maquinas
-    ]
+    return serialize_machines_summary_batch(
+        db,
+        maquinas,
+        periodo=periodo,
+        data_inicio=data_inicio,
+        data_fim=data_fim,
+    )
 
 
 @router.get("/maquinas/saude")
@@ -435,9 +368,15 @@ def listar_saude_maquinas(
         "pulso": (pulso or "todos").strip().lower(),
         "busca": (busca or "").strip().lower(),
     }
+    maquinas_list = query.order_by(Maquina.nome_local.asc(), Maquina.id_hardware.asc()).all()
+    machine_ids = [maquina.id_hardware for maquina in maquinas_list]
+    pagamentos_por_maquina = _latest_payment_map(db, machine_ids)
+    pulsos_por_maquina = latest_pulse_by_machine(db, machine_ids)
     maquinas = [
-        _serialize_health_machine(db, maquina, now)
-        for maquina in query.order_by(Maquina.nome_local.asc(), Maquina.id_hardware.asc()).all()
+        _serialize_health_machine(
+            maquina, now, pagamentos_por_maquina.get(maquina.id_hardware), pulsos_por_maquina.get(maquina.id_hardware)
+        )
+        for maquina in maquinas_list
     ]
     filtered = [
         item
@@ -475,13 +414,20 @@ def listar_alertas_maquinas(
     normalized_tipo = (tipo or "todos").strip().lower()
     normalized_severidade = (severidade or "todos").strip().lower()
     normalized_busca = (busca or "").strip().lower()
+    maquinas_list = query.order_by(Maquina.nome_local.asc(), Maquina.id_hardware.asc()).all()
+    machine_ids = [maquina.id_hardware for maquina in maquinas_list]
+    pagamentos_por_maquina = _latest_payment_map(db, machine_ids)
+    pulsos_por_maquina = latest_pulse_by_machine(db, machine_ids)
+    ruido_por_maquina = noise_counts_by_machine(db, machine_ids, now - NOISE_ALERT_WINDOW)
     machines = [
-        _serialize_health_machine(db, maquina, now)
-        for maquina in query.order_by(Maquina.nome_local.asc(), Maquina.id_hardware.asc()).all()
+        _serialize_health_machine(
+            maquina, now, pagamentos_por_maquina.get(maquina.id_hardware), pulsos_por_maquina.get(maquina.id_hardware)
+        )
+        for maquina in maquinas_list
     ]
     alerts = []
     for machine in machines:
-        alerts.extend(_build_machine_alerts(db, machine, now))
+        alerts.extend(_build_machine_alerts(machine, now, ruido_por_maquina.get(machine["id_hardware"], 0)))
     alerts.sort(key=lambda item: item.get("detected_at") or datetime.min, reverse=True)
     filtered = [
         alert

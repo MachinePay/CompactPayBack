@@ -3,7 +3,7 @@ from datetime import date, datetime, timedelta
 import re
 
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models.models import AuditoriaOperacao, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.services.mercado_pago import get_active_terminal_for_machine
@@ -417,6 +417,175 @@ def movement_counts_by_machine(db: Session, machine_ids: list[str], start_dt: da
     return dict(rows)
 
 
+def latest_payment_by_machine(db: Session, machine_ids: list[str]) -> dict[str, dict]:
+    """Ultimo VendaPagamento de cada maquina, buscando tudo numa unica query (via
+    ROW_NUMBER) em vez de uma consulta 'ORDER BY ... LIMIT 1' por maquina."""
+    if not machine_ids:
+        return {}
+    row_number = (
+        func.row_number()
+        .over(partition_by=VendaPagamento.maquina_id, order_by=VendaPagamento.created_at.desc())
+        .label("rn")
+    )
+    subq = (
+        db.query(VendaPagamento, row_number)
+        .filter(VendaPagamento.maquina_id.in_(machine_ids))
+        .subquery()
+    )
+    venda_alias = aliased(VendaPagamento, subq)
+    rows = db.query(venda_alias).filter(subq.c.rn == 1).all()
+    result = {}
+    for venda in rows:
+        result[venda.maquina_id] = {
+            "data": venda.created_at,
+            "valor": float(venda.valor_liquido or venda.valor_bruto or 0),
+            "origem": venda.origem,
+            "provider": venda.provider,
+            "payment_type": venda.tipo_pagamento,
+            "pulse_status": venda.status_pulso,
+            "is_teste": bool(venda.is_teste),
+        }
+    return result
+
+
+def latest_transacao_in_by_machine(db: Session, machine_ids: list[str]) -> dict[str, dict]:
+    """Fallback do faturamento legado (Transacao IN) para maquinas sem nenhuma
+    VendaPagamento ainda, tambem buscado em lote."""
+    if not machine_ids:
+        return {}
+    row_number = (
+        func.row_number()
+        .over(partition_by=Transacao.maquina_id, order_by=Transacao.data_hora.desc())
+        .label("rn")
+    )
+    subq = (
+        db.query(Transacao, row_number)
+        .filter(Transacao.maquina_id.in_(machine_ids), Transacao.tipo == "IN")
+        .subquery()
+    )
+    transacao_alias = aliased(Transacao, subq)
+    rows = db.query(transacao_alias).filter(subq.c.rn == 1).all()
+    result = {}
+    for transacao in rows:
+        metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
+        result[transacao.maquina_id] = {
+            "data": transacao.data_hora,
+            "valor": float(transacao.valor or 0),
+            "origem": metodo.lower(),
+            "provider": metodo.lower(),
+            "payment_type": metodo,
+            "pulse_status": "fisico",
+            "is_teste": False,
+        }
+    return result
+
+
+def latest_pulse_by_machine(db: Session, machine_ids: list[str]) -> dict[str, dict]:
+    if not machine_ids:
+        return {}
+    row_number = (
+        func.row_number()
+        .over(partition_by=HistoricoOperacao.maquina_id, order_by=HistoricoOperacao.created_at.desc())
+        .label("rn")
+    )
+    subq = (
+        db.query(HistoricoOperacao, row_number)
+        .filter(
+            HistoricoOperacao.maquina_id.in_(machine_ids),
+            HistoricoOperacao.pulse_status.isnot(None),
+        )
+        .subquery()
+    )
+    historico_alias = aliased(HistoricoOperacao, subq)
+    rows = db.query(historico_alias).filter(subq.c.rn == 1).all()
+    result = {}
+    for historico in rows:
+        result[historico.maquina_id] = {
+            "data": historico.created_at,
+            "status": historico.pulse_status,
+            "categoria": historico.categoria,
+            "descricao": historico.descricao,
+            "command_id": historico.command_id,
+        }
+    return result
+
+
+def noise_counts_by_machine(db: Session, machine_ids: list[str], since: datetime) -> dict[str, int]:
+    if not machine_ids:
+        return {}
+    rows = (
+        db.query(HistoricoOperacao.maquina_id, func.count(HistoricoOperacao.id))
+        .filter(
+            HistoricoOperacao.maquina_id.in_(machine_ids),
+            HistoricoOperacao.categoria == "DISPOSITIVO",
+            HistoricoOperacao.created_at >= since,
+            or_(
+                HistoricoOperacao.descricao.ilike("%PULSE_CURTO%"),
+                HistoricoOperacao.descricao.ilike("%CURTO_IGNORADO%"),
+                HistoricoOperacao.descricao.ilike("%COIN_RETURN_IGNORADO%"),
+            ),
+        )
+        .group_by(HistoricoOperacao.maquina_id)
+        .all()
+    )
+    return dict(rows)
+
+
+def transacao_summary_by_machine(
+    db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime
+) -> dict[str, dict]:
+    """Para cada maquina: data do ultimo pagamento (IN), data da ultima saida (OUT)
+    e quantidade de saidas no periodo - tudo numa unica query agrupada."""
+    result = {
+        machine_id: {"ultimo_pagamento_em": None, "ultima_saida_em": None, "quantidade_saidas": 0}
+        for machine_id in machine_ids
+    }
+    if not machine_ids:
+        return result
+
+    rows = (
+        db.query(
+            Transacao.maquina_id,
+            Transacao.tipo,
+            func.max(Transacao.data_hora),
+            func.count(Transacao.id),
+        )
+        .filter(
+            Transacao.maquina_id.in_(machine_ids),
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+        )
+        .group_by(Transacao.maquina_id, Transacao.tipo)
+        .all()
+    )
+    for maquina_id, tipo, ultimo, count in rows:
+        tipo_value = getattr(tipo, "value", tipo)
+        bucket = result[maquina_id]
+        if tipo_value == "IN":
+            bucket["ultimo_pagamento_em"] = ultimo
+        elif tipo_value == "OUT":
+            bucket["ultima_saida_em"] = ultimo
+            bucket["quantidade_saidas"] = int(count or 0)
+    return result
+
+
+def latest_teste_at_by_machine(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
+    if not machine_ids:
+        return {}
+    rows = (
+        db.query(HistoricoOperacao.maquina_id, func.max(HistoricoOperacao.created_at))
+        .filter(
+            HistoricoOperacao.maquina_id.in_(machine_ids),
+            HistoricoOperacao.categoria == "TESTE",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
+        )
+        .group_by(HistoricoOperacao.maquina_id)
+        .all()
+    )
+    return dict(rows)
+
+
 def daily_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
     """Faturamento real por dia, buscando cada fonte de dado uma unica vez para
     todo o periodo (em vez de uma consulta por dia)."""
@@ -720,6 +889,96 @@ def serialize_machine_summary(
         "faturamento": float(faturamento),
         "quantidade_saidas": int(quantidade_saidas),
     }
+
+
+def serialize_machines_summary_batch(
+    db: Session,
+    maquinas: list[Maquina],
+    periodo: str = "mes",
+    data_inicio: str = None,
+    data_fim: str = None,
+) -> list[dict]:
+    """Mesmo resultado de chamar serialize_machine_summary maquina por maquina, mas
+    buscando os dados de todas de uma vez (poucas queries agregadas) - usado pela
+    listagem principal de maquinas, que e a mais consultada do sistema."""
+    agora = datetime.utcnow()
+    start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
+    machine_ids = [maquina.id_hardware for maquina in maquinas]
+
+    faturamento_por_maquina = compute_financial_summary_by_machine(db, machine_ids, start_dt, end_dt)
+    transacoes_por_maquina = transacao_summary_by_machine(db, machine_ids, start_dt, end_dt)
+    testes_por_maquina = latest_teste_at_by_machine(db, machine_ids, start_dt, end_dt)
+
+    houve_commit_pendente = False
+    resultado = []
+    for maquina in maquinas:
+        status_online = bool(maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
+        transacoes = transacoes_por_maquina.get(
+            maquina.id_hardware, {"ultimo_pagamento_em": None, "ultima_saida_em": None, "quantidade_saidas": 0}
+        )
+        ultimo_pagamento_em = transacoes["ultimo_pagamento_em"]
+        ultima_saida_em = transacoes["ultima_saida_em"]
+        quantidade_saidas = transacoes["quantidade_saidas"]
+        ultimo_teste_em = testes_por_maquina.get(maquina.id_hardware)
+        ultima_atividade_em = max(
+            [item for item in [ultimo_pagamento_em, ultima_saida_em, ultimo_teste_em] if item is not None],
+            default=None,
+        )
+
+        firmware_update_status = maquina.firmware_update_status
+        update_started_at = maquina.firmware_update_started_at or maquina.firmware_update_requested_at
+        if (
+            firmware_update_status in OTA_ACTIVE_STATUSES
+            and update_started_at
+            and agora - update_started_at > OTA_TIMEOUT
+        ):
+            firmware_update_status = "failed"
+            maquina.firmware_update_status = "failed"
+            maquina.firmware_update_finished_at = agora
+            houve_commit_pendente = True
+
+        faturamento = faturamento_por_maquina.get(maquina.id_hardware, {}).get("faturamento_total", 0.0)
+
+        resultado.append(
+            {
+                "id_hardware": maquina.id_hardware,
+                "cliente_id": maquina.cliente_id,
+                "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
+                "nome": maquina.nome_local,
+                "localizacao": maquina.localizacao,
+                "banco_pagamento": maquina.banco_pagamento or "mercado_pago",
+                "mp_store_id": maquina.mp_store_id,
+                "mp_store_external_id": maquina.mp_store_external_id,
+                "mp_pos_id": maquina.mp_pos_id,
+                "mp_pos_external_id": maquina.mp_pos_external_id,
+                "mp_qr_image": maquina.mp_qr_image,
+                "firmware_version": maquina.firmware_version,
+                "firmware_target_version": maquina.firmware_target_version,
+                "firmware_updated_at": maquina.firmware_updated_at,
+                "firmware_update_status": firmware_update_status,
+                "firmware_update_command_id": maquina.firmware_update_command_id,
+                "firmware_update_url": maquina.firmware_update_url,
+                "firmware_update_requested_at": maquina.firmware_update_requested_at,
+                "firmware_update_started_at": maquina.firmware_update_started_at,
+                "firmware_update_finished_at": maquina.firmware_update_finished_at,
+                "ultimo_sinal": maquina.ultimo_sinal,
+                "wifi_rssi": maquina.wifi_rssi,
+                "wifi_quality": maquina.wifi_quality,
+                "ultimo_pagamento_em": ultimo_pagamento_em,
+                "ultimo_teste_em": ultimo_teste_em,
+                "ultima_saida_em": ultima_saida_em,
+                "ultima_atividade_em": ultima_atividade_em,
+                "status_online": status_online,
+                "status_operacional": status_operacional(status_online, ultima_atividade_em),
+                "faturamento": float(faturamento),
+                "quantidade_saidas": int(quantidade_saidas),
+            }
+        )
+
+    if houve_commit_pendente:
+        db.commit()
+
+    return resultado
 
 
 def build_machine_history_payload(

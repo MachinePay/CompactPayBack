@@ -2,7 +2,7 @@ from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
@@ -32,9 +32,12 @@ def get_db():
 
 
 def _maquina_query_por_usuario(db: Session, role: str, cliente_id):
+    # joinedload evita 1 query extra por maquina so para ler o nome do cliente
+    # (maquina.dono) quando ha varias maquinas de clientes diferentes no filtro.
+    query = db.query(Maquina).options(joinedload(Maquina.dono))
     if role == "admin":
-        return db.query(Maquina)
-    return db.query(Maquina).filter(Maquina.cliente_id == cliente_id)
+        return query
+    return query.filter(Maquina.cliente_id == cliente_id)
 
 
 def _total_dinheiro_fisico(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> float:
