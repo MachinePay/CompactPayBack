@@ -34,6 +34,17 @@ class Settings(BaseSettings):
     MP_DEFAULT_STORE_LONGITUDE: float = float(os.getenv("MP_DEFAULT_STORE_LONGITUDE", "-46.633308"))
     MP_DEFAULT_POS_CATEGORY: int = int(os.getenv("MP_DEFAULT_POS_CATEGORY", "7994"))
     MP_POS_CATEGORY_FALLBACKS: str = os.getenv("MP_POS_CATEGORY_FALLBACKS", "7994,7996,7999,5999,5399")
+    START_ALERT_NOTIFIER_WORKER: bool = os.getenv("START_ALERT_NOTIFIER_WORKER", "true").lower() == "true"
+    ALERT_NOTIFIER_INTERVAL_SECONDS: int = int(os.getenv("ALERT_NOTIFIER_INTERVAL_SECONDS", "120"))
+    ALERT_RENOTIFY_COOLDOWN_MINUTES: int = int(os.getenv("ALERT_RENOTIFY_COOLDOWN_MINUTES", "60"))
+    ALERT_NOTIFY_SEVERIDADES: str = os.getenv("ALERT_NOTIFY_SEVERIDADES", "critico")
+    ALERT_NOTIFICATION_EMAILS: str = os.getenv("ALERT_NOTIFICATION_EMAILS", "")
+    SMTP_HOST: str = os.getenv("SMTP_HOST", "")
+    SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
+    SMTP_USERNAME: str = os.getenv("SMTP_USERNAME", "")
+    SMTP_PASSWORD: str = os.getenv("SMTP_PASSWORD", "")
+    SMTP_USE_TLS: bool = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+    SMTP_FROM_EMAIL: str = os.getenv("SMTP_FROM_EMAIL", "")
 
 
 settings = Settings()

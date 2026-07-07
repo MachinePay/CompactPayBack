@@ -7,6 +7,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from app.core.config import settings
+from app.services.alert_notifier import start_alert_notifier_worker
 from app.services.command_queue import start_command_queue_worker
 from app.services.mqtt_worker import start_mqtt_worker
 from app.services.retention import start_retention_worker
@@ -285,3 +286,4 @@ def startup_event():
         logging.info("MQTT worker desativado por START_MQTT_WORKER=false")
     start_command_queue_worker()
     start_retention_worker()
+    start_alert_notifier_worker()

@@ -11,6 +11,7 @@ os.environ.setdefault("DATABASE_URL", f"sqlite:///{tempfile.mkdtemp()}/compactpa
 os.environ.setdefault("START_MQTT_WORKER", "false")
 os.environ.setdefault("START_COMMAND_QUEUE_WORKER", "false")
 os.environ.setdefault("START_RETENTION_WORKER", "false")
+os.environ.setdefault("START_ALERT_NOTIFIER_WORKER", "false")
 os.environ.setdefault("SECRET_KEY", "test-secret-key")
 os.environ.setdefault("APP_VERSION", "test")
 os.environ.setdefault("APP_REVISION", "pytest")

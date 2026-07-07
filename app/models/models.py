@@ -233,6 +233,18 @@ class ComandoMaquina(Base):
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 
+class AlertaNotificacao(Base):
+    __tablename__ = "alertas_notificacoes"
+    id = Column(Integer, primary_key=True)
+    alerta_key = Column(String, unique=True, index=True, nullable=False)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    tipo = Column(String, nullable=False, index=True)
+    severidade = Column(String, nullable=False)
+    primeira_notificacao_em = Column(DateTime, nullable=False)
+    ultima_notificacao_em = Column(DateTime, nullable=False)
+    resolvido_em = Column(DateTime, nullable=True, index=True)
+
+
 class FirmwareVersion(Base):
     __tablename__ = "firmware_versions"
     id = Column(Integer, primary_key=True)

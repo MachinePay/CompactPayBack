@@ -531,6 +531,220 @@ def noise_counts_by_machine(db: Session, machine_ids: list[str], since: datetime
     return dict(rows)
 
 
+OFFLINE_ALERT_AFTER = timedelta(minutes=5)
+NO_PAYMENT_ALERT_AFTER = timedelta(days=7)
+NOISE_ALERT_WINDOW = timedelta(hours=24)
+NOISE_ALERT_THRESHOLD = 10
+
+
+def latest_payment_map(db: Session, machine_ids: list[str]) -> dict[str, dict]:
+    pagamentos = latest_payment_by_machine(db, machine_ids)
+    legado = latest_transacao_in_by_machine(db, machine_ids)
+    return {machine_id: pagamentos.get(machine_id) or legado.get(machine_id) for machine_id in machine_ids}
+
+
+def wifi_health(quality) -> str:
+    if quality is None:
+        return "sem_leitura"
+    if quality >= 70:
+        return "otimo"
+    if quality >= 40:
+        return "bom"
+    return "ruim"
+
+
+def machine_health_status(status_online: bool, wifi_status: str, firmware_alert: bool, pulse_alert: bool) -> str:
+    if not status_online:
+        return "offline"
+    if wifi_status == "ruim" or firmware_alert or pulse_alert:
+        return "atencao"
+    return "online"
+
+
+def serialize_health_machine(maquina: Maquina, now: datetime, ultimo_pagamento: dict | None, ultimo_pulso: dict | None) -> dict:
+    status_online = bool(maquina.ultimo_sinal and (now - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
+    wifi_status = wifi_health(maquina.wifi_quality)
+    firmware_update_status = maquina.firmware_update_status or ""
+    firmware_alert = (
+        firmware_update_status in OTA_ACTIVE_STATUSES
+        or firmware_update_status == "failed"
+        or bool(maquina.firmware_target_version and maquina.firmware_target_version != maquina.firmware_version)
+    )
+    pulse_status = str((ultimo_pulso or {}).get("status") or "").lower()
+    pulse_alert = pulse_status.startswith("falha") or pulse_status in PULSE_ABSENT_STATUSES
+    health_status = machine_health_status(status_online, wifi_status, firmware_alert, pulse_alert)
+
+    return {
+        "id_hardware": maquina.id_hardware,
+        "cliente_id": maquina.cliente_id,
+        "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
+        "nome": maquina.nome_local,
+        "localizacao": maquina.localizacao,
+        "health_status": health_status,
+        "status_online": status_online,
+        "mqtt_status": "conectado" if status_online else "sem_sinal",
+        "ultimo_sinal": maquina.ultimo_sinal,
+        "wifi_quality": maquina.wifi_quality,
+        "wifi_rssi": maquina.wifi_rssi,
+        "wifi_status": wifi_status,
+        "firmware_version": maquina.firmware_version,
+        "firmware_target_version": maquina.firmware_target_version,
+        "firmware_update_status": firmware_update_status,
+        "firmware_alert": firmware_alert,
+        "ultimo_pagamento": ultimo_pagamento,
+        "ultimo_pulso": ultimo_pulso,
+        "pulse_alert": pulse_alert,
+        "uptime_seconds": maquina.uptime_seconds,
+        "free_heap_bytes": maquina.free_heap_bytes,
+        "last_reset_reason": maquina.last_reset_reason,
+        "wifi_reconnect_count": maquina.wifi_reconnect_count,
+        "mqtt_reconnect_count": maquina.mqtt_reconnect_count,
+        "short_pulse_count": maquina.short_pulse_count,
+    }
+
+
+def compute_all_machines_health(db: Session, maquinas: list[Maquina], now: datetime | None = None) -> list[dict]:
+    """Serializa a saude de todas as maquinas buscando os dados em lote (evita
+    N+1 quando ha muitas maquinas)."""
+    now = now or datetime.utcnow()
+    machine_ids = [maquina.id_hardware for maquina in maquinas]
+    pagamentos_por_maquina = latest_payment_map(db, machine_ids)
+    pulsos_por_maquina = latest_pulse_by_machine(db, machine_ids)
+    return [
+        serialize_health_machine(
+            maquina, now, pagamentos_por_maquina.get(maquina.id_hardware), pulsos_por_maquina.get(maquina.id_hardware)
+        )
+        for maquina in maquinas
+    ]
+
+
+def make_alert(machine: dict, tipo: str, severidade: str, titulo: str, mensagem: str, detected_at, extra: dict | None = None) -> dict:
+    return {
+        "id": f"{machine['id_hardware']}:{tipo}",
+        "tipo": tipo,
+        "severidade": severidade,
+        "titulo": titulo,
+        "mensagem": mensagem,
+        "detected_at": detected_at,
+        "maquina": {
+            "id_hardware": machine["id_hardware"],
+            "nome": machine["nome"],
+            "cliente_nome": machine["cliente_nome"],
+            "localizacao": machine["localizacao"],
+        },
+        "extra": extra or {},
+    }
+
+
+def build_machine_alerts(machine: dict, now: datetime, noise_count: int) -> list[dict]:
+    alerts = []
+    last_signal = machine.get("ultimo_sinal")
+    if not machine["status_online"] and last_signal and now - last_signal >= OFFLINE_ALERT_AFTER:
+        minutes = int((now - last_signal).total_seconds() // 60)
+        alerts.append(
+            make_alert(
+                machine,
+                "offline",
+                "critico",
+                "Maquina offline",
+                f"Sem sinal ha {minutes} minuto(s).",
+                last_signal,
+                {"offline_minutos": minutes},
+            )
+        )
+
+    if machine["wifi_status"] == "ruim":
+        alerts.append(
+            make_alert(
+                machine,
+                "wifi_ruim",
+                "aviso",
+                "Wi-Fi ruim",
+                f"Sinal em {machine.get('wifi_quality')}% ({machine.get('wifi_rssi')} dBm).",
+                last_signal,
+                {"wifi_quality": machine.get("wifi_quality"), "wifi_rssi": machine.get("wifi_rssi")},
+            )
+        )
+
+    pulse = machine.get("ultimo_pulso")
+    pulse_status = str((pulse or {}).get("status") or "").lower()
+    if machine["pulse_alert"] and pulse:
+        alerts.append(
+            make_alert(
+                machine,
+                "pulso_ausente",
+                "critico",
+                "Pagamento com pulso ausente",
+                f"Ultimo pulso registrado como {pulse_status}.",
+                pulse.get("data"),
+                {"pulse_status": pulse_status, "command_id": pulse.get("command_id")},
+            )
+        )
+
+    if machine["firmware_alert"]:
+        status = machine.get("firmware_update_status") or "pendente"
+        severity = "critico" if status == "failed" else "aviso"
+        alerts.append(
+            make_alert(
+                machine,
+                "firmware",
+                severity,
+                "Firmware requer atencao",
+                f"Versao atual {machine.get('firmware_version') or 'sem versao'}; alvo {machine.get('firmware_target_version') or 'nao definido'}; status {status}.",
+                last_signal,
+                {
+                    "firmware_version": machine.get("firmware_version"),
+                    "firmware_target_version": machine.get("firmware_target_version"),
+                    "firmware_update_status": status,
+                },
+            )
+        )
+
+    payment = machine.get("ultimo_pagamento")
+    if payment and payment.get("data") and now - payment["data"] >= NO_PAYMENT_ALERT_AFTER:
+        days = int((now - payment["data"]).total_seconds() // 86400)
+        alerts.append(
+            make_alert(
+                machine,
+                "sem_pagamento_recente",
+                "info",
+                "Sem pagamento recente",
+                f"Ultimo pagamento ha {days} dia(s).",
+                payment["data"],
+                {"dias": days, "valor": payment.get("valor")},
+            )
+        )
+
+    if noise_count >= NOISE_ALERT_THRESHOLD:
+        alerts.append(
+            make_alert(
+                machine,
+                "ruido_contador",
+                "aviso",
+                "Ruido no contador",
+                f"{noise_count} pulsos curtos/ignorados nas ultimas 24h.",
+                now,
+                {"eventos_24h": noise_count},
+            )
+        )
+
+    return alerts
+
+
+def compute_active_alerts(db: Session, maquinas: list[Maquina], now: datetime | None = None) -> list[dict]:
+    """Todos os alertas ativos das maquinas informadas, buscando os dados em lote.
+    Usado tanto pelo painel de alertas quanto pelo notificador em background."""
+    now = now or datetime.utcnow()
+    machine_ids = [maquina.id_hardware for maquina in maquinas]
+    machines = compute_all_machines_health(db, maquinas, now)
+    ruido_por_maquina = noise_counts_by_machine(db, machine_ids, now - NOISE_ALERT_WINDOW)
+    alerts = []
+    for machine in machines:
+        alerts.extend(build_machine_alerts(machine, now, ruido_por_maquina.get(machine["id_hardware"], 0)))
+    alerts.sort(key=lambda item: item.get("detected_at") or datetime.min, reverse=True)
+    return alerts
+
+
 def transacao_summary_by_machine(
     db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime
 ) -> dict[str, dict]:
