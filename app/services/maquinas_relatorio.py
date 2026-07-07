@@ -140,6 +140,68 @@ def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: dateti
     }
 
 
+def compute_financial_summary(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
+    breakdown = real_revenue_breakdown(db, machine_ids, start_dt, end_dt)
+    zero_summary = {
+        "faturamento_total": 0.0,
+        "faturamento_fisico": 0.0,
+        "faturamento_digital": 0.0,
+        "ticket_medio": 0.0,
+        "vendas_count": 0,
+        "testes_count": 0,
+        "testes_valor": 0.0,
+        "estornos_count": 0,
+        "estornos_valor": 0.0,
+        "pulsos_ausentes": 0,
+    }
+    if not machine_ids:
+        return zero_summary
+
+    testes_query = db.query(VendaPagamento).filter(
+        VendaPagamento.maquina_id.in_(machine_ids),
+        VendaPagamento.created_at >= start_dt,
+        VendaPagamento.created_at <= end_dt,
+        VendaPagamento.is_teste.is_(True),
+    )
+    testes_count = testes_query.with_entities(func.count(VendaPagamento.id)).scalar() or 0
+    testes_valor = float(testes_query.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0)
+
+    estornos_query = db.query(VendaPagamento).filter(
+        VendaPagamento.maquina_id.in_(machine_ids),
+        VendaPagamento.refunded_at.isnot(None),
+        VendaPagamento.refunded_at >= start_dt,
+        VendaPagamento.refunded_at <= end_dt,
+    )
+    estornos_count = estornos_query.with_entities(func.count(VendaPagamento.id)).scalar() or 0
+    estornos_valor = float(estornos_query.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0)
+
+    pulsos_ausentes = (
+        db.query(func.count(VendaPagamento.id))
+        .filter(
+            VendaPagamento.maquina_id.in_(machine_ids),
+            VendaPagamento.created_at >= start_dt,
+            VendaPagamento.created_at <= end_dt,
+            VendaPagamento.status_pulso.in_(PULSE_ABSENT_STATUSES),
+        )
+        .scalar()
+        or 0
+    )
+
+    vendas_count = int(breakdown["count"])
+    return {
+        "faturamento_total": float(breakdown["total"]),
+        "faturamento_fisico": float(breakdown["fisico"]),
+        "faturamento_digital": float(breakdown["digital"]),
+        "ticket_medio": float(breakdown["total"]) / vendas_count if vendas_count else 0.0,
+        "vendas_count": vendas_count,
+        "testes_count": int(testes_count),
+        "testes_valor": testes_valor,
+        "estornos_count": int(estornos_count),
+        "estornos_valor": estornos_valor,
+        "pulsos_ausentes": int(pulsos_ausentes),
+    }
+
+
 ONLINE_SIGNAL_WINDOW = timedelta(seconds=90)
 TERMINAL_PAYMENT_ONLINE_WINDOW = timedelta(minutes=5)
 PULSE_CONFIRMED_STATUSES = {

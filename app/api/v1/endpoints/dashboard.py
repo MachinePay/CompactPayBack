@@ -10,7 +10,7 @@ from app.models.models import Maquina, Transacao, VendaPagamento
 from app.services.maquinas_relatorio import (
     ONLINE_SIGNAL_WINDOW,
     apply_transacao_periodo,
-    real_revenue_breakdown,
+    compute_financial_summary,
     real_revenue_totals,
     resolve_date_window,
 )
@@ -117,10 +117,9 @@ def dashboard_overview(
     )
 
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
-    resumo_faturamento = real_revenue_breakdown(db, maquinas_ids, start_dt, end_dt)
-    faturamento = resumo_faturamento["total"]
-    total_fisico = resumo_faturamento["fisico"]
-    quantidade_vendas_reais = resumo_faturamento["count"]
+    resumo_periodo = compute_financial_summary(db, maquinas_ids, start_dt, end_dt)
+    faturamento = resumo_periodo["faturamento_total"]
+    total_fisico = resumo_periodo["faturamento_fisico"]
     premios = (
         transacoes_periodo.filter(Transacao.tipo == "OUT")
         .with_entities(func.count(Transacao.id))
@@ -128,13 +127,21 @@ def dashboard_overview(
         or 0
     )
 
+    hoje = date.today()
+    inicio_hoje = datetime.combine(hoje, datetime.min.time())
+    fim_hoje = datetime.combine(hoje, datetime.max.time())
+    inicio_mes = datetime.combine(hoje.replace(day=1), datetime.min.time())
+    fim_mes = fim_hoje
+    resumo_hoje = compute_financial_summary(db, maquinas_ids, inicio_hoje, fim_hoje)
+    resumo_mes = compute_financial_summary(db, maquinas_ids, inicio_mes, fim_mes)
+
     agora = datetime.utcnow()
     maquinas_online = [
         maquina
         for maquina in maquinas
         if maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW
     ]
-    ticket_medio = float(faturamento) / int(quantidade_vendas_reais) if quantidade_vendas_reais else 0.0
+    ticket_medio = resumo_periodo["ticket_medio"]
 
     total_days = max(1, (end_dt.date() - start_dt.date()).days + 1)
     chart_data = []
@@ -215,10 +222,9 @@ def dashboard_overview(
 
     for item in clientes_map.values():
         machine_ids = [maquina.id_hardware for maquina in item["maquinas"]]
-        cliente_total = 0.0
+        resumo_cliente = compute_financial_summary(db, machine_ids, start_dt, end_dt)
         ultima_atividade_em = None
         if machine_ids:
-            cliente_total, _ = real_revenue_totals(db, machine_ids, start_dt, end_dt)
             ultima_atividade_em = (
                 db.query(func.max(Transacao.data_hora))
                 .filter(Transacao.maquina_id.in_(machine_ids))
@@ -228,7 +234,15 @@ def dashboard_overview(
             {
                 "cliente_id": item["cliente_id"],
                 "cliente_nome": item["cliente_nome"],
-                "total_faturado": float(cliente_total),
+                "total_faturado": resumo_cliente["faturamento_total"],
+                "faturamento_fisico": resumo_cliente["faturamento_fisico"],
+                "faturamento_digital": resumo_cliente["faturamento_digital"],
+                "ticket_medio": resumo_cliente["ticket_medio"],
+                "testes_count": resumo_cliente["testes_count"],
+                "testes_valor": resumo_cliente["testes_valor"],
+                "estornos_count": resumo_cliente["estornos_count"],
+                "estornos_valor": resumo_cliente["estornos_valor"],
+                "pulsos_ausentes": resumo_cliente["pulsos_ausentes"],
                 "maquinas": len(item["maquinas"]),
                 "maquinas_online": item["maquinas_online"],
                 "ultima_atividade_em": ultima_atividade_em,
@@ -237,18 +251,51 @@ def dashboard_overview(
 
     clientes_resumo.sort(key=lambda item: item["total_faturado"], reverse=True)
 
+    maquinas_resumo = []
+    for maquina in maquinas:
+        resumo_maquina = compute_financial_summary(db, [maquina.id_hardware], start_dt, end_dt)
+        maquinas_resumo.append(
+            {
+                "id_hardware": maquina.id_hardware,
+                "nome": maquina.nome_local,
+                "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else "Sem cliente",
+                "status_online": bool(
+                    maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW
+                ),
+                "total_faturado": resumo_maquina["faturamento_total"],
+                "faturamento_fisico": resumo_maquina["faturamento_fisico"],
+                "faturamento_digital": resumo_maquina["faturamento_digital"],
+                "ticket_medio": resumo_maquina["ticket_medio"],
+                "testes_count": resumo_maquina["testes_count"],
+                "testes_valor": resumo_maquina["testes_valor"],
+                "estornos_count": resumo_maquina["estornos_count"],
+                "estornos_valor": resumo_maquina["estornos_valor"],
+                "pulsos_ausentes": resumo_maquina["pulsos_ausentes"],
+            }
+        )
+    maquinas_resumo.sort(key=lambda item: item["total_faturado"], reverse=True)
+
     return {
         "stats": {
             "faturamento_total": float(faturamento),
+            "faturamento_hoje": resumo_hoje["faturamento_total"],
+            "faturamento_mes": resumo_mes["faturamento_total"],
             "total_fisico": float(total_fisico),
+            "faturamento_digital": resumo_periodo["faturamento_digital"],
             "premios_entregues": int(premios),
             "maquinas_ativas": len(maquinas_online),
             "total_maquinas": len(maquinas),
             "ticket_medio": float(ticket_medio),
             "percentual_ativas": round((len(maquinas_online) / len(maquinas)) * 100, 1) if maquinas else 0.0,
             "alertas": len(alerts),
+            "testes_count": resumo_periodo["testes_count"],
+            "testes_valor": resumo_periodo["testes_valor"],
+            "estornos_count": resumo_periodo["estornos_count"],
+            "estornos_valor": resumo_periodo["estornos_valor"],
+            "pulsos_ausentes": resumo_periodo["pulsos_ausentes"],
         },
         "chart_data": chart_data,
         "alerts": alerts[:4],
         "clientes_resumo": clientes_resumo[:8],
+        "maquinas_resumo": maquinas_resumo[:12],
     }
