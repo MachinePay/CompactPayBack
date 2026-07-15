@@ -20,6 +20,8 @@ NON_RELEASED_PULSE_STATUSES = {
     "pulso_sem_retorno",
 }
 
+MERCADO_PAGO_REFUND_PROVIDERS = {"", "mercado_pago", "manual"}
+
 
 def calcular_pulsos_por_valor(valor: float) -> int:
     # Regra atual: 1 pulso por R$1, minimo de 1 pulso para qualquer valor positivo.
@@ -41,7 +43,14 @@ def should_allow_refund(pulse_status: str | None, refunded_at, provider_payment_
     if not provider_payment_id:
         return False
     normalized_provider = str(provider or "").strip().lower()
-    return normalized_provider in {"", "mercado_pago", "manual"}
+    return normalized_provider in MERCADO_PAGO_REFUND_PROVIDERS
+
+
+def should_use_mercado_pago_refund(historico: HistoricoOperacao | None) -> bool:
+    if not historico:
+        return False
+    normalized_provider = str(historico.provider or "").strip().lower()
+    return normalized_provider in MERCADO_PAGO_REFUND_PROVIDERS
 
 
 def extract_provider_payment_id(historico: HistoricoOperacao | None) -> str | None:
@@ -57,6 +66,8 @@ def auto_refund_failed_pulse(db: Session, historico: HistoricoOperacao | None, m
     if not historico or historico.refunded_at:
         return False
     if not should_auto_refund_on_pulse_failure(getattr(historico, "pulse_status", None)):
+        return False
+    if not should_use_mercado_pago_refund(historico):
         return False
 
     payment_id = extract_provider_payment_id(historico)
