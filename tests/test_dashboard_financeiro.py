@@ -139,6 +139,7 @@ def test_machine_history_payload_includes_physical_transactions_saved_as_enum():
     _create_maquina(machine_id)
     payment_time = datetime.utcnow().replace(hour=11, minute=25, second=0, microsecond=0)
     _add_transacao(machine_id, valor=1.0, data_hora=payment_time)
+    _add_transacao(machine_id, valor=1.0, data_hora=payment_time)
 
     db = SessionLocal()
     try:
@@ -156,7 +157,10 @@ def test_machine_history_payload_includes_physical_transactions_saved_as_enum():
     assert len(vendas_fisicas) == 1
     assert vendas_fisicas[0]["provider"] == "fisico"
     assert vendas_fisicas[0]["pulse_status"] == "fisico"
-    assert payload["resumo"]["total_fisico"] == 1.0
+    assert vendas_fisicas[0]["valor"] == 2.0
+    assert vendas_fisicas[0]["total"] == 2.0
+    assert vendas_fisicas[0]["pulse_count"] == 2
+    assert payload["resumo"]["total_fisico"] == 2.0
 
 
 def test_compute_financial_summary_counts_testes_separately_from_faturamento():

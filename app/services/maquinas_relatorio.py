@@ -1441,22 +1441,42 @@ def build_machine_history_payload(
             }
         )
     if _should_include_physical_sales(registro_filter, origem_filter, forma_filter, pulso_filter, busca_filter):
+        grouped_physical_payments = {}
         for transacao in pagamentos:
             metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
             if str(metodo).upper() != "FISICO":
                 continue
+            grouped_at = transacao.data_hora.replace(microsecond=0)
+            group_key = (grouped_at, str(metodo).lower())
+            group = grouped_physical_payments.setdefault(
+                group_key,
+                {
+                    "ids": [],
+                    "data": grouped_at,
+                    "valor": 0.0,
+                    "count": 0,
+                    "metodo": metodo,
+                },
+            )
+            group["ids"].append(transacao.id)
+            group["valor"] += float(transacao.valor or 0)
+            group["count"] += 1
+
+        for group in grouped_physical_payments.values():
+            pulse_count = int(group["count"] or 0)
+            valor = float(group["valor"] or 0)
             vendas.append(
                 {
-                    "id": transacao.id,
+                    "id": f"fisico-{'-'.join(str(item_id) for item_id in group['ids'])}",
                     "kind": "pagamento_fisico",
                     "is_test": False,
-                    "data": transacao.data_hora,
-                    "valor": float(transacao.valor or 0),
+                    "data": group["data"],
+                    "valor": valor,
                     "taxa": None,
-                    "total": float(transacao.valor or 0),
+                    "total": valor,
                     "ponto": maquina.nome_local,
                     "provider": "fisico",
-                    "payment_type": metodo,
+                    "payment_type": "FISICO",
                     "card_brand": None,
                     "bank_name": None,
                     "provider_payment_id": None,
@@ -1465,7 +1485,12 @@ def build_machine_history_payload(
                     "situacao": "Pagamento fisico",
                     "refunded_at": None,
                     "can_refund": False,
-                    "descricao": "Pagamento fisico registrado pela maquina",
+                    "pulse_count": pulse_count,
+                    "descricao": (
+                        f"Pagamento fisico registrado pela maquina ({pulse_count} pulsos)"
+                        if pulse_count > 1
+                        else "Pagamento fisico registrado pela maquina"
+                    ),
                 }
             )
     for item in testes_vendas:
