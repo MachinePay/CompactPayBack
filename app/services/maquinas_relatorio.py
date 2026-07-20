@@ -50,8 +50,7 @@ def apply_transacao_periodo(
     data_fim: str | None = None,
 ):
     if data_inicio and data_fim:
-        dt_inicio = datetime.fromisoformat(data_inicio)
-        dt_fim = datetime.fromisoformat(data_fim)
+        dt_inicio, dt_fim = resolve_date_window(periodo, data_inicio, data_fim)
         return query.filter(
             Transacao.data_hora >= dt_inicio,
             Transacao.data_hora <= dt_fim,

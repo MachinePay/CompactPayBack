@@ -137,12 +137,18 @@ def test_compute_financial_summary_breaks_down_fisico_digital_and_ticket_medio()
 def test_machine_history_payload_includes_physical_transactions_saved_as_enum():
     machine_id = "CPM-DASH-HIST-FISICO"
     _create_maquina(machine_id)
-    _add_transacao(machine_id, valor=1.0)
+    payment_time = datetime.utcnow().replace(hour=11, minute=25, second=0, microsecond=0)
+    _add_transacao(machine_id, valor=1.0, data_hora=payment_time)
 
     db = SessionLocal()
     try:
         maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
-        payload = build_machine_history_payload(db, maquina, periodo="mes")
+        payload = build_machine_history_payload(
+            db,
+            maquina,
+            data_inicio=(payment_time - timedelta(days=30)).date().isoformat(),
+            data_fim=payment_time.date().isoformat(),
+        )
     finally:
         db.close()
 
