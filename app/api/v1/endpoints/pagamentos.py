@@ -10,7 +10,7 @@ from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import Cliente, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao, VendaPagamento
 from app.models.produto import Produto
-from app.schemas.pagamento import PagamentoCreate, PagamentoOut
+from app.schemas.pagamento import CreditoDigitalCreate, CreditoDigitalOut, PagamentoCreate, PagamentoOut
 from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
 from app.services.mercado_pago_webhook import processar_callback_mercado_pago
@@ -153,6 +153,116 @@ def lancar_pagamento(
         "payload": payload,
         "command_id": command_id,
         "pulse_status": pulse_status,
+        "data_hora": transacao.data_hora,
+    }
+
+
+@router.post("/pagamentos/creditos-digitais", response_model=CreditoDigitalOut)
+def lancar_credito_digital(
+    dados: CreditoDigitalCreate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Dispara pulsos comprados em um aplicativo externo, como o Agarra Mais.
+
+    O pagamento nao entra no faturamento/ticket medio da CompactPay, porque a
+    cobranca foi feita fora dela. A CompactPay registra a origem operacional e
+    usa os pulsos recebidos sem converter por valor.
+    """
+    _, role, cliente_id = user
+    _get_maquina_visivel(db, dados.maquina_id, role, cliente_id)
+
+    command_id = str(uuid4())
+    valor = float(dados.valor or 0)
+    referencia = (dados.referencia_externa or "").strip() or None
+    origem = "app_agarra"
+    provider = "agarramais_app"
+    payment_type = "pagamento_app_agarra"
+    descricao = f"Pagamento feito pelo aplicativo Agarra - {dados.pulsos} pulso(s)"
+    if referencia:
+        descricao += f" ref_externa={referencia}"
+
+    transacao = Transacao(
+        maquina_id=dados.maquina_id,
+        tipo=EventoTipo.in_flux,
+        metodo=MetodoPagamento.digital,
+        valor=valor,
+        data_hora=datetime.utcnow(),
+    )
+    db.add(transacao)
+    historico = HistoricoOperacao(
+        maquina_id=dados.maquina_id,
+        categoria="PAGAMENTO",
+        descricao=descricao,
+        valor=valor,
+        provider=provider,
+        provider_payment_id=referencia,
+        payment_type=payment_type,
+        pulse_status="pendente",
+        command_id=command_id,
+        created_at=transacao.data_hora,
+    )
+    db.add(historico)
+    db.flush()
+    registrar_venda_pagamento(
+        db,
+        maquina_id=dados.maquina_id,
+        valor=valor,
+        origem=origem,
+        transacao_id=transacao.id,
+        historico_id=historico.id,
+        provider=provider,
+        provider_payment_id=referencia,
+        tipo_pagamento=payment_type,
+        status_pulso="pendente",
+        command_id=command_id,
+        conta_faturamento=False,
+        conta_ticket_medio=False,
+        is_manual=False,
+        created_at=transacao.data_hora,
+    )
+    registrar_auditoria(
+        db,
+        user,
+        acao="PAGAMENTO_APP_AGARRA",
+        entidade_tipo="maquina",
+        entidade_id=dados.maquina_id,
+        descricao=f"{descricao} command_id={command_id}",
+    )
+    db.commit()
+    db.refresh(transacao)
+
+    try:
+        update_pulse_status(command_id, "comando_enviado")
+        payload = publish_machine_credit_pulses(
+            dados.maquina_id,
+            pulses=dados.pulsos,
+            action="paid",
+            command_id=command_id,
+        )
+        pulse_status = wait_for_pulse_confirmation(
+            command_id,
+            timeout_seconds=max(8, dados.pulsos * 2),
+        )
+    except Exception as exc:
+        update_pulse_status(command_id, "falha_publicacao")
+        raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
+
+    if pulse_status not in {"pulso_confirmado", "saldo_pendente"}:
+        raise HTTPException(
+            status_code=504,
+            detail=f"Comando enviado, mas a maquina nao confirmou o pulso ({pulse_status})",
+        )
+
+    return {
+        "ok": True,
+        "maquina_id": dados.maquina_id,
+        "pulsos": dados.pulsos,
+        "topic": f"/TEF/{dados.maquina_id}/cmd",
+        "payload": payload,
+        "command_id": command_id,
+        "pulse_status": pulse_status,
+        "referencia_externa": referencia,
         "data_hora": transacao.data_hora,
     }
 

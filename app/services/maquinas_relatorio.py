@@ -941,6 +941,14 @@ def _payment_method_conditions(forma: str):
 def _apply_history_sale_filters(query, origem: str, forma: str, pulso: str, busca: str):
     if origem == "fisico":
         return query.filter(HistoricoOperacao.id.is_(None))
+    if origem == "app_agarra":
+        query = query.filter(
+            or_(
+                HistoricoOperacao.provider == "agarramais_app",
+                HistoricoOperacao.payment_type == "pagamento_app_agarra",
+                HistoricoOperacao.descricao.ilike("%aplicativo Agarra%"),
+            )
+        )
 
     if pulso == "confirmados":
         query = query.filter(
@@ -986,7 +994,7 @@ def _should_include_tests(registro: str, origem: str, forma: str, pulso: str, bu
 
 
 def _should_include_physical_sales(registro: str, origem: str, forma: str, pulso: str, busca: str) -> bool:
-    if registro == "testes" or origem == "digital" or forma != "todos" or pulso == "ausentes":
+    if registro == "testes" or origem in {"digital", "app_agarra"} or forma != "todos" or pulso == "ausentes":
         return False
     if busca and not any(term in busca for term in ["fisico", "físico", "pagamento", "maquina", "máquina"]):
         return False
