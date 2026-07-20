@@ -23,15 +23,15 @@ OTA_ACTIVE_STATUSES = {"sent", "downloading", "restarting"}
 
 
 def transacao_tipo_in_filter():
-    return Transacao.tipo.in_([EventoTipo.in_flux, EventoTipo.in_flux.value, "IN"])
+    return Transacao.tipo.in_([EventoTipo.in_flux, EventoTipo.in_flux.name, EventoTipo.in_flux.value, "IN"])
 
 
 def transacao_tipo_out_filter():
-    return Transacao.tipo.in_([EventoTipo.out_flux, EventoTipo.out_flux.value, "OUT"])
+    return Transacao.tipo.in_([EventoTipo.out_flux, EventoTipo.out_flux.name, EventoTipo.out_flux.value, "OUT"])
 
 
 def transacao_metodo_fisico_filter():
-    return Transacao.metodo.in_([MetodoPagamento.fisico, MetodoPagamento.fisico.value, "FISICO"])
+    return Transacao.metodo.in_([MetodoPagamento.fisico, MetodoPagamento.fisico.name, MetodoPagamento.fisico.value, "FISICO"])
 
 
 def transacao_tipo_value(tipo) -> str:
