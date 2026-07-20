@@ -134,12 +134,13 @@ def test_compute_financial_summary_breaks_down_fisico_digital_and_ticket_medio()
     assert resumo["ticket_medio"] == 15.0
 
 
-def test_machine_history_payload_includes_physical_transactions_saved_as_enum():
+def test_machine_history_payload_groups_physical_pulses_inside_eight_seconds():
     machine_id = "CPM-DASH-HIST-FISICO"
     _create_maquina(machine_id)
     payment_time = datetime.utcnow().replace(hour=11, minute=25, second=0, microsecond=0)
-    _add_transacao(machine_id, valor=1.0, data_hora=payment_time)
-    _add_transacao(machine_id, valor=1.0, data_hora=payment_time)
+    for offset_seconds in range(20):
+        _add_transacao(machine_id, valor=1.0, data_hora=payment_time + timedelta(seconds=offset_seconds // 3))
+    _add_transacao(machine_id, valor=1.0, data_hora=payment_time + timedelta(seconds=30))
 
     db = SessionLocal()
     try:
@@ -154,13 +155,15 @@ def test_machine_history_payload_includes_physical_transactions_saved_as_enum():
         db.close()
 
     vendas_fisicas = [item for item in payload["vendas"] if item["kind"] == "pagamento_fisico"]
-    assert len(vendas_fisicas) == 1
+    assert len(vendas_fisicas) == 2
     assert vendas_fisicas[0]["provider"] == "fisico"
     assert vendas_fisicas[0]["pulse_status"] == "fisico"
-    assert vendas_fisicas[0]["valor"] == 2.0
-    assert vendas_fisicas[0]["total"] == 2.0
-    assert vendas_fisicas[0]["pulse_count"] == 2
-    assert payload["resumo"]["total_fisico"] == 2.0
+    assert vendas_fisicas[0]["valor"] == 1.0
+    assert vendas_fisicas[0]["pulse_count"] == 1
+    assert vendas_fisicas[1]["valor"] == 20.0
+    assert vendas_fisicas[1]["total"] == 20.0
+    assert vendas_fisicas[1]["pulse_count"] == 20
+    assert payload["resumo"]["total_fisico"] == 21.0
 
 
 def test_compute_financial_summary_counts_testes_separately_from_faturamento():

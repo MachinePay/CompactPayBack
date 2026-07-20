@@ -20,6 +20,7 @@ from app.services.pagamentos_helpers import should_allow_refund
 
 OTA_TIMEOUT = timedelta(minutes=3)
 OTA_ACTIVE_STATUSES = {"sent", "downloading", "restarting"}
+PHYSICAL_PAYMENT_GROUP_WINDOW = timedelta(seconds=8)
 
 
 def transacao_tipo_in_filter():
@@ -1441,28 +1442,33 @@ def build_machine_history_payload(
             }
         )
     if _should_include_physical_sales(registro_filter, origem_filter, forma_filter, pulso_filter, busca_filter):
-        grouped_physical_payments = {}
-        for transacao in pagamentos:
+        grouped_physical_payments = []
+        current_physical_group = None
+        for transacao in sorted(pagamentos, key=lambda item: item.data_hora):
             metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
             if str(metodo).upper() != "FISICO":
                 continue
-            grouped_at = transacao.data_hora.replace(microsecond=0)
-            group_key = (grouped_at, str(metodo).lower())
-            group = grouped_physical_payments.setdefault(
-                group_key,
-                {
+            payment_at = transacao.data_hora.replace(microsecond=0)
+            if (
+                current_physical_group is None
+                or str(current_physical_group["metodo"]).lower() != str(metodo).lower()
+                or payment_at - current_physical_group["last_at"] > PHYSICAL_PAYMENT_GROUP_WINDOW
+            ):
+                current_physical_group = {
                     "ids": [],
-                    "data": grouped_at,
+                    "data": payment_at,
+                    "last_at": payment_at,
                     "valor": 0.0,
                     "count": 0,
                     "metodo": metodo,
-                },
-            )
-            group["ids"].append(transacao.id)
-            group["valor"] += float(transacao.valor or 0)
-            group["count"] += 1
+                }
+                grouped_physical_payments.append(current_physical_group)
+            current_physical_group["ids"].append(transacao.id)
+            current_physical_group["last_at"] = payment_at
+            current_physical_group["valor"] += float(transacao.valor or 0)
+            current_physical_group["count"] += 1
 
-        for group in grouped_physical_payments.values():
+        for group in grouped_physical_payments:
             pulse_count = int(group["count"] or 0)
             valor = float(group["valor"] or 0)
             vendas.append(
