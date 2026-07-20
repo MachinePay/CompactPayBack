@@ -5,9 +5,16 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import Maquina, Transacao
+from app.models.models import Maquina, MetodoPagamento, Transacao
 from app.schemas.transacao import TransacaoOut
-from app.services.maquinas_relatorio import apply_transacao_periodo, real_revenue_totals, resolve_date_window
+from app.services.maquinas_relatorio import (
+    apply_transacao_periodo,
+    real_revenue_totals,
+    resolve_date_window,
+    transacao_metodo_fisico_filter,
+    transacao_tipo_in_filter,
+    transacao_tipo_out_filter,
+)
 
 router = APIRouter()
 
@@ -68,9 +75,21 @@ def listar_transacoes(
     if id_hardware:
         query = query.filter(Transacao.maquina_id == id_hardware)
     if tipo:
-        query = query.filter(Transacao.tipo == tipo.upper())
+        normalized_tipo = tipo.strip().lower()
+        if normalized_tipo in {"in", "in_flux"}:
+            query = query.filter(transacao_tipo_in_filter())
+        elif normalized_tipo in {"out", "out_flux"}:
+            query = query.filter(transacao_tipo_out_filter())
+        else:
+            query = query.filter(Transacao.tipo == tipo)
     if metodo:
-        query = query.filter(Transacao.metodo == metodo.upper())
+        normalized_metodo = metodo.strip().lower()
+        if normalized_metodo in {"fisico", "físico"}:
+            query = query.filter(transacao_metodo_fisico_filter())
+        elif normalized_metodo in {"digital"}:
+            query = query.filter(Transacao.metodo.in_([MetodoPagamento.digital, MetodoPagamento.digital.value, "DIGITAL"]))
+        else:
+            query = query.filter(Transacao.metodo == metodo)
 
     query = apply_transacao_periodo(
         query,

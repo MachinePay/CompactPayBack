@@ -5,12 +5,42 @@ import re
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased
 
-from app.models.models import AuditoriaOperacao, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
+from app.models.models import (
+    AuditoriaOperacao,
+    EventoTipo,
+    FechamentoMaquina,
+    HistoricoOperacao,
+    Maquina,
+    MetodoPagamento,
+    Transacao,
+    VendaPagamento,
+)
 from app.services.mercado_pago import get_active_terminal_for_machine
 from app.services.pagamentos_helpers import should_allow_refund
 
 OTA_TIMEOUT = timedelta(minutes=3)
 OTA_ACTIVE_STATUSES = {"sent", "downloading", "restarting"}
+
+
+def transacao_tipo_in_filter():
+    return Transacao.tipo.in_([EventoTipo.in_flux, EventoTipo.in_flux.value, "IN"])
+
+
+def transacao_tipo_out_filter():
+    return Transacao.tipo.in_([EventoTipo.out_flux, EventoTipo.out_flux.value, "OUT"])
+
+
+def transacao_metodo_fisico_filter():
+    return Transacao.metodo.in_([MetodoPagamento.fisico, MetodoPagamento.fisico.value, "FISICO"])
+
+
+def transacao_tipo_value(tipo) -> str:
+    value = getattr(tipo, "value", tipo)
+    if value in {EventoTipo.in_flux.name, EventoTipo.in_flux.value, "IN"}:
+        return "IN"
+    if value in {EventoTipo.out_flux.name, EventoTipo.out_flux.value, "OUT"}:
+        return "OUT"
+    return str(value or "")
 
 
 def apply_transacao_periodo(
@@ -122,8 +152,8 @@ def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: dateti
     transacoes_com_venda = db.query(VendaPagamento.transacao_id).filter(VendaPagamento.transacao_id.isnot(None))
     fisico_legado_query = db.query(Transacao).filter(
         Transacao.maquina_id.in_(machine_ids),
-        Transacao.tipo == "IN",
-        Transacao.metodo == "FISICO",
+        transacao_tipo_in_filter(),
+        transacao_metodo_fisico_filter(),
         Transacao.data_hora >= start_dt,
         Transacao.data_hora <= end_dt,
         ~Transacao.id.in_(transacoes_com_venda),
@@ -288,8 +318,8 @@ def compute_financial_summary_by_machine(
         db.query(Transacao.maquina_id, Transacao.valor)
         .filter(
             Transacao.maquina_id.in_(machine_ids),
-            Transacao.tipo == "IN",
-            Transacao.metodo == "FISICO",
+            transacao_tipo_in_filter(),
+            transacao_metodo_fisico_filter(),
             Transacao.data_hora >= start_dt,
             Transacao.data_hora <= end_dt,
             ~Transacao.id.in_(transacoes_com_venda),
@@ -460,7 +490,7 @@ def latest_transacao_in_by_machine(db: Session, machine_ids: list[str]) -> dict[
     )
     subq = (
         db.query(Transacao, row_number)
-        .filter(Transacao.maquina_id.in_(machine_ids), Transacao.tipo == "IN")
+        .filter(Transacao.maquina_id.in_(machine_ids), transacao_tipo_in_filter())
         .subquery()
     )
     transacao_alias = aliased(Transacao, subq)
@@ -773,7 +803,7 @@ def transacao_summary_by_machine(
         .all()
     )
     for maquina_id, tipo, ultimo, count in rows:
-        tipo_value = getattr(tipo, "value", tipo)
+        tipo_value = transacao_tipo_value(tipo)
         bucket = result[maquina_id]
         if tipo_value == "IN":
             bucket["ultimo_pagamento_em"] = ultimo
@@ -835,8 +865,8 @@ def daily_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime
         db.query(Transacao.data_hora, Transacao.valor)
         .filter(
             Transacao.maquina_id.in_(machine_ids),
-            Transacao.tipo == "IN",
-            Transacao.metodo == "FISICO",
+            transacao_tipo_in_filter(),
+            transacao_metodo_fisico_filter(),
             Transacao.data_hora >= start_dt,
             Transacao.data_hora <= end_dt,
             ~Transacao.id.in_(transacoes_com_venda),
@@ -1017,7 +1047,7 @@ def serialize_machine_summary(
         db.query(func.max(Transacao.data_hora))
         .filter(
             Transacao.maquina_id == maquina.id_hardware,
-            Transacao.tipo == "IN",
+            transacao_tipo_in_filter(),
             Transacao.data_hora >= start_dt,
             Transacao.data_hora <= end_dt,
         )
@@ -1027,7 +1057,7 @@ def serialize_machine_summary(
         db.query(func.max(Transacao.data_hora))
         .filter(
             Transacao.maquina_id == maquina.id_hardware,
-            Transacao.tipo == "OUT",
+            transacao_tipo_out_filter(),
             Transacao.data_hora >= start_dt,
             Transacao.data_hora <= end_dt,
         )
@@ -1037,7 +1067,7 @@ def serialize_machine_summary(
         db.query(func.count(Transacao.id))
         .filter(
             Transacao.maquina_id == maquina.id_hardware,
-            Transacao.tipo == "OUT",
+            transacao_tipo_out_filter(),
             Transacao.data_hora >= start_dt,
             Transacao.data_hora <= end_dt,
         )
@@ -1221,8 +1251,8 @@ def build_machine_history_payload(
         data_fim=data_fim,
     )
 
-    pagamentos = transacoes_query.filter(Transacao.tipo == "IN").order_by(Transacao.data_hora.desc()).all()
-    saidas = transacoes_query.filter(Transacao.tipo == "OUT").order_by(Transacao.data_hora.desc()).all()
+    pagamentos = transacoes_query.filter(transacao_tipo_in_filter()).order_by(Transacao.data_hora.desc()).all()
+    saidas = transacoes_query.filter(transacao_tipo_out_filter()).order_by(Transacao.data_hora.desc()).all()
 
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
     testes_query = db.query(HistoricoOperacao).filter(

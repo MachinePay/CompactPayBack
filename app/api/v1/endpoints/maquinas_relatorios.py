@@ -8,7 +8,7 @@ from app.db.session import SessionLocal
 from app.models.models import AuditoriaOperacao, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.schemas.fechamento import FechamentoMaquinaOut
 from app.services.auditoria import registrar_auditoria
-from app.services.maquinas_relatorio import build_machine_history_payload, resolve_date_window
+from app.services.maquinas_relatorio import build_machine_history_payload, resolve_date_window, transacao_tipo_in_filter
 
 router = APIRouter()
 
@@ -180,7 +180,7 @@ def apagar_historico_maquina(
         db.query(Transacao)
         .filter(
             Transacao.maquina_id == machine_id,
-            Transacao.tipo == "IN",
+            transacao_tipo_in_filter(),
             Transacao.data_hora >= start_dt,
             Transacao.data_hora <= end_dt,
         )

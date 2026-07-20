@@ -28,6 +28,7 @@ from app.models.models import (
     VendaPagamento,
 )
 from app.services.maquinas_relatorio import (
+    build_machine_history_payload,
     compute_financial_summary,
     compute_financial_summary_by_machine,
     daily_revenue_totals,
@@ -93,6 +94,23 @@ def _add_teste_historico(machine_id, valor, created_at=None):
         db.close()
 
 
+def _add_transacao(machine_id, tipo=EventoTipo.in_flux, metodo=MetodoPagamento.fisico, valor=1.0, data_hora=None):
+    db = SessionLocal()
+    try:
+        db.add(
+            Transacao(
+                maquina_id=machine_id,
+                tipo=tipo,
+                metodo=metodo,
+                valor=valor,
+                data_hora=data_hora or datetime.utcnow(),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
 def _summary(machine_ids, start=WINDOW_START, end=WINDOW_END):
     db = SessionLocal()
     try:
@@ -114,6 +132,25 @@ def test_compute_financial_summary_breaks_down_fisico_digital_and_ticket_medio()
     assert resumo["faturamento_digital"] == 20.0
     assert resumo["vendas_count"] == 2
     assert resumo["ticket_medio"] == 15.0
+
+
+def test_machine_history_payload_includes_physical_transactions_saved_as_enum():
+    machine_id = "CPM-DASH-HIST-FISICO"
+    _create_maquina(machine_id)
+    _add_transacao(machine_id, valor=1.0)
+
+    db = SessionLocal()
+    try:
+        maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
+        payload = build_machine_history_payload(db, maquina, periodo="mes")
+    finally:
+        db.close()
+
+    vendas_fisicas = [item for item in payload["vendas"] if item["kind"] == "pagamento_fisico"]
+    assert len(vendas_fisicas) == 1
+    assert vendas_fisicas[0]["provider"] == "fisico"
+    assert vendas_fisicas[0]["pulse_status"] == "fisico"
+    assert payload["resumo"]["total_fisico"] == 1.0
 
 
 def test_compute_financial_summary_counts_testes_separately_from_faturamento():

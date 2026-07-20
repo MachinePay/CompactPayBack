@@ -18,6 +18,9 @@ from app.services.maquinas_relatorio import (
     real_revenue_totals,
     resolve_date_window,
     sum_financial_summaries,
+    transacao_metodo_fisico_filter,
+    transacao_tipo_in_filter,
+    transacao_tipo_out_filter,
 )
 
 router = APIRouter()
@@ -56,8 +59,8 @@ def _total_dinheiro_fisico(db: Session, machine_ids: list[str], start_dt: dateti
     transacoes_com_venda = db.query(VendaPagamento.transacao_id).filter(VendaPagamento.transacao_id.isnot(None))
     fisico_legado = db.query(Transacao).filter(
         Transacao.maquina_id.in_(machine_ids),
-        Transacao.tipo == "IN",
-        Transacao.metodo == "FISICO",
+        transacao_tipo_in_filter(),
+        transacao_metodo_fisico_filter(),
         Transacao.data_hora >= start_dt,
         Transacao.data_hora <= end_dt,
         ~Transacao.id.in_(transacoes_com_venda),
@@ -84,7 +87,7 @@ def dashboard_stats(
     premios = (
         query.with_entities(func.count(Transacao.id))
         .filter(
-            Transacao.tipo == "OUT",
+            transacao_tipo_out_filter(),
             func.date(Transacao.data_hora) == hoje,
         )
         .scalar()
@@ -133,7 +136,7 @@ def dashboard_overview(
     faturamento = resumo_periodo["faturamento_total"]
     total_fisico = resumo_periodo["faturamento_fisico"]
     premios = (
-        transacoes_periodo.filter(Transacao.tipo == "OUT")
+        transacoes_periodo.filter(transacao_tipo_out_filter())
         .with_entities(func.count(Transacao.id))
         .scalar()
         or 0
