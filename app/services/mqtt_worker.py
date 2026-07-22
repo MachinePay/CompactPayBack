@@ -1,6 +1,6 @@
 import paho.mqtt.client as mqtt
 import json
-from app.core.config import settings
+from app.core.config import mqtt_tls_kwargs, settings
 from app.db.session import SessionLocal
 from app.models.models import HistoricoOperacao, Maquina, Transacao, EventoTipo, MetodoPagamento
 from app.models.logs import Logs
@@ -225,9 +225,12 @@ def on_message(client, userdata, msg):
         db.close()
 
 def start_mqtt_worker():
-    client = mqtt.Client()
+    client = mqtt.Client(client_id=settings.MQTT_CLIENT_ID)
     if getattr(settings, "MQTT_USERNAME", None):
         client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)
+    tls_kwargs = mqtt_tls_kwargs()
+    if tls_kwargs:
+        client.tls_set(**tls_kwargs)
     client.on_connect = on_connect
     client.on_message = on_message
     client.connect(settings.MQTT_BROKER_URL, int(settings.MQTT_BROKER_PORT), 60)

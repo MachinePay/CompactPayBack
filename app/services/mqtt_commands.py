@@ -1,7 +1,8 @@
 import paho.mqtt.publish as publish
 import logging
+from uuid import uuid4
 
-from app.core.config import settings
+from app.core.config import mqtt_tls_kwargs, settings
 
 
 def _mqtt_auth():
@@ -20,7 +21,9 @@ def publish_raw_mqtt_command(topic: str, payload: str) -> None:
         qos=int(settings.MQTT_COMMAND_QOS),
         hostname=settings.MQTT_BROKER_URL,
         port=int(settings.MQTT_BROKER_PORT),
+        client_id=f"{settings.MQTT_PUBLISH_CLIENT_ID_PREFIX}_{uuid4().hex[:12]}",
         auth=_mqtt_auth(),
+        tls=mqtt_tls_kwargs(),
     )
 
 
