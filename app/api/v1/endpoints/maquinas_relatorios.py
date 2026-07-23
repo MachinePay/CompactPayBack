@@ -108,6 +108,54 @@ def criar_fechamento_maquina(
     return fechamento
 
 
+@router.delete("/maquinas/{machine_id}/fechamentos/{fechamento_id}")
+def desfazer_fechamento_maquina(
+    machine_id: str,
+    fechamento_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, cliente_id = user
+    _get_maquina_visivel(db, machine_id, role, cliente_id)
+    fechamento = (
+        db.query(FechamentoMaquina)
+        .filter(
+            FechamentoMaquina.id == fechamento_id,
+            FechamentoMaquina.maquina_id == machine_id,
+        )
+        .first()
+    )
+    if not fechamento:
+        raise HTTPException(status_code=404, detail="Fechamento nao encontrado")
+
+    periodo_inicio = fechamento.periodo_inicio
+    periodo_fim = fechamento.periodo_fim
+    total_pagamentos = fechamento.total_pagamentos
+    db.delete(fechamento)
+    db.add(
+        AuditoriaOperacao(
+            maquina_id=machine_id,
+            acao="FECHAMENTO_DESFEITO",
+            descricao=f"Fechamento desfeito para o periodo {periodo_inicio.isoformat()} ate {periodo_fim.isoformat()}",
+            executado_por_email=_get_user_email(user),
+            created_at=datetime.utcnow(),
+        )
+    )
+    registrar_auditoria(
+        db,
+        user,
+        acao="FECHAMENTO_DESFEITO",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=(
+            f"Fechamento desfeito periodo={periodo_inicio.isoformat()} ate {periodo_fim.isoformat()} "
+            f"total={total_pagamentos}"
+        ),
+    )
+    db.commit()
+    return {"ok": True}
+
+
 @router.get("/maquinas/{machine_id}/historico")
 def obter_historico_maquina(
     machine_id: str,
