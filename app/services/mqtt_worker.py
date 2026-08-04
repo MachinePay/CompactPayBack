@@ -98,6 +98,8 @@ def on_message(client, userdata, msg):
             wifi_reconnect_count = _parse_int_field(status_fields, "wifi_rc")
             mqtt_reconnect_count = _parse_int_field(status_fields, "mqtt_rc")
             short_pulse_count = _parse_int_field(status_fields, "pulsos_curtos")
+            wifi_disconnect_reason = _parse_int_field(status_fields, "wifi_disc_reason")
+            wifi_disconnect_count = _parse_int_field(status_fields, "wifi_disc_count")
             reset_reason = status_fields.get("reset")
             if uptime_seconds is not None:
                 maquina.uptime_seconds = uptime_seconds
@@ -109,6 +111,10 @@ def on_message(client, userdata, msg):
                 maquina.mqtt_reconnect_count = mqtt_reconnect_count
             if short_pulse_count is not None:
                 maquina.short_pulse_count = short_pulse_count
+            if wifi_disconnect_reason is not None:
+                maquina.wifi_disconnect_reason = wifi_disconnect_reason
+            if wifi_disconnect_count is not None:
+                maquina.wifi_disconnect_count = wifi_disconnect_count
             if reset_reason:
                 maquina.last_reset_reason = reset_reason
             if firmware_version:

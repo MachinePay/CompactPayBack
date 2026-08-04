@@ -630,6 +630,8 @@ def serialize_health_machine(maquina: Maquina, now: datetime, ultimo_pagamento: 
         "wifi_reconnect_count": maquina.wifi_reconnect_count,
         "mqtt_reconnect_count": maquina.mqtt_reconnect_count,
         "short_pulse_count": maquina.short_pulse_count,
+        "wifi_disconnect_reason": maquina.wifi_disconnect_reason,
+        "wifi_disconnect_count": maquina.wifi_disconnect_count,
     }
 
 

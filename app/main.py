@@ -216,6 +216,8 @@ def startup_event():
             "wifi_reconnect_count",
             "mqtt_reconnect_count",
             "short_pulse_count",
+            "wifi_disconnect_reason",
+            "wifi_disconnect_count",
         ]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} INTEGER"))

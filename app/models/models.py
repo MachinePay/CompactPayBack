@@ -118,6 +118,8 @@ class Maquina(Base):
     wifi_reconnect_count = Column(Integer, nullable=True)
     mqtt_reconnect_count = Column(Integer, nullable=True)
     short_pulse_count = Column(Integer, nullable=True)
+    wifi_disconnect_reason = Column(Integer, nullable=True)
+    wifi_disconnect_count = Column(Integer, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")
 
