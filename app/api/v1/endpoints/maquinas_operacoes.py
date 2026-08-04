@@ -105,7 +105,14 @@ def enviar_credito_teste(
             command_id=command_id,
             amount=valor,
         )
-        pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=8)
+        # A placa dispara os pulsos fisicos em sequencia (cada um leva bem mais
+        # que um instante: duracao do pulso + confirmacao + liberacao do
+        # contador IN, com um intervalo entre pulsos). Um teste de R$ 10,00
+        # pode significar 10 pulsos reais, entao 8s fixos nao bastam e o
+        # painel reportava falha mesmo quando a maquina entregava tudo certo
+        # (so um pouco depois do prazo). Escala o timeout pelo valor testado.
+        confirm_timeout_seconds = min(45.0, max(8.0, valor * 2.0 + 5.0))
+        pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=confirm_timeout_seconds)
     except Exception as exc:
         update_pulse_status(command_id, "falha_publicacao")
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
