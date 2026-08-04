@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
@@ -37,6 +37,32 @@ def _serialize_command(command: ComandoMaquina, machine_name: str | None = None)
         "created_at": command.created_at,
         "updated_at": command.updated_at,
     }
+
+
+@router.get("/comandos-maquinas/{command_id}")
+def obter_comando_maquina(
+    command_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Consulta leve de status de um comando (polling do painel apos o
+    endpoint que o disparou responder na hora, sem travar esperando a
+    maquina confirmar)."""
+    _, role, cliente_id = user
+    row = (
+        db.query(ComandoMaquina, Maquina.nome_local)
+        .join(Maquina, Maquina.id_hardware == ComandoMaquina.maquina_id)
+        .filter(ComandoMaquina.command_id == command_id)
+        .first()
+    )
+    if not row:
+        raise HTTPException(status_code=404, detail="Comando nao encontrado")
+    command, nome_local = row
+    if role != "admin":
+        maquina = db.query(Maquina).filter(Maquina.id_hardware == command.maquina_id).first()
+        if not maquina or maquina.cliente_id != cliente_id:
+            raise HTTPException(status_code=404, detail="Comando nao encontrado")
+    return _serialize_command(command, nome_local)
 
 
 @router.get("/comandos-maquinas")

@@ -1,8 +1,11 @@
 from datetime import datetime
 from uuid import uuid4
 
+from sqlalchemy import text
+
 from app.db.session import SessionLocal
-from app.models.models import EscutaTerminal, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao
+from app.services.command_queue import get_command_status
+from app.models.models import EscutaTerminal, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao, VendaPagamento
 from app.services.mqtt_commands import publish_machine_credit_pulses
 from app.services.pagamentos_helpers import (
     calcular_pulsos_por_valor,
@@ -12,10 +15,17 @@ from app.services.pagamentos_helpers import (
     parse_machine_id_from_external_reference,
     payment_metadata,
 )
-from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_confirmation
+from app.services.pulse_tracking import update_pulse_status
 from app.services.vendas import registrar_venda_pagamento
 
-PROCESSED_PAYMENT_IDS: set[str] = set()
+
+def _acquire_payment_lock(db, key: str) -> None:
+    """Trava escopada a transacao atual (libera sozinha no commit/rollback).
+    Serializa duas notificacoes quase simultaneas do mesmo pagamento/order,
+    fechando a corrida que a checagem de duplicidade (SELECT antes do INSERT)
+    sozinha nao cobre - a segunda chamada espera aqui ate a primeira terminar
+    de commitar, e so entao ve o registro duplicado e desiste."""
+    db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
 
 
 def _matches_any(saved_value: str | None, received_values: set[str]) -> bool:
@@ -61,10 +71,19 @@ def _resolve_machine_by_mp_location(db, payment_data: dict):
 def processar_callback_mercado_pago(dados: dict):
     print(f"[MP webhook] payload={dados}")
 
-    # Suporta payload simples antigo: {status, id_hardware, valor}
+    # Suporta payload simples antigo: {status, id_hardware, valor}. Esse formato
+    # nao tem nenhum id de pagamento, entao NAO da pra checar duplicidade aqui
+    # (nao ha o que comparar). Se o Mercado Pago reenviar essa notificacao,
+    # o credito seria liberado de novo. O log abaixo e proposital e alto:
+    # se aparecer em producao, confirmar no painel do Mercado Pago se essa
+    # integracao simplificada ainda esta configurada, ou se pode ser desativada.
     if dados.get("status") == "approved" and dados.get("id_hardware"):
         id_hardware = dados.get("id_hardware")
         valor = float(dados.get("valor", 1.0))
+        print(
+            f"[MP webhook] ATENCAO: callback simplificado sem protecao contra "
+            f"duplicidade recebido para id_hardware={id_hardware} valor={valor}"
+        )
         db = SessionLocal()
         command_id = str(uuid4())
         try:
@@ -106,12 +125,9 @@ def processar_callback_mercado_pago(dados: dict):
 
         pulsos = calcular_pulsos_por_valor(valor)
         publish_machine_credit_pulses(id_hardware, pulses=pulsos, action="paid", command_id=command_id, amount=valor)
-        pulse_status = wait_for_pulse_confirmation(
-            command_id,
-            timeout_seconds=max(8, pulsos * 2),
-        )
-        print(f"[MP webhook] callback simplificado aprovado maquina={id_hardware} valor={valor} pulsos={pulsos}")
-        return {"status": "sucesso", "detalhe": "Pagamento digital registrado", "pulsos": pulsos, "pulse_status": pulse_status}
+        command_status = get_command_status(command_id) or "pendente"
+        print(f"[MP webhook] callback simplificado aprovado maquina={id_hardware} valor={valor} pulsos={pulsos} command_status={command_status}")
+        return {"status": "sucesso", "detalhe": "Pagamento digital registrado", "pulsos": pulsos, "command_status": command_status}
 
     topic = dados.get("topic") or dados.get("type") or ""
     action = dados.get("action") or ""
@@ -152,12 +168,12 @@ def processar_callback_mercado_pago(dados: dict):
         db = SessionLocal()
         command_id = str(uuid4())
         try:
+            _acquire_payment_lock(db, f"mp_order_{order_id}")
             duplicado = (
-                db.query(HistoricoOperacao)
+                db.query(VendaPagamento)
                 .filter(
-                    HistoricoOperacao.maquina_id == machine_id,
-                    HistoricoOperacao.categoria == "PAGAMENTO",
-                    HistoricoOperacao.descricao.contains(f"mp_order_id={order_id}"),
+                    VendaPagamento.provider == "mercado_pago",
+                    VendaPagamento.provider_payment_id == str(order_id),
                 )
                 .first()
             )
@@ -208,12 +224,14 @@ def processar_callback_mercado_pago(dados: dict):
 
         pulsos = calcular_pulsos_por_valor(amount)
         publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id, amount=amount)
-        pulse_status = wait_for_pulse_confirmation(
-            command_id,
-            timeout_seconds=max(8, pulsos * 2),
-        )
-        print(f"[MP webhook] order processada machine={machine_id} amount={amount} pulsos={pulsos}")
-        return {"status": "sucesso", "detalhe": "Pagamento aprovado e pulsos enviados", "pulsos": pulsos, "pulse_status": pulse_status}
+        # Responde ao Mercado Pago na hora - nao fica mais travado esperando a
+        # maquina confirmar (isso podia fazer o MP reenviar o mesmo aviso por
+        # demora, alem de segurar a thread/conexao por varios segundos). O
+        # comando ja passa pela mesma fila por maquina usada nos pagamentos
+        # manuais (publish_machine_credit_pulses -> track_and_publish_command).
+        command_status = get_command_status(command_id) or "pendente"
+        print(f"[MP webhook] order processada machine={machine_id} amount={amount} pulsos={pulsos} command_status={command_status}")
+        return {"status": "sucesso", "detalhe": "Pagamento aprovado, pulsos enviados", "pulsos": pulsos, "command_status": command_status}
 
     is_payment_event = topic in {"payment"} or action.startswith("payment.")
     if is_payment_event:
@@ -241,11 +259,12 @@ def processar_callback_mercado_pago(dados: dict):
         db = SessionLocal()
         command_id = str(uuid4())
         try:
+            _acquire_payment_lock(db, f"mp_payment_{payment_id}")
             duplicado = (
-                db.query(HistoricoOperacao)
+                db.query(VendaPagamento)
                 .filter(
-                    HistoricoOperacao.categoria == "PAGAMENTO",
-                    HistoricoOperacao.descricao.contains(f"payment_id={payment_id}"),
+                    VendaPagamento.provider == "mercado_pago",
+                    VendaPagamento.provider_payment_id == payment_id,
                 )
                 .first()
             )
@@ -331,24 +350,21 @@ def processar_callback_mercado_pago(dados: dict):
         pulsos = calcular_pulsos_por_valor(amount)
         try:
             publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id, amount=amount)
-            pulse_status = wait_for_pulse_confirmation(
-                command_id,
-                timeout_seconds=max(8, pulsos * 2),
-            )
         except Exception:
             update_pulse_status(command_id, "falha_publicacao")
             raise
-        PROCESSED_PAYMENT_IDS.add(payment_id)
+        # Responde na hora - ver nota equivalente no caminho "order" acima.
+        command_status = get_command_status(command_id) or "pendente"
         print(
-            f"[MP webhook] payment processado payment_id={payment_id} terminal={terminal_id} machine={machine_id} amount={amount} pulsos={pulsos}"
+            f"[MP webhook] payment processado payment_id={payment_id} terminal={terminal_id} machine={machine_id} amount={amount} pulsos={pulsos} command_status={command_status}"
         )
         return {
             "status": "sucesso",
-            "detalhe": "Pagamento recebido e pulsos enviados",
+            "detalhe": "Pagamento recebido, pulsos enviados",
             "machine_id": machine_id,
             "terminal_id": terminal_id,
             "pulsos": pulsos,
-            "pulse_status": pulse_status,
+            "command_status": command_status,
         }
 
     print(f"[MP webhook] ignorado: evento nao tratado topic={topic} action={action}")

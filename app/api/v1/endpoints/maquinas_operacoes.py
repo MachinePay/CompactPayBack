@@ -14,7 +14,8 @@ from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit, publish_machine_ping, publish_machine_update
 from app.services.pagamentos_helpers import extract_provider_payment_id, should_allow_refund
-from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_confirmation
+from app.services.command_queue import get_command_status
+from app.services.pulse_tracking import update_pulse_status
 
 router = APIRouter()
 
@@ -105,23 +106,17 @@ def enviar_credito_teste(
             command_id=command_id,
             amount=valor,
         )
-        # A placa dispara os pulsos fisicos em sequencia (cada um leva bem mais
-        # que um instante: duracao do pulso + confirmacao + liberacao do
-        # contador IN, com um intervalo entre pulsos). Um teste de R$ 10,00
-        # pode significar 10 pulsos reais, entao 8s fixos nao bastam e o
-        # painel reportava falha mesmo quando a maquina entregava tudo certo
-        # (so um pouco depois do prazo). Escala o timeout pelo valor testado.
-        confirm_timeout_seconds = min(45.0, max(8.0, valor * 2.0 + 5.0))
-        pulse_status = wait_for_pulse_confirmation(command_id, timeout_seconds=confirm_timeout_seconds)
     except Exception as exc:
         update_pulse_status(command_id, "falha_publicacao")
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
 
-    if pulse_status != "pulso_confirmado":
-        raise HTTPException(
-            status_code=504,
-            detail=f"Comando enviado, mas a maquina nao confirmou o pulso ({pulse_status})",
-        )
+    # Nao fica mais travado esperando a maquina confirmar (cada pulso fisico
+    # leva segundos, e um teste maior podia estourar o tempo de resposta do
+    # HTTP). O comando pode ter ido direto (status "enviado") ou ter entrado
+    # na fila se a maquina ja estava processando outro pagamento (status
+    # "na_fila") - o painel acompanha o resultado consultando
+    # GET /comandos-maquinas/{command_id}.
+    command_status = get_command_status(command_id) or "pendente"
 
     return {
         "ok": True,
@@ -130,7 +125,7 @@ def enviar_credito_teste(
         "payload": mqtt_payload,
         "valor": valor,
         "command_id": command_id,
-        "pulse_status": pulse_status,
+        "command_status": command_status,
     }
 
 

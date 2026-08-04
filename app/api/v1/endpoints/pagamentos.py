@@ -16,7 +16,8 @@ from app.services.mercado_pago import mp_request
 from app.services.mercado_pago_webhook import processar_callback_mercado_pago
 from app.services.mqtt_commands import publish_machine_credit_pulses
 from app.services.pagamentos_helpers import calcular_pulsos_por_valor
-from app.services.pulse_tracking import update_pulse_status, wait_for_pulse_confirmation
+from app.services.command_queue import get_command_status
+from app.services.pulse_tracking import update_pulse_status
 from app.services.vendas import registrar_venda_pagamento
 
 router = APIRouter()
@@ -41,7 +42,7 @@ def _get_maquina_visivel(db: Session, maquina_id: str, role: str, cliente_id):
 
 
 @router.post("/callback-mercado-pago")
-async def processar_pix(request: Request, dados: dict | None = None):
+def processar_pix(request: Request, dados: dict | None = None):
     payload_query = dict(request.query_params or {})
     payload_body = dados or {}
     dados = {**payload_query, **payload_body}
@@ -129,19 +130,16 @@ def lancar_pagamento(
             command_id=command_id,
             amount=pagamento.valor,
         )
-        pulse_status = wait_for_pulse_confirmation(
-            command_id,
-            timeout_seconds=max(8, pulsos * 2),
-        )
     except Exception as exc:
         update_pulse_status(command_id, "falha_publicacao")
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
 
-    if pulse_status not in {"pulso_confirmado", "saldo_pendente"}:
-        raise HTTPException(
-            status_code=504,
-            detail=f"Comando enviado, mas a maquina nao confirmou o pulso ({pulse_status})",
-        )
+    # Responde na hora em vez de travar esperando a maquina confirmar (ver
+    # nota equivalente em maquinas_operacoes.credito-teste). O comando pode
+    # ter ido "enviado" direto ou ficado "na_fila" se a maquina ja estava
+    # processando outro pagamento - o painel acompanha via
+    # GET /comandos-maquinas/{command_id}.
+    command_status = get_command_status(command_id) or "pendente"
 
     return {
         "ok": True,
@@ -152,7 +150,7 @@ def lancar_pagamento(
         "topic": f"/TEF/{pagamento.maquina_id}/cmd",
         "payload": payload,
         "command_id": command_id,
-        "pulse_status": pulse_status,
+        "command_status": command_status,
         "data_hora": transacao.data_hora,
     }
 
@@ -240,19 +238,15 @@ def lancar_credito_digital(
             action="paid",
             command_id=command_id,
         )
-        pulse_status = wait_for_pulse_confirmation(
-            command_id,
-            timeout_seconds=max(8, dados.pulsos * 2),
-        )
     except Exception as exc:
         update_pulse_status(command_id, "falha_publicacao")
         raise HTTPException(status_code=502, detail="Falha ao enviar comando MQTT para a maquina") from exc
 
-    if pulse_status not in {"pulso_confirmado", "saldo_pendente"}:
-        raise HTTPException(
-            status_code=504,
-            detail=f"Comando enviado, mas a maquina nao confirmou o pulso ({pulse_status})",
-        )
+    # Responde na hora - ver nota equivalente em maquinas_operacoes.credito-teste
+    # e pagamentos.lancar_pagamento. O app Agarra precisa passar a acompanhar
+    # o resultado via GET /comandos-maquinas/{command_id} em vez de esperar
+    # "pulso_confirmado" na resposta deste POST.
+    command_status = get_command_status(command_id) or "pendente"
 
     return {
         "ok": True,
@@ -261,7 +255,7 @@ def lancar_credito_digital(
         "topic": f"/TEF/{dados.maquina_id}/cmd",
         "payload": payload,
         "command_id": command_id,
-        "pulse_status": pulse_status,
+        "command_status": command_status,
         "referencia_externa": referencia,
         "data_hora": transacao.data_hora,
     }

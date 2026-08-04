@@ -16,6 +16,13 @@ MAX_ATTEMPTS = 3
 FINAL_COMMAND_STATUSES = {"executado", "falhou", "cancelado"}
 RETRYABLE_STATUSES = {"pendente", "enviado", "aguardando_retry", "falha_publicacao"}
 
+# Tipo de comando que libera credito fisico na maquina (ver mqtt_commands.py:
+# publish_machine_credit usa tipo=action.lower(), e a acao usada em pagamentos
+# e sempre "paid"). So esse tipo passa pela fila por maquina - ping/update nao
+# disputam o mesmo recurso fisico (o relé de credito) e podem seguir direto.
+CREDIT_COMMAND_TIPO = "paid"
+QUEUED_STATUS = "na_fila"
+
 
 def _now() -> datetime:
     return datetime.utcnow()
@@ -116,6 +123,24 @@ def _publish_attempt(db, comando: ComandoMaquina) -> None:
     db.commit()
 
 
+def _machine_has_in_flight_credit_command(
+    db, machine_id: str, exclude_command_id: str | None = None
+) -> bool:
+    """Verifica se a maquina ja tem um comando de credito em andamento. A
+    propria placa ignora um segundo credito enquanto o primeiro esta sendo
+    processado (flag credito_travado no firmware) - sem essa checagem aqui,
+    dois pagamentos quase simultaneos na mesma maquina fariam o segundo ser
+    cobrado do cliente e descartado silenciosamente pela placa."""
+    query = db.query(ComandoMaquina).filter(
+        ComandoMaquina.maquina_id == machine_id,
+        ComandoMaquina.tipo == CREDIT_COMMAND_TIPO,
+        ComandoMaquina.status.notin_(FINAL_COMMAND_STATUSES | {QUEUED_STATUS}),
+    )
+    if exclude_command_id:
+        query = query.filter(ComandoMaquina.command_id != exclude_command_id)
+    return db.query(query.exists()).scalar()
+
+
 def track_and_publish_command(
     *,
     machine_id: str,
@@ -140,9 +165,53 @@ def track_and_publish_command(
             topic=topic,
             payload=payload,
         )
+        if tipo == CREDIT_COMMAND_TIPO and _machine_has_in_flight_credit_command(
+            db, machine_id, exclude_command_id=command_id
+        ):
+            comando.status = QUEUED_STATUS
+            comando.detalhe_status = "aguardando_maquina_livre"
+            comando.updated_at = _now()
+            db.commit()
+            return
         _publish_attempt(db, comando)
     finally:
         db.close()
+
+
+def process_queued_commands() -> int:
+    """Libera comandos de credito que ficaram na fila esperando a maquina
+    terminar o pagamento anterior. Roda junto com o retry loop existente."""
+    db = SessionLocal()
+    processed = 0
+    try:
+        queued = (
+            db.query(ComandoMaquina)
+            .filter(ComandoMaquina.status == QUEUED_STATUS)
+            .order_by(ComandoMaquina.created_at.asc())
+            .limit(50)
+            .all()
+        )
+        released_machines: set[str] = set()
+        for comando in queued:
+            if comando.maquina_id in released_machines:
+                continue
+            if _machine_has_in_flight_credit_command(
+                db, comando.maquina_id, exclude_command_id=comando.command_id
+            ):
+                continue
+            try:
+                _publish_attempt(db, comando)
+                processed += 1
+                released_machines.add(comando.maquina_id)
+            except Exception:
+                logging.exception(
+                    "Falha ao liberar comando da fila command_id=%s maquina_id=%s",
+                    comando.command_id,
+                    comando.maquina_id,
+                )
+    finally:
+        db.close()
+    return processed
 
 
 def update_command_from_device_status(command_id: str | None, status: str) -> None:
@@ -180,6 +249,15 @@ def _update_command_status(command_id: str, status: str, detail: str, finished: 
             comando.finished_at = _now()
             comando.next_retry_at = None
         db.commit()
+    finally:
+        db.close()
+
+
+def get_command_status(command_id: str) -> str | None:
+    db = SessionLocal()
+    try:
+        comando = db.query(ComandoMaquina).filter(ComandoMaquina.command_id == command_id).first()
+        return comando.status if comando else None
     finally:
         db.close()
 
@@ -246,6 +324,10 @@ def run_command_queue_worker() -> None:
             process_due_command_retries()
         except Exception:
             logging.exception("Erro no command queue worker")
+        try:
+            process_queued_commands()
+        except Exception:
+            logging.exception("Erro ao processar fila de comandos de credito")
         time.sleep(5)
 
 
