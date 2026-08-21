@@ -78,12 +78,40 @@ def on_message(client, userdata, msg):
             db.add(maquina)
             db.commit()
             db.refresh(maquina)
-        # Sempre que receber sinal, atualiza o timestamp do último sinal
+
+        status, status_fields = _parse_status_payload(payload)
+
+        # O Last Will do MQTT (STATUS|OFFLINE) e publicado PELO BROKER quando a
+        # conexao TCP da maquina cai de forma suja (queda de energia, crash,
+        # rede caindo sem desconexao limpa) - nao e um sinal de que ela esta
+        # viva, entao NAO deve atualizar ultimo_sinal (isso faria o dashboard
+        # mostrar a maquina como "acabou de ficar online" no exato momento em
+        # que ela caiu). So registra o evento no historico para dar
+        # visibilidade quase imediata da queda, sem esperar o timeout normal
+        # de heartbeat (ate 5 min).
+        if status == "OFFLINE":
+            db.add(
+                HistoricoOperacao(
+                    maquina_id=id_extraido,
+                    categoria="DISPOSITIVO",
+                    descricao="Maquina caiu (MQTT last will - queda de energia, crash ou rede sem desconexao limpa)",
+                    valor=None,
+                    command_id=None,
+                    pulse_status=None,
+                    created_at=datetime.utcnow(),
+                )
+            )
+            db.commit()
+            print(f"Last Will recebido para maquina {id_extraido}: {payload}")
+            db.close()
+            return
+
+        # Sempre que receber sinal (que nao seja o last will acima), atualiza
+        # o timestamp do ultimo sinal
         agora = datetime.utcnow()
         sinal_anterior = maquina.ultimo_sinal
         maquina.ultimo_sinal = agora
         db.commit()
-        status, status_fields = _parse_status_payload(payload)
         if status:
             command_id = status_fields.get("cmd")
             firmware_version = status_fields.get("fw")
@@ -101,6 +129,7 @@ def on_message(client, userdata, msg):
             wifi_disconnect_reason = _parse_int_field(status_fields, "wifi_disc_reason")
             wifi_disconnect_count = _parse_int_field(status_fields, "wifi_disc_count")
             reset_reason = status_fields.get("reset")
+            forced_restart_reason = status_fields.get("forced_restart")
             if uptime_seconds is not None:
                 maquina.uptime_seconds = uptime_seconds
             if free_heap_bytes is not None:
@@ -117,6 +146,30 @@ def on_message(client, userdata, msg):
                 maquina.wifi_disconnect_count = wifi_disconnect_count
             if reset_reason:
                 maquina.last_reset_reason = reset_reason
+            # forced_restart e "none" na maioria dos heartbeats; so vira algo
+            # diferente na primeira sessao depois que a maquina se reiniciou
+            # sozinha por ter ficado presa (escada de Wi-Fi ou watchdog de
+            # MQTT em PONTOsalvioIOScerto.ino). So loga o evento quando o
+            # motivo muda, senao repetiria a cada heartbeat de 10s enquanto
+            # durar a sessao.
+            if (
+                forced_restart_reason
+                and forced_restart_reason != "none"
+                and forced_restart_reason != maquina.last_forced_restart_reason
+            ):
+                maquina.last_forced_restart_reason = forced_restart_reason
+                maquina.last_forced_restart_at = datetime.utcnow()
+                db.add(
+                    HistoricoOperacao(
+                        maquina_id=id_extraido,
+                        categoria="DISPOSITIVO",
+                        descricao=f"Maquina se reiniciou sozinha apos ficar presa (motivo: {forced_restart_reason})",
+                        valor=None,
+                        command_id=None,
+                        pulse_status=None,
+                        created_at=datetime.utcnow(),
+                    )
+                )
             if firmware_version:
                 maquina.firmware_version = firmware_version
                 maquina.firmware_updated_at = datetime.utcnow()

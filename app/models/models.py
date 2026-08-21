@@ -120,6 +120,8 @@ class Maquina(Base):
     short_pulse_count = Column(Integer, nullable=True)
     wifi_disconnect_reason = Column(Integer, nullable=True)
     wifi_disconnect_count = Column(Integer, nullable=True)
+    last_forced_restart_reason = Column(String, nullable=True)
+    last_forced_restart_at = Column(DateTime, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")
 
