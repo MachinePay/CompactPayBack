@@ -39,6 +39,6 @@ class CreditoDigitalOut(BaseModel):
     topic: Optional[str] = None
     payload: str
     command_id: str
-    pulse_status: str
+    command_status: str
     referencia_externa: Optional[str] = None
     data_hora: datetime
