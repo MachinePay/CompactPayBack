@@ -4,7 +4,7 @@ from datetime import datetime
 from app.db.session import SessionLocal
 from app.models.models import HistoricoOperacao, Maquina, VendaPagamento
 from app.services.command_queue import update_command_from_pulse_status
-from app.services.pagamentos_helpers import auto_refund_failed_pulse
+from app.services.pagamentos_helpers import NON_RELEASED_PULSE_STATUSES, auto_refund_failed_pulse
 
 
 FINAL_PULSE_STATUSES = {
@@ -36,7 +36,7 @@ def update_pulse_status(command_id: str | None, status: str) -> None:
         vendas = db.query(VendaPagamento).filter(VendaPagamento.command_id == command_id).all()
         for item in historicos:
             item.pulse_status = status
-            if status in {"falha", "falha_timeout", "falha_publicacao", "falha_cmd_ignorado", "falha_bloqueado", "falha_sem_confirmacao", "saldo_pendente", "pulso_sem_retorno"}:
+            if status in NON_RELEASED_PULSE_STATUSES:
                 maquina = db.query(Maquina).filter(Maquina.id_hardware == item.maquina_id).first()
                 auto_refund_failed_pulse(db, item, maquina=maquina)
         for item in vendas:

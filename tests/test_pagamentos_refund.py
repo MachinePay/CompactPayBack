@@ -4,10 +4,20 @@ from app.services.pagamentos_helpers import should_allow_refund, should_auto_ref
 
 
 def test_non_released_pulse_requires_auto_refund():
-    assert should_auto_refund_on_pulse_failure("falha_timeout") is True
     assert should_auto_refund_on_pulse_failure("falha_publicacao") is True
+    assert should_auto_refund_on_pulse_failure("falha_cmd_ignorado") is True
+    assert should_auto_refund_on_pulse_failure("falha_bloqueado") is True
     assert should_auto_refund_on_pulse_failure("saldo_pendente") is True
     assert should_auto_refund_on_pulse_failure("pulso_confirmado") is False
+
+
+def test_ambiguous_pulse_status_does_not_auto_refund():
+    # Comando pode ter sido enviado e executado (ex.: maquina sem contador
+    # para confirmar o pulso) - fica so para extorno manual do operador.
+    assert should_auto_refund_on_pulse_failure("falha_timeout") is False
+    assert should_auto_refund_on_pulse_failure("falha_sem_confirmacao") is False
+    assert should_auto_refund_on_pulse_failure("pulso_sem_retorno") is False
+    assert should_auto_refund_on_pulse_failure("falha") is False
 
 
 def test_refund_button_stays_available_after_confirmed_pulse():

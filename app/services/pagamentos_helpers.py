@@ -10,13 +10,20 @@ from app.models.models import Cliente, HistoricoOperacao, VendaPagamento
 from app.services.mercado_pago import mp_request
 
 NON_RELEASED_PULSE_STATUSES = {
-    "falha",
-    "falha_timeout",
     "falha_publicacao",
     "falha_cmd_ignorado",
     "falha_bloqueado",
-    "falha_sem_confirmacao",
     "saldo_pendente",
+}
+
+# Status que so indicam falta de confirmacao (o comando pode ter sido enviado
+# e ate executado normalmente, ex.: maquina sem contador para confirmar o
+# pulso). Nao entram no extorno automatico - ficam so para revisao/extorno
+# manual do operador.
+AMBIGUOUS_PULSE_STATUSES = {
+    "falha",
+    "falha_timeout",
+    "falha_sem_confirmacao",
     "pulso_sem_retorno",
 }
 
