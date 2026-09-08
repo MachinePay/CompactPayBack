@@ -248,23 +248,19 @@ def criar_maquina(
     if not cliente:
         raise HTTPException(status_code=422, detail="Escolha um usuario/cliente valido para criar a maquina")
     banco_pagamento = (maquina.banco_pagamento or "mercado_pago").strip().lower()
-    bancos_validos = {"mercado_pago", "pagbank", "s6pay"}
+    bancos_validos = {"mercado_pago", "pagbank", "s6pay", "token_play"}
     if banco_pagamento not in bancos_validos:
         raise HTTPException(status_code=422, detail="Banco de pagamento invalido")
     banco_habilitado = {
         "mercado_pago": bool(cliente.cliente_mercado_pago or cliente.mp_access_token),
         "pagbank": bool(cliente.cliente_pagbank),
         "s6pay": bool(cliente.cliente_s6pay),
+        "token_play": bool(cliente.cliente_token_play),
     }[banco_pagamento]
     if not banco_habilitado:
         raise HTTPException(status_code=422, detail="O banco escolhido nao esta habilitado para este cliente")
-    if banco_pagamento != "mercado_pago":
+    if banco_pagamento not in {"mercado_pago", "token_play"}:
         raise HTTPException(status_code=501, detail="Integracao deste banco ainda nao foi implementada")
-    if not cliente.mp_access_token:
-        raise HTTPException(
-            status_code=422,
-            detail="O usuario escolhido ainda nao tem MP_ACCESS_TOKEN cadastrado",
-        )
 
     db_maquina = Maquina(
         id_hardware=machine_id,
@@ -274,12 +270,18 @@ def criar_maquina(
         localizacao=maquina.localizacao,
         ultimo_sinal=None,
     )
-    pos_data = create_pos_for_machine(cliente, db_maquina)
-    db_maquina.mp_store_id = pos_data["mp_store_id"]
-    db_maquina.mp_store_external_id = pos_data["mp_store_external_id"]
-    db_maquina.mp_pos_id = pos_data["mp_pos_id"]
-    db_maquina.mp_pos_external_id = pos_data["mp_pos_external_id"]
-    db_maquina.mp_qr_image = pos_data["mp_qr_image"]
+    if banco_pagamento == "mercado_pago":
+        if not cliente.mp_access_token:
+            raise HTTPException(
+                status_code=422,
+                detail="O usuario escolhido ainda nao tem MP_ACCESS_TOKEN cadastrado",
+            )
+        pos_data = create_pos_for_machine(cliente, db_maquina)
+        db_maquina.mp_store_id = pos_data["mp_store_id"]
+        db_maquina.mp_store_external_id = pos_data["mp_store_external_id"]
+        db_maquina.mp_pos_id = pos_data["mp_pos_id"]
+        db_maquina.mp_pos_external_id = pos_data["mp_pos_external_id"]
+        db_maquina.mp_qr_image = pos_data["mp_qr_image"]
     db.add(db_maquina)
     registrar_auditoria(
         db,

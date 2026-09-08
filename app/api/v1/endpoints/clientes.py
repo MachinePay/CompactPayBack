@@ -54,6 +54,7 @@ def listar_clientes(
             "cliente_mercado_pago": bool(cliente.cliente_mercado_pago or cliente.mp_access_token),
             "cliente_pagbank": bool(cliente.cliente_pagbank),
             "cliente_s6pay": bool(cliente.cliente_s6pay),
+            "cliente_token_play": bool(cliente.cliente_token_play),
             "mp_configurado": bool(cliente.mp_access_token),
             "mp_pos_category": cliente.mp_pos_category,
             "mp_user_id": cliente.mp_user_id,

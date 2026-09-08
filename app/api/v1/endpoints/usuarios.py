@@ -124,7 +124,8 @@ def atualizar_usuario(
         descricao=(
             f"Usuario atualizado email={usuario.email} role={user_role.value} "
             f"cliente_id={cliente_id} senha_alterada={bool(usuario.password)} "
-            f"mp_habilitado={bool(usuario.cliente_mercado_pago)} pagbank={bool(usuario.cliente_pagbank)} s6pay={bool(usuario.cliente_s6pay)}"
+            f"mp_habilitado={bool(usuario.cliente_mercado_pago)} pagbank={bool(usuario.cliente_pagbank)} "
+            f"s6pay={bool(usuario.cliente_s6pay)} token_play={bool(usuario.cliente_token_play)}"
         ),
     )
 

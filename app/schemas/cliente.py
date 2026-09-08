@@ -30,6 +30,7 @@ class ClienteListOut(ClienteBase):
     cliente_mercado_pago: Optional[bool] = None
     cliente_pagbank: Optional[bool] = None
     cliente_s6pay: Optional[bool] = None
+    cliente_token_play: Optional[bool] = None
     mp_configurado: bool = False
     mp_pos_category: Optional[int] = None
     mp_user_id: Optional[str] = None

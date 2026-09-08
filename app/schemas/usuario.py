@@ -20,6 +20,7 @@ class UsuarioBase(BaseModel):
     cliente_mercado_pago: Optional[bool] = None
     cliente_pagbank: Optional[bool] = None
     cliente_s6pay: Optional[bool] = None
+    cliente_token_play: Optional[bool] = None
     mp_public_key: Optional[str] = None
     mp_access_token: Optional[str] = None
     mp_client_id: Optional[str] = None
