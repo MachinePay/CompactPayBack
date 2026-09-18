@@ -1,6 +1,7 @@
 import json
 import re
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -243,6 +244,48 @@ def get_active_terminal_for_machine(cliente, maquina) -> dict:
     return result
 
 
+def _strip_accents(value: str) -> str:
+    return "".join(
+        ch for ch in unicodedata.normalize("NFD", value or "") if unicodedata.category(ch) != "Mn"
+    ).casefold().strip()
+
+
+def _store_location(cliente, reference: str) -> dict:
+    return {
+        "street_number": cliente.endereco_numero or settings.MP_DEFAULT_STORE_STREET_NUMBER,
+        "street_name": cliente.endereco_rua or settings.MP_DEFAULT_STORE_STREET_NAME,
+        "city_name": cliente.endereco_cidade or settings.MP_DEFAULT_STORE_CITY_NAME,
+        "state_name": cliente.endereco_estado or settings.MP_DEFAULT_STORE_STATE_NAME,
+        "latitude": cliente.endereco_latitude if cliente.endereco_latitude is not None else settings.MP_DEFAULT_STORE_LATITUDE,
+        "longitude": cliente.endereco_longitude if cliente.endereco_longitude is not None else settings.MP_DEFAULT_STORE_LONGITUDE,
+        "reference": reference,
+    }
+
+
+def _post_store(user_id: str, access_token: str, body: dict):
+    url = f"https://api.mercadopago.com/users/{urllib.parse.quote(user_id)}/stores"
+    try:
+        return mp_request("POST", url, access_token, body=body)
+    except HTTPException as exc:
+        detail = str(exc.detail)
+        marker = "Valid values are:"
+        if "city_name was invalid" not in detail or marker not in detail:
+            raise
+        valid_cities = [c.strip() for c in detail.split(marker, 1)[1].split(",") if c.strip()]
+        wanted = _strip_accents(body["location"]["city_name"])
+        match = next((c for c in valid_cities if _strip_accents(c) == wanted), None)
+        if not match:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Cidade '{body['location']['city_name']}' nao e aceita pelo Mercado Pago para o estado "
+                    f"'{body['location']['state_name']}'. Corrija a cidade/estado no cadastro do cliente."
+                ),
+            ) from exc
+        body["location"]["city_name"] = match
+        return mp_request("POST", url, access_token, body=body)
+
+
 def create_default_store(cliente) -> dict:
     access_token = (cliente.mp_access_token or "").strip()
     if not access_token:
@@ -264,23 +307,10 @@ def create_default_store(cliente) -> dict:
     body = {
         "name": (cliente.nome_empresa or "CompactPay")[:45],
         "external_id": external_id,
-        "location": {
-            "street_number": cliente.endereco_numero or settings.MP_DEFAULT_STORE_STREET_NUMBER,
-            "street_name": cliente.endereco_rua or settings.MP_DEFAULT_STORE_STREET_NAME,
-            "city_name": cliente.endereco_cidade or settings.MP_DEFAULT_STORE_CITY_NAME,
-            "state_name": cliente.endereco_estado or settings.MP_DEFAULT_STORE_STATE_NAME,
-            "latitude": cliente.endereco_latitude if cliente.endereco_latitude is not None else settings.MP_DEFAULT_STORE_LATITUDE,
-            "longitude": cliente.endereco_longitude if cliente.endereco_longitude is not None else settings.MP_DEFAULT_STORE_LONGITUDE,
-            "reference": cliente.nome_empresa or "CompactPay",
-        },
+        "location": _store_location(cliente, cliente.nome_empresa or "CompactPay"),
     }
     try:
-        store = mp_request(
-            "POST",
-            f"https://api.mercadopago.com/users/{urllib.parse.quote(user_id)}/stores",
-            access_token,
-            body=body,
-        )
+        store = _post_store(user_id, access_token, body)
     except HTTPException:
         existing_store = search_store_by_external_id(user_id, access_token, external_id)
         if not existing_store:
@@ -313,23 +343,10 @@ def create_store_for_machine(cliente, maquina) -> dict:
     body = {
         "name": store_name,
         "external_id": external_id,
-        "location": {
-            "street_number": cliente.endereco_numero or settings.MP_DEFAULT_STORE_STREET_NUMBER,
-            "street_name": cliente.endereco_rua or settings.MP_DEFAULT_STORE_STREET_NAME,
-            "city_name": cliente.endereco_cidade or settings.MP_DEFAULT_STORE_CITY_NAME,
-            "state_name": cliente.endereco_estado or settings.MP_DEFAULT_STORE_STATE_NAME,
-            "latitude": cliente.endereco_latitude if cliente.endereco_latitude is not None else settings.MP_DEFAULT_STORE_LATITUDE,
-            "longitude": cliente.endereco_longitude if cliente.endereco_longitude is not None else settings.MP_DEFAULT_STORE_LONGITUDE,
-            "reference": store_name,
-        },
+        "location": _store_location(cliente, store_name),
     }
     try:
-        store = mp_request(
-            "POST",
-            f"https://api.mercadopago.com/users/{urllib.parse.quote(user_id)}/stores",
-            access_token,
-            body=body,
-        )
+        store = _post_store(user_id, access_token, body)
     except HTTPException:
         existing_store = search_store_by_external_id(user_id, access_token, external_id)
         if not existing_store:
