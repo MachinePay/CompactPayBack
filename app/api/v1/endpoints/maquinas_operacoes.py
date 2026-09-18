@@ -129,6 +129,41 @@ def enviar_credito_teste(
     }
 
 
+@router.post("/maquinas/{machine_id}/filtro-saida-pos-credito")
+def alternar_filtro_saida_pos_credito(
+    machine_id: str,
+    payload: dict,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Liga/desliga, so para esta maquina, o filtro que ignora um
+    'PELUCIA ENTREGUE (OUT)' quando ele chega poucos segundos depois de uma
+    liberacao de credito - usado em maquinas com interferencia eletrica do
+    driver de credito no sensor OUT (falso positivo de entrega)."""
+    _, role, _ = user
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas admin pode alterar esse filtro")
+
+    maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
+    if not maquina:
+        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
+
+    ativo = bool(payload.get("ativo"))
+    anterior = bool(maquina.ignorar_saida_pos_credito)
+    maquina.ignorar_saida_pos_credito = ativo
+    registrar_auditoria(
+        db,
+        user,
+        acao="FILTRO_SAIDA_POS_CREDITO",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=f"Filtro de saida pos-credito alterado de {anterior} para {ativo}",
+    )
+    db.commit()
+
+    return {"ok": True, "machine_id": machine_id, "ignorar_saida_pos_credito": ativo}
+
+
 @router.post("/maquinas/{machine_id}/verificar-online")
 def verificar_maquina_online(
     machine_id: str,

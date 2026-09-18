@@ -1144,6 +1144,7 @@ def serialize_machine_summary(
         "status_operacional": status_operacional(status_online, ultima_atividade_em),
         "faturamento": float(faturamento),
         "quantidade_saidas": int(quantidade_saidas),
+        "ignorar_saida_pos_credito": bool(maquina.ignorar_saida_pos_credito),
     }
 
 
@@ -1228,6 +1229,7 @@ def serialize_machines_summary_batch(
                 "status_operacional": status_operacional(status_online, ultima_atividade_em),
                 "faturamento": float(faturamento),
                 "quantidade_saidas": int(quantidade_saidas),
+                "ignorar_saida_pos_credito": bool(maquina.ignorar_saida_pos_credito),
             }
         )
 

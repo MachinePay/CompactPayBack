@@ -14,6 +14,11 @@ TOPIC = "/TEF/+/attrs"
 ONLINE_HEARTBEAT_STATUS = "ONLINE"
 ONLINE_HEARTBEAT_GAP_THRESHOLD = timedelta(seconds=90)
 NOISY_STATUSES_NOT_LOGGED = {"UPDATE_PROGRESSO"}
+# Janela apos o inicio da liberacao de credito (PULSO_INICIADO) dentro da qual
+# um "PELUCIA ENTREGUE (OUT)" e tratado como ruido/interferencia eletrica do
+# driver de credito no sensor OUT, e nao uma entrega real - so quando o
+# filtro maquina.ignorar_saida_pos_credito estiver ativo para a maquina.
+OUT_POS_CREDITO_IGNORE_WINDOW = timedelta(seconds=5)
 
 
 def _parse_status_payload(payload: str) -> tuple[str | None, dict[str, str]]:
@@ -205,6 +210,13 @@ def on_message(client, userdata, msg):
                 maquina.firmware_update_status = "failed"
                 maquina.firmware_update_finished_at = datetime.utcnow()
                 maquina.firmware_update_error = (status_fields.get("erro") or "falha_desconhecida")[:500]
+            elif status == "PULSO_INICIADO":
+                # Marca o inicio da liberacao de credito na linha moeda. Usado
+                # para filtrar o falso positivo de "PELUCIA ENTREGUE (OUT)"
+                # causado por interferencia eletrica do driver de credito no
+                # sensor OUT em maquinas com o filtro ignorar_saida_pos_credito
+                # ativado (ver processamento de pulso mais abaixo).
+                maquina.credito_liberado_em = datetime.utcnow()
             pulse_status = _status_to_pulse_status(status)
             if command_id:
                 update_command_from_device_status(command_id, status)
@@ -261,15 +273,34 @@ def on_message(client, userdata, msg):
             db.commit()
             print(f"Transação FISICO IN registrada para máquina {id_extraido}")
         elif payload == "PELUCIA ENTREGUE (OUT)":
-            nova_transacao = Transacao(
-                maquina_id=id_extraido,
-                tipo=EventoTipo.out_flux,
-                metodo=MetodoPagamento.fisico,
-                valor=0.0
+            credito_recente = (
+                maquina.credito_liberado_em
+                and (datetime.utcnow() - maquina.credito_liberado_em) < OUT_POS_CREDITO_IGNORE_WINDOW
             )
-            db.add(nova_transacao)
-            db.commit()
-            print(f"Transação FISICO OUT registrada para máquina {id_extraido}")
+            if maquina.ignorar_saida_pos_credito and credito_recente:
+                db.add(
+                    HistoricoOperacao(
+                        maquina_id=id_extraido,
+                        categoria="DISPOSITIVO",
+                        descricao="Saida fisica (OUT) ignorada: ocorreu logo apos liberacao de credito e o filtro anti falso-positivo esta ativo para esta maquina",
+                        valor=None,
+                        command_id=None,
+                        pulse_status=None,
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                db.commit()
+                print(f"Transação FISICO OUT IGNORADA (filtro pos-credito) para máquina {id_extraido}")
+            else:
+                nova_transacao = Transacao(
+                    maquina_id=id_extraido,
+                    tipo=EventoTipo.out_flux,
+                    metodo=MetodoPagamento.fisico,
+                    valor=0.0
+                )
+                db.add(nova_transacao)
+                db.commit()
+                print(f"Transação FISICO OUT registrada para máquina {id_extraido}")
         db.close()
     except Exception as e:
         print(f"Erro ao processar mensagem MQTT: {e}")
