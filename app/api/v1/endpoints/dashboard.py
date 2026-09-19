@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from sqlalchemy import func, or_
@@ -74,9 +74,7 @@ def dashboard_stats(
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    hoje = date.today()
-    start_dt = datetime.combine(hoje, datetime.min.time())
-    end_dt = datetime.combine(hoje, datetime.max.time())
+    start_dt, end_dt = resolve_date_window("dia")
     _, role, cliente_id = user
     query = db.query(Transacao)
     maquinas_ids = [m.id_hardware for m in _maquina_query_por_usuario(db, role, cliente_id).all()]
@@ -88,7 +86,8 @@ def dashboard_stats(
         query.with_entities(func.count(Transacao.id))
         .filter(
             transacao_tipo_out_filter(),
-            func.date(Transacao.data_hora) == hoje,
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
         )
         .scalar()
         or 0
@@ -142,11 +141,8 @@ def dashboard_overview(
         or 0
     )
 
-    hoje = date.today()
-    inicio_hoje = datetime.combine(hoje, datetime.min.time())
-    fim_hoje = datetime.combine(hoje, datetime.max.time())
-    inicio_mes = datetime.combine(hoje.replace(day=1), datetime.min.time())
-    fim_mes = fim_hoje
+    inicio_hoje, fim_hoje = resolve_date_window("dia")
+    inicio_mes, fim_mes = resolve_date_window("mes")
     resumo_hoje = compute_financial_summary(db, maquinas_ids, inicio_hoje, fim_hoje)
     resumo_mes = compute_financial_summary(db, maquinas_ids, inicio_mes, fim_mes)
 

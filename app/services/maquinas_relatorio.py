@@ -1,5 +1,5 @@
 from collections import defaultdict
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 import re
 
 from sqlalchemy import func, or_
@@ -44,30 +44,35 @@ def transacao_tipo_value(tipo) -> str:
     return str(value or "")
 
 
+# Offset fixo UTC-3: o Brasil aboliu o horario de verao em 2019, entao nao
+# ha' necessidade (nem risco de faltar o pacote tzdata no ambiente) de usar
+# zoneinfo com o fuso "America/Sao_Paulo" completo.
+BRASILIA_TZ = timezone(timedelta(hours=-3))
+
+
+def _brasilia_hoje() -> date:
+    return datetime.now(BRASILIA_TZ).date()
+
+
+def _brasilia_local_to_utc_naive(value: datetime) -> datetime:
+    """Recebe um datetime "de parede" em horario de Brasilia (sem tzinfo) e
+    devolve o equivalente em UTC, tambem sem tzinfo (para comparar com as
+    colunas datetime que o banco guarda em UTC via datetime.utcnow())."""
+    aware = value.replace(tzinfo=BRASILIA_TZ)
+    return aware.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def apply_transacao_periodo(
     query,
     periodo: str | None = None,
     data_inicio: str | None = None,
     data_fim: str | None = None,
 ):
-    if data_inicio and data_fim:
-        dt_inicio, dt_fim = resolve_date_window(periodo, data_inicio, data_fim)
-        return query.filter(
-            Transacao.data_hora >= dt_inicio,
-            Transacao.data_hora <= dt_fim,
-        )
-
-    if periodo == "dia":
-        hoje = date.today()
-        return query.filter(func.date(Transacao.data_hora) == hoje)
-
-    if periodo == "mes":
-        hoje = date.today()
-        return query.filter(func.extract("month", Transacao.data_hora) == hoje.month).filter(
-            func.extract("year", Transacao.data_hora) == hoje.year
-        )
-
-    return query
+    dt_inicio, dt_fim = resolve_date_window(periodo, data_inicio, data_fim)
+    return query.filter(
+        Transacao.data_hora >= dt_inicio,
+        Transacao.data_hora <= dt_fim,
+    )
 
 
 def resolve_date_window(
@@ -75,26 +80,47 @@ def resolve_date_window(
     data_inicio: str | None = None,
     data_fim: str | None = None,
 ):
+    """As colunas de data no banco (data_hora, created_at) sao gravadas com
+    datetime.utcnow(). "periodo"/"data_inicio"/"data_fim" chegam pensados no
+    calendario de Brasilia (e' o que o usuario ve na tela). Se comparassemos
+    esses limites direto contra as colunas em UTC, qualquer evento entre
+    ~21h e meia-noite (horario de Brasilia) cairia no dia seguinte em UTC e
+    sumiria do periodo "hoje"/"ultimos X dias" que o usuario esperava ver -
+    por isso toda a janela e' calculada em horario de Brasilia e so depois
+    convertida para UTC no fim."""
     if data_inicio and data_fim:
+        start_local = datetime.fromisoformat(data_inicio)
+        end_local = (
+            datetime.fromisoformat(data_fim) + timedelta(days=1) - timedelta(microseconds=1)
+        )
         return (
-            datetime.fromisoformat(data_inicio),
-            datetime.fromisoformat(data_fim) + timedelta(days=1) - timedelta(microseconds=1),
+            _brasilia_local_to_utc_naive(start_local),
+            _brasilia_local_to_utc_naive(end_local),
         )
 
-    hoje = date.today()
+    hoje = _brasilia_hoje()
     if periodo == "dia":
-        start = datetime.combine(hoje, datetime.min.time())
-        end = datetime.combine(hoje, datetime.max.time())
-        return start, end
+        start_local = datetime.combine(hoje, datetime.min.time())
+        end_local = datetime.combine(hoje, datetime.max.time())
+        return (
+            _brasilia_local_to_utc_naive(start_local),
+            _brasilia_local_to_utc_naive(end_local),
+        )
 
     if periodo == "mes":
-        start = datetime.combine(hoje.replace(day=1), datetime.min.time())
-        end = datetime.combine(hoje, datetime.max.time())
-        return start, end
+        start_local = datetime.combine(hoje.replace(day=1), datetime.min.time())
+        end_local = datetime.combine(hoje, datetime.max.time())
+        return (
+            _brasilia_local_to_utc_naive(start_local),
+            _brasilia_local_to_utc_naive(end_local),
+        )
 
-    end = datetime.combine(hoje, datetime.max.time())
-    start = end - timedelta(days=6)
-    return start, end
+    end_local = datetime.combine(hoje, datetime.max.time())
+    start_local = end_local - timedelta(days=6)
+    return (
+        _brasilia_local_to_utc_naive(start_local),
+        _brasilia_local_to_utc_naive(end_local),
+    )
 
 
 def real_payment_history_query(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime):

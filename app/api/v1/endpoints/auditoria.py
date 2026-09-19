@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -9,6 +9,9 @@ from app.models.models import AuditoriaSistema
 
 router = APIRouter()
 
+# Offset fixo UTC-3: o Brasil aboliu o horario de verao em 2019.
+BRASILIA_TZ = timezone(timedelta(hours=-3))
+
 
 def get_db():
     db = SessionLocal()
@@ -18,20 +21,35 @@ def get_db():
         db.close()
 
 
+def _brasilia_local_to_utc_naive(value: datetime) -> datetime:
+    return value.replace(tzinfo=BRASILIA_TZ).astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def _resolve_periodo_opcional(periodo: str | None, data_inicio: str | None, data_fim: str | None):
+    # created_at e' gravado em UTC (datetime.utcnow()), mas periodo/data_inicio/
+    # data_fim sao pensados no calendario de Brasilia - por isso a janela e'
+    # montada em horario local e so convertida pra UTC no final (senao um
+    # registro feito a noite em Brasilia some do filtro "hoje").
     if data_inicio and data_fim:
+        start_local = datetime.fromisoformat(data_inicio)
+        end_local = datetime.fromisoformat(data_fim) + timedelta(days=1) - timedelta(microseconds=1)
         return (
-            datetime.fromisoformat(data_inicio),
-            datetime.fromisoformat(data_fim) + timedelta(days=1) - timedelta(microseconds=1),
+            _brasilia_local_to_utc_naive(start_local),
+            _brasilia_local_to_utc_naive(end_local),
         )
-    hoje = date.today()
+    hoje = datetime.now(BRASILIA_TZ).date()
     if periodo == "hoje":
-        return datetime.combine(hoje, datetime.min.time()), datetime.combine(hoje, datetime.max.time())
+        start_local = datetime.combine(hoje, datetime.min.time())
+        end_local = datetime.combine(hoje, datetime.max.time())
+        return _brasilia_local_to_utc_naive(start_local), _brasilia_local_to_utc_naive(end_local)
     if periodo == "semana":
-        end = datetime.combine(hoje, datetime.max.time())
-        return end - timedelta(days=6), end
+        end_local = datetime.combine(hoje, datetime.max.time())
+        start_local = end_local - timedelta(days=6)
+        return _brasilia_local_to_utc_naive(start_local), _brasilia_local_to_utc_naive(end_local)
     if periodo == "mes":
-        return datetime.combine(hoje.replace(day=1), datetime.min.time()), datetime.combine(hoje, datetime.max.time())
+        start_local = datetime.combine(hoje.replace(day=1), datetime.min.time())
+        end_local = datetime.combine(hoje, datetime.max.time())
+        return _brasilia_local_to_utc_naive(start_local), _brasilia_local_to_utc_naive(end_local)
     return None, None
 
 
