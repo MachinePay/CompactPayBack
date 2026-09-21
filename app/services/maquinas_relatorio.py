@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session, aliased
 
 from app.models.models import (
     AuditoriaOperacao,
+    EscutaTerminal,
     EventoTipo,
     FechamentoMaquina,
     HistoricoOperacao,
@@ -1570,6 +1571,25 @@ def build_machine_history_payload(
             "online": True,
             "terminal_id": terminal_payment["terminal_id"] or terminal_status["terminal_id"],
         }
+    elif not terminal_status.get("terminal_id"):
+        # A janela de "online" acima dura so 5 minutos apos o pagamento, e a
+        # consulta oficial ao Mercado Pago (get_active_terminal_for_machine)
+        # pode estar bloqueada (ver 403 PA_UNAUTHORIZED_RESULT_FROM_POLICIES).
+        # Como ultimo recurso, mostra o terminal_id que ja foi vinculado a
+        # essa maquina (manualmente ou automatico, no primeiro pagamento
+        # identificado por loja/caixa) mesmo sem saber se esta online agora.
+        escuta = (
+            db.query(EscutaTerminal)
+            .filter(EscutaTerminal.maquina_id == machine_id, EscutaTerminal.ativo.is_(True))
+            .order_by(EscutaTerminal.updated_at.desc())
+            .first()
+        )
+        if escuta:
+            terminal_status = {
+                **terminal_status,
+                "status": "linked",
+                "terminal_id": escuta.terminal_id,
+            }
     ultima_atividade = max(
         [
             item
