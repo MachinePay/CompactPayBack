@@ -7,8 +7,10 @@ from sqlalchemy.orm import Session, joinedload
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import (
+    AlertaNotificacao,
     AuditoriaOperacao,
     Cliente,
+    ComandoMaquina,
     EscutaTerminal,
     FechamentoMaquina,
     HistoricoOperacao,
@@ -377,6 +379,8 @@ def deletar_maquina(
     fechamentos_removidos = db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).count()
     auditorias_removidas = db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).count()
     escutas_removidas = db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).count()
+    comandos_removidos = db.query(ComandoMaquina).filter(ComandoMaquina.maquina_id == machine_id).count()
+    alertas_removidos = db.query(AlertaNotificacao).filter(AlertaNotificacao.maquina_id == machine_id).count()
     registrar_auditoria(
         db,
         user,
@@ -388,9 +392,15 @@ def deletar_maquina(
             f"produtos={produtos_removidos} transacoes={transacoes_removidas} "
             f"vendas={vendas_removidas} escutas_terminal={escutas_removidas} "
             f"historicos={historicos_removidos} fechamentos={fechamentos_removidos} "
-            f"auditorias_maquina={auditorias_removidas}"
+            f"auditorias_maquina={auditorias_removidas} comandos={comandos_removidos} "
+            f"alertas={alertas_removidos}"
         ),
     )
+    # Precisa cobrir toda tabela com ForeignKey("maquinas.id_hardware"), senao
+    # o db.delete(db_maquina) la embaixo estoura IntegrityError (nao tratado
+    # -> 500) pra qualquer maquina que ja tenha comando MQTT ou alerta
+    # registrado, mesmo com as tabelas "principais" (transacoes, vendas etc.)
+    # ja limpas.
     db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(VendaPagamento).filter(VendaPagamento.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).delete(synchronize_session=False)
@@ -398,6 +408,8 @@ def deletar_maquina(
     db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(Transacao).filter(Transacao.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(Produto).filter(Produto.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(ComandoMaquina).filter(ComandoMaquina.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(AlertaNotificacao).filter(AlertaNotificacao.maquina_id == machine_id).delete(synchronize_session=False)
     db.delete(db_maquina)
     db.commit()
     return {"ok": True}
