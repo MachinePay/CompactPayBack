@@ -164,6 +164,47 @@ def alternar_filtro_saida_pos_credito(
     return {"ok": True, "machine_id": machine_id, "ignorar_saida_pos_credito": ativo}
 
 
+@router.get("/maquinas/{machine_id}/caixa")
+def consultar_caixa_mercado_pago(
+    machine_id: str,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Busca no Mercado Pago os dados atuais do caixa (POS) vinculado a essa
+    maquina, incluindo o QR code fixo de Pix (imagem, PDF/PNG pra imprimir e
+    o codigo copia-e-cola)."""
+    _, role, cliente_id = user
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
+
+    cliente = maquina.dono
+    access_token = (getattr(cliente, "mp_access_token", None) or "").strip()
+    pos_id = (maquina.mp_pos_id or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=422, detail="Cliente sem Mercado Pago conectado")
+    if not pos_id:
+        raise HTTPException(status_code=422, detail="Esta maquina ainda nao tem caixa Mercado Pago vinculado")
+
+    pos = mp_request("GET", f"https://api.mercadopago.com/pos/{pos_id}", access_token)
+    qr = pos.get("qr") or {}
+    return {
+        "pos_id": str(pos.get("id") or pos_id),
+        "external_id": pos.get("external_id"),
+        "name": pos.get("name"),
+        "store_id": pos.get("store_id"),
+        "fixed_amount": pos.get("fixed_amount"),
+        "category": pos.get("category"),
+        "qr": {
+            "status": qr.get("status"),
+            "image": qr.get("image"),
+            "template_image": qr.get("template_image"),
+            "template_document": qr.get("template_document"),
+            "qr_code": qr.get("qr_code"),
+            "date_created": qr.get("date_created"),
+            "date_last_updated": qr.get("date_last_updated"),
+        },
+    }
+
+
 @router.post("/maquinas/{machine_id}/verificar-online")
 def verificar_maquina_online(
     machine_id: str,
