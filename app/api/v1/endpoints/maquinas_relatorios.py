@@ -8,7 +8,12 @@ from app.db.session import SessionLocal
 from app.models.models import AuditoriaOperacao, FechamentoMaquina, HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.schemas.fechamento import FechamentoMaquinaOut
 from app.services.auditoria import registrar_auditoria
-from app.services.maquinas_relatorio import build_machine_history_payload, resolve_date_window, transacao_tipo_in_filter
+from app.services.maquinas_relatorio import (
+    build_all_machines_history_payload,
+    build_machine_history_payload,
+    resolve_date_window,
+    transacao_tipo_in_filter,
+)
 
 router = APIRouter()
 
@@ -175,6 +180,48 @@ def obter_historico_maquina(
     payload = build_machine_history_payload(
         db,
         maquina,
+        periodo=periodo,
+        data_inicio=data_inicio,
+        data_fim=data_fim,
+        registro=registro,
+        origem=origem,
+        forma=forma,
+        pulso=pulso,
+        busca=busca,
+    )
+    return {key: value for key, value in payload.items() if key != "range"}
+
+
+@router.get("/maquinas/historico")
+def obter_historico_todas_maquinas(
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+    cliente_id: int = None,
+    periodo: str = "mes",
+    data_inicio: str = None,
+    data_fim: str = None,
+    registro: str = "todos",
+    origem: str = "todos",
+    forma: str = "todos",
+    pulso: str = "todos",
+    busca: str = "",
+):
+    """Versao "Todas as maquinas" do relatorio: soma pagamentos/saidas/testes
+    das maquinas visiveis para o usuario (admin precisa informar cliente_id;
+    cliente ve automaticamente so as proprias maquinas)."""
+    _, role, user_cliente_id = user
+    query = db.query(Maquina)
+    if role == "admin":
+        if cliente_id is None:
+            raise HTTPException(status_code=422, detail="Informe cliente_id para ver todas as maquinas")
+        query = query.filter(Maquina.cliente_id == cliente_id)
+    else:
+        query = query.filter(Maquina.cliente_id == user_cliente_id)
+    maquinas = query.all()
+
+    payload = build_all_machines_history_payload(
+        db,
+        maquinas,
         periodo=periodo,
         data_inicio=data_inicio,
         data_fim=data_fim,

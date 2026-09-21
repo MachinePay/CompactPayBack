@@ -1715,3 +1715,334 @@ def build_machine_history_payload(
         ],
         "timeline": timeline[:50],
     }
+
+
+def build_all_machines_history_payload(
+    db: Session,
+    maquinas: list[Maquina],
+    periodo: str = "mes",
+    data_inicio: str = None,
+    data_fim: str = None,
+    registro: str = "todos",
+    origem: str = "todos",
+    forma: str = "todos",
+    pulso: str = "todos",
+    busca: str = "",
+):
+    """Versao agregada de build_machine_history_payload para a opcao "Todas
+    as maquinas" do relatorio: soma pagamentos/saidas/testes de varias
+    maquinas de uma vez. Nao inclui nada que so faz sentido por maquina
+    fisica (status da placa, firmware, maquininha MP, fechamentos,
+    auditoria, linha do tempo) - essas secoes ficam vazias/None de
+    proposito, e o frontend esconde os cards correspondentes nesse modo."""
+    machine_ids = [m.id_hardware for m in maquinas]
+    nomes = {m.id_hardware: (m.nome_local or m.id_hardware) for m in maquinas}
+    registro_filter = _normalize_filter(registro)
+    origem_filter = _normalize_filter(origem)
+    forma_filter = _normalize_filter(forma)
+    pulso_filter = _normalize_filter(pulso)
+    busca_filter = (busca or "").strip().lower()
+    start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
+
+    empty_resumo = {
+        "range": {"inicio": start_dt, "fim": end_dt},
+        "maquina": None,
+        "agregado": True,
+        "quantidade_maquinas": len(machine_ids),
+        "resumo": {
+            "total_pagamentos": 0.0,
+            "total_digital": 0.0,
+            "total_fisico": 0.0,
+            "quantidade_pagamentos": 0,
+            "quantidade_testes": 0,
+            "quantidade_saidas": 0,
+            "ultimo_pagamento_em": None,
+            "ultimo_teste_em": None,
+            "ultima_saida_em": None,
+        },
+        "totais_por_dia": [],
+        "pagamentos": [],
+        "vendas": [],
+        "saidas": [],
+        "testes": [],
+        "observacoes": [],
+        "eventos_dispositivo": [],
+        "fechamentos": [],
+        "auditoria": [],
+        "timeline": [],
+    }
+    if not machine_ids:
+        return empty_resumo
+
+    transacoes_query = db.query(Transacao).filter(Transacao.maquina_id.in_(machine_ids))
+    transacoes_query = apply_transacao_periodo(
+        transacoes_query,
+        periodo=periodo,
+        data_inicio=data_inicio,
+        data_fim=data_fim,
+    )
+    pagamentos = transacoes_query.filter(transacao_tipo_in_filter()).order_by(Transacao.data_hora.desc()).all()
+    saidas = transacoes_query.filter(transacao_tipo_out_filter()).order_by(Transacao.data_hora.desc()).all()
+
+    testes_query = db.query(HistoricoOperacao).filter(
+        HistoricoOperacao.maquina_id.in_(machine_ids),
+        HistoricoOperacao.categoria == "TESTE",
+        HistoricoOperacao.created_at >= start_dt,
+        HistoricoOperacao.created_at <= end_dt,
+    )
+    if busca_filter and "teste" not in busca_filter:
+        testes_query = testes_query.filter(HistoricoOperacao.descricao.ilike(f"%{busca_filter}%"))
+    testes = (
+        db.query(HistoricoOperacao)
+        .filter(
+            HistoricoOperacao.maquina_id.in_(machine_ids),
+            HistoricoOperacao.categoria == "TESTE",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
+        )
+        .order_by(HistoricoOperacao.created_at.desc())
+        .all()
+    )
+    testes_vendas = (
+        testes_query.order_by(HistoricoOperacao.created_at.desc()).all()
+        if _should_include_tests(registro_filter, origem_filter, forma_filter, pulso_filter, busca_filter)
+        else []
+    )
+    pagamentos_historico_query = db.query(HistoricoOperacao).filter(
+        HistoricoOperacao.maquina_id.in_(machine_ids),
+        HistoricoOperacao.categoria == "PAGAMENTO",
+        HistoricoOperacao.created_at >= start_dt,
+        HistoricoOperacao.created_at <= end_dt,
+    )
+    pagamentos_historico = (
+        _apply_history_sale_filters(
+            pagamentos_historico_query,
+            origem_filter,
+            forma_filter,
+            pulso_filter,
+            busca_filter,
+        )
+        .order_by(HistoricoOperacao.created_at.desc())
+        .all()
+        if registro_filter != "testes"
+        else []
+    )
+
+    resumo_faturamento = real_revenue_breakdown(db, machine_ids, start_dt, end_dt)
+    total_pagamentos = resumo_faturamento["total"]
+    total_digital = resumo_faturamento["digital"]
+    total_fisico = resumo_faturamento["fisico"]
+    quantidade_pagamentos_reais = resumo_faturamento["count"]
+    ultimo_pagamento = pagamentos[0] if pagamentos else None
+    ultimo_teste = testes[0] if testes else None
+    ultima_saida = saidas[0] if saidas else None
+
+    totais_por_dia = {}
+    for pagamento in pagamentos:
+        dia = pagamento.data_hora.strftime("%d/%m/%Y")
+        totais_por_dia[dia] = totais_por_dia.get(dia, 0.0) + float(pagamento.valor or 0)
+
+    vendas = []
+    for item in pagamentos_historico:
+        provider_payment_id = item.provider_payment_id
+        if not provider_payment_id:
+            match = re.search(r"(?:payment_id|mp_order_id)=([^,\)\s]+)", item.descricao or "")
+            provider_payment_id = match.group(1) if match else None
+        pulse_status = item.pulse_status or "liberado"
+        vendas.append(
+            {
+                "id": item.id,
+                "kind": "pagamento",
+                "is_test": False,
+                "data": item.created_at,
+                "valor": float(item.valor or 0),
+                "taxa": None,
+                "total": float(item.valor or 0),
+                "ponto": nomes.get(item.maquina_id, item.maquina_id),
+                "maquina_id": item.maquina_id,
+                "provider": item.provider or "mercado_pago",
+                "payment_type": item.payment_type or "digital",
+                "card_brand": item.card_brand,
+                "bank_name": item.bank_name,
+                "provider_payment_id": provider_payment_id,
+                "pulse_status": pulse_status,
+                "command_id": item.command_id,
+                "situacao": "Extornado" if item.refunded_at else "Venda Aprovada",
+                "refunded_at": item.refunded_at,
+                "can_refund": should_allow_refund(
+                    pulse_status,
+                    item.refunded_at,
+                    provider_payment_id,
+                    item.provider,
+                ),
+                "descricao": item.descricao,
+            }
+        )
+    if _should_include_physical_sales(registro_filter, origem_filter, forma_filter, pulso_filter, busca_filter):
+        # Agrupa pulsos fisicos consecutivos da MESMA maquina (nao pode
+        # misturar pulsos de maquinas diferentes num so grupo).
+        grouped_physical_payments = []
+        current_physical_group = None
+        fisico_txs = sorted(
+            (
+                transacao
+                for transacao in pagamentos
+                if str(
+                    transacao.metodo.value if hasattr(transacao.metodo, "value") else transacao.metodo
+                ).upper()
+                == "FISICO"
+            ),
+            key=lambda item: (item.maquina_id, item.data_hora),
+        )
+        for transacao in fisico_txs:
+            metodo = transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo)
+            payment_at = transacao.data_hora.replace(microsecond=0)
+            same_machine = (
+                current_physical_group is not None
+                and current_physical_group["maquina_id"] == transacao.maquina_id
+            )
+            if (
+                current_physical_group is None
+                or not same_machine
+                or str(current_physical_group["metodo"]).lower() != str(metodo).lower()
+                or payment_at - current_physical_group["last_at"] > PHYSICAL_PAYMENT_GROUP_WINDOW
+            ):
+                current_physical_group = {
+                    "ids": [],
+                    "data": payment_at,
+                    "last_at": payment_at,
+                    "valor": 0.0,
+                    "count": 0,
+                    "metodo": metodo,
+                    "maquina_id": transacao.maquina_id,
+                }
+                grouped_physical_payments.append(current_physical_group)
+            current_physical_group["ids"].append(transacao.id)
+            current_physical_group["last_at"] = payment_at
+            current_physical_group["valor"] += float(transacao.valor or 0)
+            current_physical_group["count"] += 1
+
+        for group in grouped_physical_payments:
+            pulse_count = int(group["count"] or 0)
+            valor = float(group["valor"] or 0)
+            vendas.append(
+                {
+                    "id": f"fisico-{'-'.join(str(item_id) for item_id in group['ids'])}",
+                    "kind": "pagamento_fisico",
+                    "is_test": False,
+                    "data": group["data"],
+                    "valor": valor,
+                    "taxa": None,
+                    "total": valor,
+                    "ponto": nomes.get(group["maquina_id"], group["maquina_id"]),
+                    "maquina_id": group["maquina_id"],
+                    "provider": "fisico",
+                    "payment_type": "FISICO",
+                    "card_brand": None,
+                    "bank_name": None,
+                    "provider_payment_id": None,
+                    "pulse_status": "fisico",
+                    "command_id": None,
+                    "situacao": "Pagamento fisico",
+                    "refunded_at": None,
+                    "can_refund": False,
+                    "pulse_count": pulse_count,
+                    "descricao": (
+                        f"Pagamento fisico registrado pela maquina ({pulse_count} pulsos)"
+                        if pulse_count > 1
+                        else "Pagamento fisico registrado pela maquina"
+                    ),
+                }
+            )
+    for item in testes_vendas:
+        vendas.append(
+            {
+                "id": item.id,
+                "kind": "teste",
+                "is_test": True,
+                "data": item.created_at,
+                "valor": float(item.valor or 0),
+                "taxa": None,
+                "total": float(item.valor or 0),
+                "ponto": nomes.get(item.maquina_id, item.maquina_id),
+                "maquina_id": item.maquina_id,
+                "provider": "teste",
+                "payment_type": "TESTE",
+                "card_brand": None,
+                "bank_name": None,
+                "provider_payment_id": None,
+                "pulse_status": item.pulse_status or "teste",
+                "command_id": item.command_id,
+                "situacao": "TESTE",
+                "refunded_at": None,
+                "can_refund": False,
+                "descricao": item.descricao,
+            }
+        )
+    vendas.sort(key=lambda item: item["data"], reverse=True)
+
+    return {
+        "range": {"inicio": start_dt, "fim": end_dt},
+        "maquina": None,
+        "agregado": True,
+        "quantidade_maquinas": len(machine_ids),
+        "resumo": {
+            "total_pagamentos": total_pagamentos,
+            "total_digital": total_digital,
+            "total_fisico": total_fisico,
+            "quantidade_pagamentos": quantidade_pagamentos_reais,
+            "quantidade_testes": len(testes),
+            "quantidade_saidas": len(saidas),
+            "ultimo_pagamento_em": ultimo_pagamento.data_hora if ultimo_pagamento else None,
+            "ultimo_teste_em": ultimo_teste.created_at if ultimo_teste else None,
+            "ultima_saida_em": ultima_saida.data_hora if ultima_saida else None,
+        },
+        "totais_por_dia": [
+            {"dia": dia, "total": round(total, 2)}
+            for dia, total in sorted(totais_por_dia.items(), key=lambda item: datetime.strptime(item[0], "%d/%m/%Y"))
+        ],
+        "pagamentos": [
+            {
+                "id": transacao.id,
+                "maquina_id": transacao.maquina_id,
+                "maquina_nome": nomes.get(transacao.maquina_id, transacao.maquina_id),
+                "tipo": transacao.tipo.value if hasattr(transacao.tipo, "value") else str(transacao.tipo),
+                "metodo": transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo),
+                "valor": float(transacao.valor),
+                "data_hora": transacao.data_hora,
+            }
+            for transacao in pagamentos
+        ],
+        "vendas": vendas,
+        "saidas": [
+            {
+                "id": transacao.id,
+                "maquina_id": transacao.maquina_id,
+                "maquina_nome": nomes.get(transacao.maquina_id, transacao.maquina_id),
+                "tipo": transacao.tipo.value if hasattr(transacao.tipo, "value") else str(transacao.tipo),
+                "metodo": transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo),
+                "valor": float(transacao.valor),
+                "data_hora": transacao.data_hora,
+            }
+            for transacao in saidas
+        ],
+        "testes": [
+            {
+                "id": teste.id,
+                "maquina_id": teste.maquina_id,
+                "maquina_nome": nomes.get(teste.maquina_id, teste.maquina_id),
+                "categoria": teste.categoria,
+                "descricao": teste.descricao,
+                "valor": teste.valor,
+                "created_at": teste.created_at,
+                "pulse_status": teste.pulse_status,
+                "command_id": teste.command_id,
+            }
+            for teste in testes
+        ],
+        "observacoes": [],
+        "eventos_dispositivo": [],
+        "fechamentos": [],
+        "auditoria": [],
+        "timeline": [],
+    }
