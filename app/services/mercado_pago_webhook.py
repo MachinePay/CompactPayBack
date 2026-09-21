@@ -68,6 +68,30 @@ def _resolve_machine_by_mp_location(db, payment_data: dict):
     return None, ids, "sem_match"
 
 
+def _registrar_escuta_automatica(db, terminal_id: str, machine_id: str) -> None:
+    """Grava (ou atualiza) o vinculo terminal fisico -> maquina assim que um
+    pagamento real desse terminal for identificado por loja/caixa - assim a
+    maquininha fica reconhecida sozinha, sem precisar de alguem cadastrar o
+    terminal_id na mao na tela de teste de pagamento. Da' pra rodar de novo
+    sem problema: so atualiza o vinculo se ele mudar."""
+    escuta = db.query(EscutaTerminal).filter(EscutaTerminal.terminal_id == terminal_id).first()
+    if escuta:
+        if escuta.maquina_id != machine_id or not escuta.ativo:
+            escuta.maquina_id = machine_id
+            escuta.ativo = True
+            escuta.updated_at = datetime.utcnow()
+        return
+    db.add(
+        EscutaTerminal(
+            terminal_id=terminal_id,
+            maquina_id=machine_id,
+            ativo=True,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+    )
+
+
 def processar_callback_mercado_pago(dados: dict):
     print(f"[MP webhook] payload={dados}")
 
@@ -287,6 +311,8 @@ def processar_callback_mercado_pago(dados: dict):
                     print(
                         f"[MP webhook] payment vinculado por caixa/loja payment_id={payment_id} maquina={machine_id} ids={mp_location_ids}"
                     )
+                    if terminal_id:
+                        _registrar_escuta_automatica(db, terminal_id, machine_id)
                 elif terminal_id:
                     print(
                         f"[MP webhook] payment ignorado: terminal sem escuta ativa e sem match de caixa/loja terminal_id={terminal_id} payment_id={payment_id} motivo={match_reason} ids={mp_location_ids}"
