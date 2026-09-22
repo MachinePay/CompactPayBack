@@ -304,7 +304,20 @@ def process_due_command_retries() -> int:
             )
             .all()
         )
+        # command_id + ja_sem_resposta sao colhidos aqui, dentro da sessao que
+        # tem o objeto ComandoMaquina carregado, mas o aviso pro pulse_status
+        # (update_pulse_status) so roda DEPOIS do commit abaixo - ele abre a
+        # propria sessao e pode disparar estorno automatico via Mercado Pago,
+        # que nao devia ficar preso na mesma transacao que fecha os comandos.
+        comandos_sem_resposta = []
         for comando in expired:
+            # ack_at so e' setado quando a placa manda QUALQUER retorno (nem
+            # que seja so CMD_RECEBIDO). Ficar sem ack_at depois de esgotar as
+            # tentativas de reenvio significa que a placa nunca chegou a
+            # receber o comando (offline o tempo todo) - diferente de ter
+            # recebido e parado no meio, que fica ambiguo e nao entra aqui.
+            if comando.tipo == CREDIT_COMMAND_TIPO and not comando.ack_at:
+                comandos_sem_resposta.append(comando.command_id)
             comando.status = "falhou"
             comando.detalhe_status = "retry_esgotado"
             comando.finished_at = _now()
@@ -312,6 +325,12 @@ def process_due_command_retries() -> int:
             comando.next_retry_at = None
         if expired:
             db.commit()
+
+        if comandos_sem_resposta:
+            from app.services.pulse_tracking import update_pulse_status
+
+            for command_id in comandos_sem_resposta:
+                update_pulse_status(command_id, "falha_dispositivo_offline")
     finally:
         db.close()
     return processed

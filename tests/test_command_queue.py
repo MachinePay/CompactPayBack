@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
-from app.models.models import ComandoMaquina
+from app.models.models import Cliente, ComandoMaquina, HistoricoOperacao, Maquina, VendaPagamento
 import app.models.models  # noqa: F401
 import app.models.produto  # noqa: F401
 from app.services.command_queue import (
@@ -201,3 +201,98 @@ def test_final_status_is_not_downgraded_by_late_events():
     update_command_from_device_status("cmd-final-guard", "CMD_RECEBIDO")
     comando = _get_comando("cmd-final-guard")
     assert comando.status == "executado"
+
+
+def test_credit_command_with_zero_response_marks_pulse_offline_and_auto_refunds():
+    # Placa nunca manda nem um CMD_RECEBIDO (ack_at continua None) depois de
+    # esgotar as tentativas de reenvio - diferente de "recebeu e nao
+    # confirmou o pulso final", aqui da pra ter certeza que o pulso fisico
+    # nunca aconteceu, entao o estorno automatico tem que disparar sozinho.
+    db = SessionLocal()
+    try:
+        cliente = Cliente(
+            nome_empresa="Cliente Teste Offline",
+            email_contato="offline@teste.com",
+            api_key="api-key-offline-teste",
+            mp_access_token="TOKEN-TESTE-OFFLINE",
+        )
+        db.add(cliente)
+        db.flush()
+
+        maquina = Maquina(id_hardware="CPM-QUEUE-OFFLINE", cliente_id=cliente.id, nome_local="Maquina Offline")
+        db.add(maquina)
+        db.flush()
+
+        historico = HistoricoOperacao(
+            maquina_id=maquina.id_hardware,
+            categoria="PAGAMENTO",
+            descricao="Pagamento maquininha aprovado (payment_id=pay-offline-1)",
+            valor=5.0,
+            provider="mercado_pago",
+            provider_payment_id="pay-offline-1",
+            pulse_status="pulso_iniciado",
+            command_id="cmd-offline-1",
+        )
+        db.add(historico)
+        db.flush()
+
+        venda = VendaPagamento(
+            maquina_id=maquina.id_hardware,
+            historico_id=historico.id,
+            origem="pix",
+            provider="mercado_pago",
+            provider_payment_id="pay-offline-1",
+            valor_bruto=5.0,
+            valor_liquido=5.0,
+            status_pulso="pulso_iniciado",
+            command_id="cmd-offline-1",
+        )
+        db.add(venda)
+
+        comando = ComandoMaquina(
+            command_id="cmd-offline-1",
+            maquina_id=maquina.id_hardware,
+            tipo="paid",
+            topic="/TEF/CPM-QUEUE-OFFLINE/cmd",
+            payload="CPM-QUEUE-OFFLINE@paid|cmd=cmd-offline-1|",
+            status="aguardando_retry",
+            tentativas=MAX_ATTEMPTS,
+            max_tentativas=MAX_ATTEMPTS,
+            ack_at=None,
+            next_retry_at=datetime.utcnow() - timedelta(seconds=1),
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        )
+        db.add(comando)
+        db.commit()
+    finally:
+        db.close()
+
+    with patch("app.services.mqtt_commands.publish_raw_mqtt_command") as publish_mock, patch(
+        "app.services.pagamentos_helpers.mp_request"
+    ) as mp_request_mock:
+        process_due_command_retries()
+
+    publish_mock.assert_not_called()
+    assert mp_request_mock.call_count == 1
+    called_url = mp_request_mock.call_args.args[1]
+    assert "pay-offline-1/refunds" in called_url
+
+    comando = _get_comando("cmd-offline-1")
+    assert comando.status == "falhou"
+    assert comando.detalhe_status == "retry_esgotado"
+
+    db = SessionLocal()
+    try:
+        historico = (
+            db.query(HistoricoOperacao)
+            .filter(HistoricoOperacao.command_id == "cmd-offline-1")
+            .first()
+        )
+        venda = db.query(VendaPagamento).filter(VendaPagamento.command_id == "cmd-offline-1").first()
+        assert historico.pulse_status == "falha_dispositivo_offline"
+        assert historico.refunded_at is not None
+        assert venda.status_pulso == "falha_dispositivo_offline"
+        assert venda.refunded_at is not None
+    finally:
+        db.close()

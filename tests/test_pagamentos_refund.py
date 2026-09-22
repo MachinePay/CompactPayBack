@@ -8,6 +8,9 @@ def test_non_released_pulse_requires_auto_refund():
     assert should_auto_refund_on_pulse_failure("falha_cmd_ignorado") is True
     assert should_auto_refund_on_pulse_failure("falha_bloqueado") is True
     assert should_auto_refund_on_pulse_failure("saldo_pendente") is True
+    # Placa nunca respondeu nada (nem CMD_RECEBIDO) - da pra ter certeza que o
+    # pulso fisico nunca aconteceu, entao entra no estorno automatico.
+    assert should_auto_refund_on_pulse_failure("falha_dispositivo_offline") is True
     assert should_auto_refund_on_pulse_failure("pulso_confirmado") is False
 
 

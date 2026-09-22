@@ -14,6 +14,12 @@ NON_RELEASED_PULSE_STATUSES = {
     "falha_cmd_ignorado",
     "falha_bloqueado",
     "saldo_pendente",
+    # A placa nunca respondeu nada (nem CMD_RECEBIDO) depois de todas as
+    # tentativas de reenvio via MQTT - diferente dos status "ambiguos" abaixo,
+    # aqui da' pra ter certeza que o pulso fisico nunca chegou a acontecer
+    # (o codigo que aciona o rele so roda depois de CMD_RECEBIDO), entao e'
+    # seguro estornar sozinho.
+    "falha_dispositivo_offline",
 }
 
 # Status que so indicam falta de confirmacao (o comando pode ter sido enviado

@@ -956,6 +956,7 @@ PULSE_ABSENT_STATUSES = {
     "falha_publicacao",
     "falha_cmd_ignorado",
     "falha_bloqueado",
+    "falha_dispositivo_offline",
     "pulso_sem_retorno",
 }
 
