@@ -1939,18 +1939,47 @@ def build_all_machines_history_payload(
         else []
     )
 
-    resumo_faturamento = real_revenue_breakdown(db, machine_ids, start_dt, end_dt)
-    total_pagamentos = resumo_faturamento["total"]
-    total_digital = resumo_faturamento["digital"]
-    total_fisico = resumo_faturamento["fisico"]
-    total_devolvido = resumo_faturamento["devolvido"]
-    quantidade_pagamentos_reais = resumo_faturamento["count"]
+    # Cada maquina pode ter seu proprio ultimo fechamento - nao da pra usar um
+    # unico "effective_start_dt" para todas. Agrupa as maquinas que
+    # compartilham a mesma data de corte para nao fazer uma query por
+    # maquina a toa.
+    ultimos_fechamentos = _ultimo_fechamento_fim_por_maquina(db, machine_ids)
+
+    def _effective_start_for(machine_id: str) -> datetime:
+        fim = ultimos_fechamentos.get(machine_id)
+        return max(start_dt, fim) if fim else start_dt
+
+    def _is_fechado(machine_id: str, quando: datetime) -> bool:
+        fim = ultimos_fechamentos.get(machine_id)
+        return bool(fim and quando <= fim)
+
+    grupos_por_effective_start: dict[datetime, list[str]] = {}
+    for machine_id in machine_ids:
+        grupos_por_effective_start.setdefault(_effective_start_for(machine_id), []).append(machine_id)
+
+    total_pagamentos = 0.0
+    total_digital = 0.0
+    total_fisico = 0.0
+    total_devolvido = 0.0
+    quantidade_pagamentos_reais = 0
+    for effective_start, ids_do_grupo in grupos_por_effective_start.items():
+        resumo_faturamento = real_revenue_breakdown(db, ids_do_grupo, effective_start, end_dt)
+        total_pagamentos += resumo_faturamento["total"]
+        total_digital += resumo_faturamento["digital"]
+        total_fisico += resumo_faturamento["fisico"]
+        total_devolvido += resumo_faturamento["devolvido"]
+        quantidade_pagamentos_reais += resumo_faturamento["count"]
+
     ultimo_pagamento = pagamentos[0] if pagamentos else None
     ultimo_teste = testes[0] if testes else None
     ultima_saida = saidas[0] if saidas else None
+    testes_pos_fechamento = [item for item in testes if item.created_at >= _effective_start_for(item.maquina_id)]
+    saidas_pos_fechamento = [item for item in saidas if item.data_hora >= _effective_start_for(item.maquina_id)]
 
     totais_por_dia = {}
     for pagamento in pagamentos:
+        if pagamento.data_hora < _effective_start_for(pagamento.maquina_id):
+            continue
         dia = pagamento.data_hora.strftime("%d/%m/%Y")
         totais_por_dia[dia] = totais_por_dia.get(dia, 0.0) + float(pagamento.valor or 0)
 
@@ -2092,6 +2121,8 @@ def build_all_machines_history_payload(
             }
         )
     vendas.sort(key=lambda item: item["data"], reverse=True)
+    for venda in vendas:
+        venda["fechado"] = _is_fechado(venda["maquina_id"], venda["data"])
 
     return {
         "range": {"inicio": start_dt, "fim": end_dt},
@@ -2104,8 +2135,8 @@ def build_all_machines_history_payload(
             "total_fisico": total_fisico,
             "total_devolvido": total_devolvido,
             "quantidade_pagamentos": quantidade_pagamentos_reais,
-            "quantidade_testes": len(testes),
-            "quantidade_saidas": len(saidas),
+            "quantidade_testes": len(testes_pos_fechamento),
+            "quantidade_saidas": len(saidas_pos_fechamento),
             "ultimo_pagamento_em": ultimo_pagamento.data_hora if ultimo_pagamento else None,
             "ultimo_teste_em": ultimo_teste.created_at if ultimo_teste else None,
             "ultima_saida_em": ultima_saida.data_hora if ultima_saida else None,
@@ -2123,6 +2154,7 @@ def build_all_machines_history_payload(
                 "metodo": transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo),
                 "valor": float(transacao.valor),
                 "data_hora": transacao.data_hora,
+                "fechado": _is_fechado(transacao.maquina_id, transacao.data_hora),
             }
             for transacao in pagamentos
         ],
@@ -2136,6 +2168,7 @@ def build_all_machines_history_payload(
                 "metodo": transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo),
                 "valor": float(transacao.valor),
                 "data_hora": transacao.data_hora,
+                "fechado": _is_fechado(transacao.maquina_id, transacao.data_hora),
             }
             for transacao in saidas
         ],
@@ -2150,6 +2183,7 @@ def build_all_machines_history_payload(
                 "created_at": teste.created_at,
                 "pulse_status": teste.pulse_status,
                 "command_id": teste.command_id,
+                "fechado": _is_fechado(teste.maquina_id, teste.created_at),
             }
             for teste in testes
         ],
