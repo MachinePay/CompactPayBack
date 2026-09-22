@@ -146,14 +146,18 @@ def real_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime,
 
 def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
     if not machine_ids:
-        return {"total": 0.0, "digital": 0.0, "fisico": 0.0, "count": 0}
+        return {"total": 0.0, "digital": 0.0, "fisico": 0.0, "count": 0, "devolvido": 0.0}
 
-    vendas_query = db.query(VendaPagamento).filter(
+    vendas_base_query = db.query(VendaPagamento).filter(
         VendaPagamento.maquina_id.in_(machine_ids),
         VendaPagamento.created_at >= start_dt,
         VendaPagamento.created_at <= end_dt,
         VendaPagamento.conta_faturamento.is_(True),
     )
+    # O total (e o digital/fisico/count derivados dele) so soma vendas que
+    # NAO foram devolvidas - estorno tem que descontar do faturamento, nao
+    # continuar contando como se o dinheiro ainda estivesse com a gente.
+    vendas_query = vendas_base_query.filter(VendaPagamento.refunded_at.is_(None))
     vendas_total = float(vendas_query.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0)
     vendas_fisicas = float(
         vendas_query.filter(or_(VendaPagamento.origem == "fisico", VendaPagamento.provider == "fisico"))
@@ -168,13 +172,30 @@ def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: dateti
         .scalar()
         or 0
     )
+    vendas_devolvidas = float(
+        vendas_base_query.filter(VendaPagamento.refunded_at.isnot(None))
+        .with_entities(func.sum(VendaPagamento.valor_liquido))
+        .scalar()
+        or 0.0
+    )
 
     historicos_com_venda = db.query(VendaPagamento.historico_id).filter(VendaPagamento.historico_id.isnot(None))
     digital_legado_query = real_payment_history_query(db, machine_ids, start_dt, end_dt).filter(
-        ~HistoricoOperacao.id.in_(historicos_com_venda)
+        ~HistoricoOperacao.id.in_(historicos_com_venda),
+        HistoricoOperacao.refunded_at.is_(None),
     )
     digital_legado = float(digital_legado_query.with_entities(func.sum(HistoricoOperacao.valor)).scalar() or 0.0)
     digital_legado_count = digital_legado_query.with_entities(func.count(HistoricoOperacao.id)).scalar() or 0
+    digital_legado_devolvido = float(
+        real_payment_history_query(db, machine_ids, start_dt, end_dt)
+        .filter(
+            ~HistoricoOperacao.id.in_(historicos_com_venda),
+            HistoricoOperacao.refunded_at.isnot(None),
+        )
+        .with_entities(func.sum(HistoricoOperacao.valor))
+        .scalar()
+        or 0.0
+    )
 
     transacoes_com_venda = db.query(VendaPagamento.transacao_id).filter(VendaPagamento.transacao_id.isnot(None))
     fisico_legado_query = db.query(Transacao).filter(
@@ -195,6 +216,7 @@ def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: dateti
         "digital": total_digital,
         "fisico": total_fisico,
         "count": int(vendas_count or 0) + int(digital_legado_count or 0) + int(fisico_legado_count or 0),
+        "devolvido": vendas_devolvidas + digital_legado_devolvido,
     }
 
 
@@ -313,6 +335,10 @@ def compute_financial_summary_by_machine(
             VendaPagamento.created_at >= start_dt,
             VendaPagamento.created_at <= end_dt,
             VendaPagamento.conta_faturamento.is_(True),
+            # Venda devolvida nao entra no faturamento - o valor ja saiu da
+            # nossa mao. O total estornado continua contabilizado a parte
+            # (estornos_valor), so nao soma aqui.
+            VendaPagamento.refunded_at.is_(None),
         )
         .all()
     )
@@ -329,7 +355,10 @@ def compute_financial_summary_by_machine(
     historicos_com_venda = db.query(VendaPagamento.historico_id).filter(VendaPagamento.historico_id.isnot(None))
     digital_legado_rows = (
         real_payment_history_query(db, machine_ids, start_dt, end_dt)
-        .filter(~HistoricoOperacao.id.in_(historicos_com_venda))
+        .filter(
+            ~HistoricoOperacao.id.in_(historicos_com_venda),
+            HistoricoOperacao.refunded_at.is_(None),
+        )
         .with_entities(HistoricoOperacao.maquina_id, HistoricoOperacao.valor)
         .all()
     )
@@ -1390,6 +1419,7 @@ def build_machine_history_payload(
     total_pagamentos = resumo_faturamento["total"]
     total_digital = resumo_faturamento["digital"]
     total_fisico = resumo_faturamento["fisico"]
+    total_devolvido = resumo_faturamento["devolvido"]
     quantidade_pagamentos_reais = resumo_faturamento["count"]
     ultimo_pagamento = pagamentos[0] if pagamentos else None
     ultimo_teste = testes[0] if testes else None
@@ -1683,6 +1713,7 @@ def build_machine_history_payload(
             "total_pagamentos": total_pagamentos,
             "total_digital": total_digital,
             "total_fisico": total_fisico,
+            "total_devolvido": total_devolvido,
             "quantidade_pagamentos": quantidade_pagamentos_reais,
             "quantidade_testes": len(testes_pos_fechamento),
             "quantidade_saidas": len(saidas_pos_fechamento),
@@ -1826,6 +1857,7 @@ def build_all_machines_history_payload(
             "total_pagamentos": 0.0,
             "total_digital": 0.0,
             "total_fisico": 0.0,
+            "total_devolvido": 0.0,
             "quantidade_pagamentos": 0,
             "quantidade_testes": 0,
             "quantidade_saidas": 0,
@@ -1905,6 +1937,7 @@ def build_all_machines_history_payload(
     total_pagamentos = resumo_faturamento["total"]
     total_digital = resumo_faturamento["digital"]
     total_fisico = resumo_faturamento["fisico"]
+    total_devolvido = resumo_faturamento["devolvido"]
     quantidade_pagamentos_reais = resumo_faturamento["count"]
     ultimo_pagamento = pagamentos[0] if pagamentos else None
     ultimo_teste = testes[0] if testes else None
@@ -2063,6 +2096,7 @@ def build_all_machines_history_payload(
             "total_pagamentos": total_pagamentos,
             "total_digital": total_digital,
             "total_fisico": total_fisico,
+            "total_devolvido": total_devolvido,
             "quantidade_pagamentos": quantidade_pagamentos_reais,
             "quantidade_testes": len(testes),
             "quantidade_saidas": len(saidas),
