@@ -1082,6 +1082,11 @@ def recent_terminal_payment_status(db: Session, machine_id: str) -> dict:
         flags=re.IGNORECASE,
     )
     terminal_id = match.group(1) if match else None
+    # Pagamentos sem maquininha fisica (ex.: Pix via QR code) tem essa
+    # descricao gravada com "terminal_id=n/a" (placeholder, nao um ID de
+    # verdade) - nao pode aparecer como se fosse o ID da maquininha.
+    if terminal_id and terminal_id.strip().lower() in {"n/a", "na", "null", "none", "undefined", "-"}:
+        terminal_id = None
     is_recent = bool(
         terminal_payment.created_at
         and datetime.utcnow() - terminal_payment.created_at < TERMINAL_PAYMENT_ONLINE_WINDOW

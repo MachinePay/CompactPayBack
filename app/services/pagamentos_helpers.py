@@ -150,6 +150,9 @@ def parse_machine_id_from_external_reference(external_reference: str | None) -> 
     return external_reference.strip() or None
 
 
+INVALID_TERMINAL_ID_VALUES = {"n/a", "na", "null", "none", "undefined", "-"}
+
+
 def extract_terminal_id(payload: dict) -> str | None:
     candidates = [
         ((payload.get("point_of_interaction") or {}).get("transaction_data") or {}).get("terminal_id"),
@@ -158,8 +161,16 @@ def extract_terminal_id(payload: dict) -> str | None:
         payload.get("terminal_id"),
     ]
     for candidate in candidates:
-        if candidate:
-            return str(candidate).strip()
+        if not candidate:
+            continue
+        normalized = str(candidate).strip()
+        # Pix via QR code (sem maquininha fisica) vem do Mercado Pago com um
+        # placeholder tipo "N/A" nesse campo em vez de vir vazio - sem esse
+        # filtro, esse texto era aceito como se fosse um terminal_id de
+        # verdade e ficava salvo/exibido no lugar do ID da maquininha.
+        if normalized.lower() in INVALID_TERMINAL_ID_VALUES:
+            continue
+        return normalized
     return None
 
 

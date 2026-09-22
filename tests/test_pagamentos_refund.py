@@ -1,6 +1,23 @@
 from datetime import datetime
 
-from app.services.pagamentos_helpers import should_allow_refund, should_auto_refund_on_pulse_failure
+from app.services.pagamentos_helpers import (
+    extract_terminal_id,
+    should_allow_refund,
+    should_auto_refund_on_pulse_failure,
+)
+
+
+def test_extract_terminal_id_rejects_mercado_pago_placeholder():
+    # Pix via QR code (sem maquininha fisica) vem do Mercado Pago com um
+    # placeholder tipo "N/A" nesse campo em vez de vir vazio - nao pode ser
+    # aceito como se fosse um terminal_id de verdade.
+    assert extract_terminal_id({"point_of_interaction": {"transaction_data": {"terminal_id": "N/A"}}}) is None
+    assert extract_terminal_id({"terminal_id": "n/a"}) is None
+    assert extract_terminal_id({"terminal_id": "null"}) is None
+    assert (
+        extract_terminal_id({"point_of_interaction": {"transaction_data": {"terminal_id": "Q92-123456"}}})
+        == "Q92-123456"
+    )
 
 
 def test_non_released_pulse_requires_auto_refund():
