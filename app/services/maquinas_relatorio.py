@@ -1071,6 +1071,24 @@ def status_operacional(status_online: bool, ultima_atividade_em: datetime | None
     return "operando"
 
 
+def _ultimo_fechamento_fim_por_maquina(db: Session, machine_ids: list[str]) -> dict[str, datetime]:
+    """Data/hora do fim do fechamento mais recente de cada maquina (se houver
+    algum). Usado para "zerar" os totais mostrados apos um fechamento: o
+    periodo filtrado (dia/mes/intervalo) continua sendo respeitado, mas se um
+    fechamento aconteceu dentro dele, os totais passam a contar so a partir
+    dali - igual um fechamento de caixa de verdade. Os registros em si
+    continuam no historico (so ficam marcados como ja fechados)."""
+    if not machine_ids:
+        return {}
+    rows = (
+        db.query(FechamentoMaquina.maquina_id, func.max(FechamentoMaquina.periodo_fim))
+        .filter(FechamentoMaquina.maquina_id.in_(machine_ids))
+        .group_by(FechamentoMaquina.maquina_id)
+        .all()
+    )
+    return dict(rows)
+
+
 def serialize_machine_summary(
     db: Session,
     maquina: Maquina,
@@ -1081,7 +1099,9 @@ def serialize_machine_summary(
     agora = datetime.utcnow()
     status_online = bool(maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
-    faturamento, _ = real_revenue_totals(db, [maquina.id_hardware], start_dt, end_dt)
+    ultimo_fechamento_fim = _ultimo_fechamento_fim_por_maquina(db, [maquina.id_hardware]).get(maquina.id_hardware)
+    effective_start_dt = max(start_dt, ultimo_fechamento_fim) if ultimo_fechamento_fim else start_dt
+    faturamento, _ = real_revenue_totals(db, [maquina.id_hardware], effective_start_dt, end_dt)
     ultimo_pagamento_em = (
         db.query(func.max(Transacao.data_hora))
         .filter(
@@ -1107,7 +1127,7 @@ def serialize_machine_summary(
         .filter(
             Transacao.maquina_id == maquina.id_hardware,
             transacao_tipo_out_filter(),
-            Transacao.data_hora >= start_dt,
+            Transacao.data_hora >= effective_start_dt,
             Transacao.data_hora <= end_dt,
         )
         .scalar()
@@ -1192,6 +1212,27 @@ def serialize_machines_summary_batch(
     faturamento_por_maquina = compute_financial_summary_by_machine(db, machine_ids, start_dt, end_dt)
     transacoes_por_maquina = transacao_summary_by_machine(db, machine_ids, start_dt, end_dt)
     testes_por_maquina = latest_teste_at_by_machine(db, machine_ids, start_dt, end_dt)
+
+    # Maquinas que tiveram um fechamento dentro do periodo filtrado: os
+    # totais (faturamento, quantidade de saidas) passam a contar so a partir
+    # do fim desse fechamento, nao do inicio do periodo. So refaz a consulta
+    # para essas (geralmente poucas), nao para a listagem toda.
+    ultimos_fechamentos = _ultimo_fechamento_fim_por_maquina(db, machine_ids)
+    maquinas_com_fechamento_no_periodo = {
+        maquina_id: fim
+        for maquina_id, fim in ultimos_fechamentos.items()
+        if fim and fim > start_dt
+    }
+    for maquina_id, fim in maquinas_com_fechamento_no_periodo.items():
+        effective_start = max(start_dt, fim)
+        faturamento_ajustado = compute_financial_summary_by_machine(db, [maquina_id], effective_start, end_dt)
+        if maquina_id in faturamento_ajustado:
+            faturamento_por_maquina[maquina_id] = faturamento_ajustado[maquina_id]
+        transacoes_ajustadas = transacao_summary_by_machine(db, [maquina_id], effective_start, end_dt)
+        if maquina_id in transacoes_ajustadas:
+            transacoes_por_maquina.setdefault(
+                maquina_id, {"ultimo_pagamento_em": None, "ultima_saida_em": None, "quantidade_saidas": 0}
+            )["quantidade_saidas"] = transacoes_ajustadas[maquina_id]["quantidade_saidas"]
 
     houve_commit_pendente = False
     resultado = []
@@ -1296,6 +1337,8 @@ def build_machine_history_payload(
     saidas = transacoes_query.filter(transacao_tipo_out_filter()).order_by(Transacao.data_hora.desc()).all()
 
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
+    ultimo_fechamento_fim = _ultimo_fechamento_fim_por_maquina(db, [machine_id]).get(machine_id)
+    effective_start_dt = max(start_dt, ultimo_fechamento_fim) if ultimo_fechamento_fim else start_dt
     testes_query = db.query(HistoricoOperacao).filter(
         HistoricoOperacao.maquina_id == machine_id,
         HistoricoOperacao.categoria == "TESTE",
@@ -1343,7 +1386,7 @@ def build_machine_history_payload(
         else []
     )
 
-    resumo_faturamento = real_revenue_breakdown(db, [machine_id], start_dt, end_dt)
+    resumo_faturamento = real_revenue_breakdown(db, [machine_id], effective_start_dt, end_dt)
     total_pagamentos = resumo_faturamento["total"]
     total_digital = resumo_faturamento["digital"]
     total_fisico = resumo_faturamento["fisico"]
@@ -1351,9 +1394,13 @@ def build_machine_history_payload(
     ultimo_pagamento = pagamentos[0] if pagamentos else None
     ultimo_teste = testes[0] if testes else None
     ultima_saida = saidas[0] if saidas else None
+    saidas_pos_fechamento = [item for item in saidas if item.data_hora >= effective_start_dt]
+    testes_pos_fechamento = [item for item in testes if item.created_at >= effective_start_dt]
 
     totais_por_dia = {}
     for pagamento in pagamentos:
+        if pagamento.data_hora < effective_start_dt:
+            continue
         dia = pagamento.data_hora.strftime("%d/%m/%Y")
         totais_por_dia[dia] = totais_por_dia.get(dia, 0.0) + float(pagamento.valor or 0)
 
@@ -1557,6 +1604,8 @@ def build_machine_history_payload(
             }
         )
     vendas.sort(key=lambda item: item["data"], reverse=True)
+    for venda in vendas:
+        venda["fechado"] = bool(ultimo_fechamento_fim and venda["data"] <= ultimo_fechamento_fim)
 
     status_online = bool(maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
     terminal_status = get_active_terminal_for_machine(
@@ -1635,11 +1684,12 @@ def build_machine_history_payload(
             "total_digital": total_digital,
             "total_fisico": total_fisico,
             "quantidade_pagamentos": quantidade_pagamentos_reais,
-            "quantidade_testes": len(testes),
-            "quantidade_saidas": len(saidas),
+            "quantidade_testes": len(testes_pos_fechamento),
+            "quantidade_saidas": len(saidas_pos_fechamento),
             "ultimo_pagamento_em": ultimo_pagamento.data_hora if ultimo_pagamento else None,
             "ultimo_teste_em": ultimo_teste.created_at if ultimo_teste else None,
             "ultima_saida_em": ultima_saida.data_hora if ultima_saida else None,
+            "ultimo_fechamento_em": ultimo_fechamento_fim,
         },
         "totais_por_dia": [
             {"dia": dia, "total": round(total, 2)}
@@ -1654,6 +1704,7 @@ def build_machine_history_payload(
                 "metodo": transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo),
                 "valor": float(transacao.valor),
                 "data_hora": transacao.data_hora,
+                "fechado": bool(ultimo_fechamento_fim and transacao.data_hora <= ultimo_fechamento_fim),
             }
             for transacao in pagamentos
         ],
@@ -1667,6 +1718,7 @@ def build_machine_history_payload(
                 "metodo": transacao.metodo.value if hasattr(transacao.metodo, "value") else str(transacao.metodo),
                 "valor": float(transacao.valor),
                 "data_hora": transacao.data_hora,
+                "fechado": bool(ultimo_fechamento_fim and transacao.data_hora <= ultimo_fechamento_fim),
             }
             for transacao in saidas
         ],
@@ -1680,6 +1732,7 @@ def build_machine_history_payload(
                 "created_at": teste.created_at,
                 "pulse_status": teste.pulse_status,
                 "command_id": teste.command_id,
+                "fechado": bool(ultimo_fechamento_fim and teste.created_at <= ultimo_fechamento_fim),
             }
             for teste in testes
         ],
