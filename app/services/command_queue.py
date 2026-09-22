@@ -12,6 +12,15 @@ from app.models.models import ComandoMaquina
 ACK_TIMEOUT_SECONDS = 4
 RETRY_DELAY_SECONDS = 4
 MAX_ATTEMPTS = 3
+# Tempo sem NENHUM evento novo da placa (nem um PULSO_NAO_CONFIRMADO) pra
+# considerar um comando "executando" como travado. Uma vez que a placa manda
+# qualquer resposta (ack_at fica setado), o comando sai do RETRYABLE_STATUSES
+# e o loop de retry para de olhar pra ele - se o status agregado final
+# (PULSOS_CONCLUIDOS/PULSOS_ENVIADOS_SEM_RETORNO) nunca chegar depois disso
+# (placa reiniciou, perdeu WiFi no meio da sequencia de pulsos, etc.), sem
+# isso aqui o comando ficava "executando" pra sempre - travando inclusive
+# qualquer credito novo pra mesma maquina (_machine_has_in_flight_credit_command).
+STUCK_EXECUTANDO_TIMEOUT_SECONDS = 45
 
 FINAL_COMMAND_STATUSES = {"executado", "falhou", "cancelado"}
 RETRYABLE_STATUSES = {"pendente", "enviado", "aguardando_retry", "falha_publicacao"}
@@ -339,6 +348,46 @@ def process_due_command_retries() -> int:
 
             for command_id in comandos_sem_resposta:
                 update_pulse_status(command_id, "falha_dispositivo_offline")
+
+        # Comando que a placa chegou a responder (ack_at setado, status virou
+        # "executando"), mas nunca mandou o status agregado final - fica
+        # parado ali pra sempre sem isso. Diferente do caso "sem_resposta"
+        # acima, aqui a placa recebeu e processou pelo menos uma parte da
+        # sequencia, entao NAO da pra ter certeza que o pulso fisico nao
+        # aconteceu - vira "falha_sem_confirmacao" (revisao manual, sem
+        # estorno automatico), igual quando a placa recebe e para no meio.
+        stuck_cutoff = _now() - timedelta(seconds=STUCK_EXECUTANDO_TIMEOUT_SECONDS)
+        stuck = (
+            db.query(ComandoMaquina)
+            .filter(
+                ComandoMaquina.status == "executando",
+                ComandoMaquina.updated_at <= stuck_cutoff,
+            )
+            .all()
+        )
+        comandos_travados = []
+        for comando in stuck:
+            comando.status = "falhou"
+            if comando.tipo == CREDIT_COMMAND_TIPO:
+                comandos_travados.append(comando.command_id)
+                # "falha_sem_confirmacao" ja e' um pulse_status existente e
+                # mapeado em _status_from_pulse_status - a chamada a
+                # update_pulse_status logo abaixo vai reescrever esse
+                # detalhe_status igual a esse valor de qualquer forma.
+                comando.detalhe_status = "falha_sem_confirmacao"
+            else:
+                comando.detalhe_status = "travado_sem_status_final"
+            comando.finished_at = _now()
+            comando.updated_at = _now()
+            comando.next_retry_at = None
+        if stuck:
+            db.commit()
+
+        if comandos_travados:
+            from app.services.pulse_tracking import update_pulse_status
+
+            for command_id in comandos_travados:
+                update_pulse_status(command_id, "falha_sem_confirmacao")
     finally:
         db.close()
     return processed

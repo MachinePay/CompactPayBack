@@ -317,6 +317,84 @@ def test_credit_command_with_zero_response_marks_pulse_offline_and_auto_refunds(
     assert comando.status == "falhou"
     assert comando.detalhe_status == "retry_esgotado"
 
+
+def test_command_stuck_executando_without_final_status_becomes_falha_sem_confirmacao():
+    # Placa manda pelo menos um evento (ack_at fica setado, comando vira
+    # "executando"), mas nunca manda o status agregado final (PULSOS_CONCLUIDOS
+    # ou PULSOS_ENVIADOS_SEM_RETORNO) - reiniciou ou perdeu WiFi no meio da
+    # sequencia de pulsos. Sem deteccao de "travado", isso ficava preso em
+    # "executando" pra sempre (e bloqueava qualquer credito novo pra mesma
+    # maquina). Diferente do caso "zero resposta", aqui NAO da pra ter certeza
+    # que o pulso fisico nao aconteceu - entao nao pode estornar sozinho.
+    db = SessionLocal()
+    try:
+        cliente = Cliente(
+            nome_empresa="Cliente Teste Travado",
+            email_contato="travado@teste.com",
+            api_key="api-key-travado-teste",
+            mp_access_token="TOKEN-TESTE-TRAVADO",
+        )
+        db.add(cliente)
+        db.flush()
+
+        maquina = Maquina(id_hardware="CPM-QUEUE-TRAVADO", cliente_id=cliente.id, nome_local="Maquina Travada")
+        db.add(maquina)
+        db.flush()
+
+        historico = HistoricoOperacao(
+            maquina_id=maquina.id_hardware,
+            categoria="TESTE",
+            descricao="Pulso de teste",
+            valor=2.0,
+            pulse_status="pulso_unitario",
+            command_id="cmd-travado-1",
+        )
+        db.add(historico)
+        db.flush()
+
+        comando = ComandoMaquina(
+            command_id="cmd-travado-1",
+            maquina_id=maquina.id_hardware,
+            tipo="paid",
+            topic="/TEF/CPM-QUEUE-TRAVADO/cmd",
+            payload="CPM-QUEUE-TRAVADO@paid|cmd=cmd-travado-1|",
+            status="executando",
+            detalhe_status="PULSO_CONFIRMADO",
+            tentativas=1,
+            max_tentativas=MAX_ATTEMPTS,
+            ack_at=datetime.utcnow() - timedelta(seconds=50),
+            next_retry_at=None,
+            created_at=datetime.utcnow() - timedelta(seconds=50),
+            updated_at=datetime.utcnow() - timedelta(seconds=50),
+        )
+        db.add(comando)
+        db.commit()
+    finally:
+        db.close()
+
+    with patch("app.services.mqtt_commands.publish_raw_mqtt_command") as publish_mock, patch(
+        "app.services.pagamentos_helpers.mp_request"
+    ) as mp_request_mock:
+        process_due_command_retries()
+
+    publish_mock.assert_not_called()
+    mp_request_mock.assert_not_called()
+
+    comando = _get_comando("cmd-travado-1")
+    assert comando.status == "falhou"
+    assert comando.detalhe_status == "falha_sem_confirmacao"
+
+    db = SessionLocal()
+    try:
+        historico = (
+            db.query(HistoricoOperacao)
+            .filter(HistoricoOperacao.command_id == "cmd-travado-1")
+            .first()
+        )
+        assert historico.pulse_status == "falha_sem_confirmacao"
+    finally:
+        db.close()
+
     db = SessionLocal()
     try:
         historico = (
