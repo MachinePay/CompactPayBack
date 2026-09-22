@@ -182,6 +182,41 @@ def test_update_command_from_device_status_tracks_ack_and_final_state():
     assert comando.next_retry_at is None
 
 
+def test_pulso_nao_confirmado_does_not_finalize_command_as_falhou():
+    # Maquina sem o fio do contador ligado manda PULSO_NAO_CONFIRMADO pra
+    # CADA pulso da sequencia (nenhum confirma na volta), mas sempre termina
+    # mandando o status agregado real. PULSO_NAO_CONFIRMADO sozinho nao pode
+    # finalizar o comando como falha - senao quem estiver acompanhando via
+    # polling (GET /comandos-maquinas) pode flagrar "falhou" bem no meio do
+    # caminho, antes do status final (de sucesso) chegar.
+    with patch("app.services.mqtt_commands.publish_raw_mqtt_command"):
+        track_and_publish_command(
+            machine_id="CPM-QUEUE-8",
+            command_id="cmd-sem-contador",
+            tipo="paid",
+            topic="/TEF/CPM-QUEUE-8/cmd",
+            payload="CPM-QUEUE-8@paid|cmd=cmd-sem-contador|",
+        )
+
+    update_command_from_device_status("cmd-sem-contador", "CMD_RECEBIDO")
+    update_command_from_device_status("cmd-sem-contador", "PULSO_INICIADO")
+
+    # Pulsos 1 e 2 nao confirmam (sem fio do contador) - nao pode virar "falhou".
+    update_command_from_device_status("cmd-sem-contador", "PULSO_NAO_CONFIRMADO")
+    comando = _get_comando("cmd-sem-contador")
+    assert comando.status == "executando"
+
+    update_command_from_device_status("cmd-sem-contador", "PULSO_NAO_CONFIRMADO")
+    comando = _get_comando("cmd-sem-contador")
+    assert comando.status == "executando"
+
+    # Status agregado final da placa: enviou tudo, so nao confirmou o retorno.
+    update_command_from_device_status("cmd-sem-contador", "PULSOS_ENVIADOS_SEM_RETORNO")
+    comando = _get_comando("cmd-sem-contador")
+    assert comando.status == "executado"
+    assert comando.detalhe_status == "PULSOS_ENVIADOS_SEM_RETORNO"
+
+
 def test_final_status_is_not_downgraded_by_late_events():
     with patch("app.services.mqtt_commands.publish_raw_mqtt_command"):
         track_and_publish_command(

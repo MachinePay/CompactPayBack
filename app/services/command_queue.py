@@ -31,11 +31,19 @@ def _now() -> datetime:
 def _status_from_device_status(status: str) -> tuple[str | None, bool]:
     if status in {"CMD_RECEBIDO", "PONG"}:
         return "recebido", False
-    if status in {"PULSO_INICIADO", "LIBERADO", "PULSO_CONFIRMADO", "UPDATE_INICIADO"}:
+    # PULSO_NAO_CONFIRMADO e' um evento POR PULSO dentro de uma sequencia de
+    # varios (ex.: pagamento de R$5 = 5 pulsos) - nao e' o resultado final do
+    # comando. Uma maquina sem o fio do contador ligado manda esse status pra
+    # CADA pulso (nenhum confirma), mas sempre termina mandando o status
+    # agregado (PULSOS_CONCLUIDOS ou PULSOS_ENVIADOS_SEM_RETORNO) logo depois.
+    # Tratar isso como "falhou" (finished=True) fazia o polling do frontend
+    # flagrar uma falha no meio do caminho e mostrar erro, mesmo quando o
+    # comando terminava executado normalmente um instante depois.
+    if status in {"PULSO_INICIADO", "LIBERADO", "PULSO_CONFIRMADO", "PULSO_NAO_CONFIRMADO", "UPDATE_INICIADO"}:
         return "executando", False
     if status in {"PULSOS_CONCLUIDOS", "PULSOS_ENVIADOS_SEM_RETORNO", "SALDO_PENDENTE", "UPDATE_OK", "UPDATE_SEM_NOVIDADE"}:
         return "executado", True
-    if status in {"CMD_IGNORADO", "PULSO_BLOQUEADO_SEGURANCA", "PULSO_NAO_CONFIRMADO", "UPDATE_FALHOU"}:
+    if status in {"CMD_IGNORADO", "PULSO_BLOQUEADO_SEGURANCA", "UPDATE_FALHOU"}:
         return "falhou", True
     return None, False
 
