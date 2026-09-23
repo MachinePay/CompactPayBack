@@ -35,12 +35,23 @@ def update_pulse_status(command_id: str | None, status: str) -> None:
             .all()
         )
         vendas = db.query(VendaPagamento).filter(VendaPagamento.command_id == command_id).all()
+        # A placa pode mandar o status agregado final (ex.: PULSOS_CONCLUIDOS)
+        # ANTES do ultimo evento por-pulso (ex.: PULSO_CONFIRMADO) - confirmado
+        # em producao. Sem essa trava, o evento por-pulso (nao-final) chegando
+        # depois sobrescrevia um status ja final, "rebaixando" ele de volta pra
+        # um rotulo de progresso que nunca mais avancava. Mesma logica de
+        # protecao que _update_command_status ja tem pro ComandoMaquina.
+        is_final = status in FINAL_PULSE_STATUSES
         for item in historicos:
+            if item.pulse_status in FINAL_PULSE_STATUSES and not is_final:
+                continue
             item.pulse_status = status
             if status in NON_RELEASED_PULSE_STATUSES:
                 maquina = db.query(Maquina).filter(Maquina.id_hardware == item.maquina_id).first()
                 auto_refund_failed_pulse(db, item, maquina=maquina)
         for item in vendas:
+            if item.status_pulso in FINAL_PULSE_STATUSES and not is_final:
+                continue
             item.status_pulso = status
         db.commit()
     finally:

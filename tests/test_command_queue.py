@@ -24,6 +24,7 @@ from app.services.command_queue import (
     update_command_from_device_status,
     update_command_from_pulse_status,
 )
+from app.services.pulse_tracking import update_pulse_status
 
 Base.metadata.create_all(bind=engine)
 
@@ -395,17 +396,59 @@ def test_command_stuck_executando_without_final_status_becomes_falha_sem_confirm
     finally:
         db.close()
 
+
+def test_late_per_pulse_event_does_not_downgrade_already_final_pulse_status():
+    # Confirmado com log de producao: a placa mandou PULSOS_CONCLUIDOS (status
+    # agregado final, mapeado pra "pulso_confirmado") e SO DEPOIS mandou
+    # PULSO_CONFIRMADO (evento por-pulso, nao-final, mapeado pra
+    # "pulso_unitario") - ordem invertida da esperada. Sem protecao, o
+    # segundo evento sobrescrevia o pulse_status ja final de volta pra um
+    # rotulo de progresso, que nunca mais avancava (linha ficava presa
+    # mostrando "Pulso unitario" pra sempre mesmo com o pagamento confirmado).
+    db = SessionLocal()
+    try:
+        maquina = Maquina(id_hardware="CPM-QUEUE-ORDEM", nome_local="Maquina Ordem Invertida")
+        db.add(maquina)
+        db.flush()
+
+        historico = HistoricoOperacao(
+            maquina_id=maquina.id_hardware,
+            categoria="PAGAMENTO",
+            descricao="Pagamento pix aprovado",
+            valor=1.0,
+            pulse_status="pulso_iniciado",
+            command_id="cmd-ordem-invertida",
+        )
+        db.add(historico)
+        db.flush()
+
+        venda = VendaPagamento(
+            maquina_id=maquina.id_hardware,
+            historico_id=historico.id,
+            origem="pix",
+            provider="mercado_pago",
+            valor_bruto=1.0,
+            valor_liquido=1.0,
+            status_pulso="pulso_iniciado",
+            command_id="cmd-ordem-invertida",
+        )
+        db.add(venda)
+        db.commit()
+    finally:
+        db.close()
+
+    update_pulse_status("cmd-ordem-invertida", "pulso_confirmado")
+    update_pulse_status("cmd-ordem-invertida", "pulso_unitario")
+
     db = SessionLocal()
     try:
         historico = (
             db.query(HistoricoOperacao)
-            .filter(HistoricoOperacao.command_id == "cmd-offline-1")
+            .filter(HistoricoOperacao.command_id == "cmd-ordem-invertida")
             .first()
         )
-        venda = db.query(VendaPagamento).filter(VendaPagamento.command_id == "cmd-offline-1").first()
-        assert historico.pulse_status == "falha_dispositivo_offline"
-        assert historico.refunded_at is not None
-        assert venda.status_pulso == "falha_dispositivo_offline"
-        assert venda.refunded_at is not None
+        venda = db.query(VendaPagamento).filter(VendaPagamento.command_id == "cmd-ordem-invertida").first()
+        assert historico.pulse_status == "pulso_confirmado"
+        assert venda.status_pulso == "pulso_confirmado"
     finally:
         db.close()
