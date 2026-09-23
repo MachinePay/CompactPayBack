@@ -124,7 +124,7 @@ class Maquina(Base):
     wifi_disconnect_count = Column(Integer, nullable=True)
     last_forced_restart_reason = Column(String, nullable=True)
     last_forced_restart_at = Column(DateTime, nullable=True)
-    ignorar_saida_pos_credito = Column(Boolean, nullable=True, default=False)
+    ignorar_saida_pos_credito = Column(Boolean, nullable=True, default=True)
     credito_liberado_em = Column(DateTime, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")

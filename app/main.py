@@ -230,7 +230,7 @@ def startup_event():
         if "last_forced_restart_at" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN last_forced_restart_at TIMESTAMP"))
         if "ignorar_saida_pos_credito" not in maquina_columns:
-            connection.execute(text("ALTER TABLE maquinas ADD COLUMN ignorar_saida_pos_credito BOOLEAN DEFAULT FALSE"))
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN ignorar_saida_pos_credito BOOLEAN DEFAULT TRUE"))
         if "credito_liberado_em" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN credito_liberado_em TIMESTAMP"))
         if "firmware_update_progress" not in maquina_columns:
