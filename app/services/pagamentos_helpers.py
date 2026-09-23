@@ -212,14 +212,54 @@ def extract_mp_location_ids(payload: dict) -> dict[str, set[str]]:
     }
 
 
-def payment_metadata(payment_data: dict) -> dict:
+# Cache em memoria (payment_method_id, issuer_id) -> nome do banco. A lista
+# de emissores por bandeira e' cadastro estatico do Mercado Pago (nao muda a
+# cada pagamento), entao nao vale a pena consultar a API de novo pra cada
+# transacao do mesmo banco/bandeira. Reseta a cada deploy/restart, sem
+# problema - so reenche sozinho na proxima vez que aparecer.
+_CARD_ISSUER_NAME_CACHE: dict[tuple[str, str], str] = {}
+
+
+def resolve_card_issuer_name(payment_method_id: str | None, issuer_id, token: str | None) -> str | None:
+    """O pagamento em si so traz o issuer_id (um numero) quando veio de
+    maquininha fisica, nao o nome do banco - precisa de uma segunda consulta
+    na lista de emissores daquela bandeira pra resolver o nome. Nunca deixa
+    essa consulta extra derrubar o processamento do pagamento: qualquer falha
+    aqui so significa que o banco fica sem nome, nada mais."""
+    if not payment_method_id or issuer_id is None or not token:
+        return None
+    issuer_id_str = str(issuer_id)
+    cache_key = (payment_method_id, issuer_id_str)
+    if cache_key in _CARD_ISSUER_NAME_CACHE:
+        return _CARD_ISSUER_NAME_CACHE[cache_key]
+    try:
+        issuers = mp_request(
+            "GET",
+            f"https://api.mercadopago.com/v1/payment_methods/card_issuers?payment_method_id={payment_method_id}",
+            token,
+        )
+    except Exception:
+        return None
+    if not isinstance(issuers, list):
+        return None
+    name = next((item.get("name") for item in issuers if str(item.get("id")) == issuer_id_str), None)
+    if name:
+        _CARD_ISSUER_NAME_CACHE[cache_key] = name
+    return name
+
+
+def payment_metadata(payment_data: dict, token: str | None = None) -> dict:
     issuer = payment_data.get("issuer") or {}
     card = payment_data.get("card") or {}
+    bank_name = issuer.get("name")
+    if not bank_name:
+        issuer_id = payment_data.get("issuer_id") or issuer.get("id")
+        bank_name = resolve_card_issuer_name(payment_data.get("payment_method_id"), issuer_id, token)
     return {
         "provider": "mercado_pago",
         "provider_payment_id": str(payment_data.get("id") or "").strip() or None,
         "payment_type": payment_data.get("payment_type_id") or payment_data.get("payment_method_id"),
         "card_brand": payment_data.get("payment_method_id") or card.get("cardholder", {}).get("name"),
         "card_last_four": card.get("last_four_digits") or None,
-        "bank_name": issuer.get("name") or issuer.get("id"),
+        "bank_name": bank_name,
     }
