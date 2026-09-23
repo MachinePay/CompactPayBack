@@ -1183,6 +1183,35 @@ def _ultimo_fechamento_fim_por_maquina(db: Session, machine_ids: list[str]) -> d
     return dict(rows)
 
 
+def count_saidas_fechamento_aware(
+    db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime
+) -> int:
+    """Conta saidas (premios/pelucia entregue) no periodo, descontando o que
+    ja entrou num fechamento - mesmo clamp de "inicio efetivo por maquina" ja
+    usado pro faturamento e pros testes, so que aqui pra saida fisica
+    (Transacao tipo=out_flux)."""
+    if not machine_ids:
+        return 0
+    ultimos_fechamentos = _ultimo_fechamento_fim_por_maquina(db, machine_ids)
+    saidas_rows = (
+        db.query(Transacao.maquina_id, Transacao.data_hora)
+        .filter(
+            Transacao.maquina_id.in_(machine_ids),
+            transacao_tipo_out_filter(),
+            Transacao.data_hora >= start_dt,
+            Transacao.data_hora <= end_dt,
+        )
+        .all()
+    )
+    total = 0
+    for maquina_id, data_hora in saidas_rows:
+        fim = ultimos_fechamentos.get(maquina_id)
+        effective_start = max(start_dt, fim) if fim else start_dt
+        if data_hora >= effective_start:
+            total += 1
+    return total
+
+
 def serialize_machine_summary(
     db: Session,
     maquina: Maquina,

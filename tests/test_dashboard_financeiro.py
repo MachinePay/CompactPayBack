@@ -32,6 +32,7 @@ from app.services.maquinas_relatorio import (
     build_machine_history_payload,
     compute_financial_summary,
     compute_financial_summary_by_machine,
+    count_saidas_fechamento_aware,
     daily_revenue_totals,
     latest_activity_by_machine,
     movement_counts_by_machine,
@@ -272,6 +273,42 @@ def test_compute_financial_summary_excludes_amount_already_fechado():
     assert por_lote[machine_id]["faturamento_total"] == 7.0
     assert por_lote[machine_id]["testes_count"] == 1
     assert por_lote[machine_id]["testes_valor"] == 2.0
+
+
+def test_count_saidas_fechamento_aware_excludes_amount_already_fechado():
+    # "Premios entregues" do dashboard tinha o mesmo bug do faturamento: nao
+    # descontava o que ja tinha entrado num fechamento anterior.
+    machine_id = "CPM-DASH-SAIDAS-FECHAMENTO"
+    _create_maquina(machine_id)
+    fechamento_corte = datetime.utcnow() - timedelta(minutes=30)
+    _add_transacao(machine_id, tipo=EventoTipo.out_flux, data_hora=fechamento_corte - timedelta(minutes=10))
+    _add_transacao(machine_id, tipo=EventoTipo.out_flux, data_hora=fechamento_corte + timedelta(minutes=10))
+    _add_transacao(machine_id, tipo=EventoTipo.out_flux, data_hora=fechamento_corte + timedelta(minutes=20))
+
+    db = SessionLocal()
+    try:
+        db.add(
+            FechamentoMaquina(
+                maquina_id=machine_id,
+                periodo_inicio=WINDOW_START,
+                periodo_fim=fechamento_corte,
+                total_pagamentos=0.0,
+                total_digital=0.0,
+                total_fisico=0.0,
+                quantidade_pagamentos=0,
+                quantidade_testes=0,
+                quantidade_saidas=1,
+                criado_por_email="teste@teste.com",
+                created_at=datetime.utcnow(),
+            )
+        )
+        db.commit()
+
+        total = count_saidas_fechamento_aware(db, [machine_id], WINDOW_START, WINDOW_END)
+    finally:
+        db.close()
+
+    assert total == 2
 
 
 def test_compute_financial_summary_by_machine_matches_per_machine_calls():

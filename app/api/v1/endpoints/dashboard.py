@@ -9,9 +9,9 @@ from app.db.session import SessionLocal
 from app.models.models import Maquina, Transacao, VendaPagamento
 from app.services.maquinas_relatorio import (
     ONLINE_SIGNAL_WINDOW,
-    apply_transacao_periodo,
     compute_financial_summary,
     compute_financial_summary_by_machine,
+    count_saidas_fechamento_aware,
     daily_revenue_totals,
     latest_activity_by_machine,
     movement_counts_by_machine,
@@ -118,14 +118,6 @@ def dashboard_overview(
     maquinas = maquinas_query.all()
     maquinas_ids = [maquina.id_hardware for maquina in maquinas]
 
-    transacoes_query = db.query(Transacao).filter(Transacao.maquina_id.in_(maquinas_ids))
-    transacoes_periodo = apply_transacao_periodo(
-        transacoes_query,
-        periodo=periodo,
-        data_inicio=data_inicio,
-        data_fim=data_fim,
-    )
-
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
 
     # Uma unica leva de queries agregadas para todas as maquinas do filtro, em vez
@@ -134,12 +126,9 @@ def dashboard_overview(
     resumo_periodo = sum_financial_summaries(list(resumo_por_maquina.values()))
     faturamento = resumo_periodo["faturamento_total"]
     total_fisico = resumo_periodo["faturamento_fisico"]
-    premios = (
-        transacoes_periodo.filter(transacao_tipo_out_filter())
-        .with_entities(func.count(Transacao.id))
-        .scalar()
-        or 0
-    )
+    # Descontando o que ja entrou num fechamento - mesmo clamp ja aplicado ao
+    # faturamento e aos testes (compute_financial_summary_by_machine).
+    premios = count_saidas_fechamento_aware(db, maquinas_ids, start_dt, end_dt)
 
     inicio_hoje, fim_hoje = resolve_date_window("dia")
     inicio_mes, fim_mes = resolve_date_window("mes")
