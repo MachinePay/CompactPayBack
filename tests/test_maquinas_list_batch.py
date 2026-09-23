@@ -195,3 +195,62 @@ def test_listar_maquinas_endpoint_returns_batched_summary():
     item = next(m for m in data if m["id_hardware"] == machine_id)
     assert item["faturamento"] == 42.0
     assert item["status_online"] is True
+
+
+def _add_evento_dispositivo(machine_id, descricao, created_at=None):
+    db = SessionLocal()
+    try:
+        db.add(
+            HistoricoOperacao(
+                maquina_id=machine_id,
+                categoria="DISPOSITIVO",
+                descricao=descricao,
+                created_at=created_at or datetime.utcnow(),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_eventos_dispositivo_endpoint_returns_recent_device_log_for_admin():
+    # Diagnostico admin-only usado na configuracao inicial de uma maquina -
+    # mesma informacao tecnica (velocidade/largura de pulso, config de
+    # moeda/noteiro etc.) que hoje so da pra ver nos logs do Render.
+    machine_id = "CPM-LIST-DIAG"
+    _create_maquina(machine_id)
+    _add_evento_dispositivo(machine_id, "STATUS|COIN_PULSE_CURTO_IGNORADO|width_ms=5")
+    _add_evento_dispositivo(machine_id, "Evento ESP: status=PULSO_CONFIG count=1 source=amount")
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-diag@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get(f"/api/v1/maquinas/{machine_id}/eventos-dispositivo", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["machine_id"] == machine_id
+    assert len(data["eventos"]) == 2
+    assert data["eventos"][0]["descricao"] == "Evento ESP: status=PULSO_CONFIG count=1 source=amount"
+
+
+def test_eventos_dispositivo_endpoint_rejects_non_admin():
+    machine_id = "CPM-LIST-DIAG-2"
+    _create_maquina(machine_id)
+
+    db = SessionLocal()
+    try:
+        db.add(Usuario(email="cliente-diag@test.local", hashed_password=get_password_hash("123456"), role=UserRole.cliente))
+        db.commit()
+    finally:
+        db.close()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/login", data={"username": "cliente-diag@test.local", "password": "123456"}
+        )
+        token = response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get(f"/api/v1/maquinas/{machine_id}/eventos-dispositivo", headers=headers)
+
+    assert response.status_code == 403

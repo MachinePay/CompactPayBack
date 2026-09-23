@@ -164,6 +164,47 @@ def alternar_filtro_saida_pos_credito(
     return {"ok": True, "machine_id": machine_id, "ignorar_saida_pos_credito": ativo}
 
 
+@router.get("/maquinas/{machine_id}/eventos-dispositivo")
+def listar_eventos_dispositivo(
+    machine_id: str,
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Log tecnico bruto que a placa manda por MQTT (config de pulso/moeda,
+    velocidade/largura do pulso do noteiro, wifi, reinicios, etc.) - a mesma
+    informacao que hoje so da pra ver nos logs do Render, direto no painel
+    para configurar uma maquina nova sem precisar abrir outra aba."""
+    _, role, _ = user
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas admin pode ver o diagnostico da placa")
+
+    maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
+    if not maquina:
+        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
+
+    eventos = (
+        db.query(HistoricoOperacao)
+        .filter(HistoricoOperacao.maquina_id == machine_id, HistoricoOperacao.categoria == "DISPOSITIVO")
+        .order_by(HistoricoOperacao.created_at.desc())
+        .limit(min(max(limit, 1), 200))
+        .all()
+    )
+    return {
+        "machine_id": machine_id,
+        "eventos": [
+            {
+                "id": item.id,
+                "created_at": item.created_at,
+                "descricao": item.descricao,
+                "pulse_status": item.pulse_status,
+                "command_id": item.command_id,
+            }
+            for item in eventos
+        ],
+    }
+
+
 @router.get("/maquinas/{machine_id}/caixa")
 def consultar_caixa_mercado_pago(
     machine_id: str,
