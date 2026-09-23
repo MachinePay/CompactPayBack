@@ -116,6 +116,20 @@ def resolve_date_window(
             _brasilia_local_to_utc_naive(end_local),
         )
 
+    if periodo == "fechamento":
+        # Sem limite de calendario - o clamp por "ultimo fechamento de cada
+        # maquina" (serialize_machine_summary/serialize_machines_summary_batch)
+        # e' quem de fato corta o inicio. Maquina com fechamento recente mostra
+        # so o que veio depois dele; maquina sem nenhum fechamento ainda mostra
+        # tudo desde sempre, em vez de ficar preso a um mes de calendario que
+        # nao tem nada a ver com o ciclo real de fechamento do operador.
+        start_local = datetime(2000, 1, 1)
+        end_local = datetime.combine(hoje, datetime.max.time())
+        return (
+            _brasilia_local_to_utc_naive(start_local),
+            _brasilia_local_to_utc_naive(end_local),
+        )
+
     end_local = datetime.combine(hoje, datetime.max.time())
     start_local = end_local - timedelta(days=6)
     return (
