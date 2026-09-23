@@ -61,6 +61,13 @@ def criar_fechamento_maquina(
     )
     start_dt = payload["range"]["inicio"]
     end_dt = payload["range"]["fim"]
+    # O fim do periodo escolhido (ex.: "hoje"/"mes") e' sempre o fim do
+    # calendario (23:59:59), nao importa a hora em que o fechamento e' feito.
+    # Se gravassemos periodo_fim como esse fim de calendario, um pagamento
+    # que chegasse DEPOIS do clique em "fazer fechamento" (mas ainda no mesmo
+    # dia/mes) ficaria marcado como "ja fechado" por engano - o fechamento so
+    # pode valer ate o instante em que ele de fato foi feito.
+    fechamento_fim = min(end_dt, datetime.utcnow())
 
     fechamento_existente = (
         db.query(FechamentoMaquina)
@@ -77,7 +84,7 @@ def criar_fechamento_maquina(
     fechamento = FechamentoMaquina(
         maquina_id=machine_id,
         periodo_inicio=start_dt,
-        periodo_fim=end_dt,
+        periodo_fim=fechamento_fim,
         total_pagamentos=payload["resumo"]["total_pagamentos"],
         total_digital=payload["resumo"]["total_digital"],
         total_fisico=payload["resumo"]["total_fisico"],
@@ -92,7 +99,7 @@ def criar_fechamento_maquina(
         AuditoriaOperacao(
             maquina_id=machine_id,
             acao="FECHAMENTO_CRIADO",
-            descricao=f"Fechamento salvo para o periodo {start_dt.isoformat()} ate {end_dt.isoformat()}",
+            descricao=f"Fechamento salvo para o periodo {start_dt.isoformat()} ate {fechamento_fim.isoformat()}",
             executado_por_email=_get_user_email(user),
             created_at=datetime.utcnow(),
         )
@@ -104,7 +111,7 @@ def criar_fechamento_maquina(
         entidade_tipo="maquina",
         entidade_id=machine_id,
         descricao=(
-            f"Fechamento criado periodo={start_dt.isoformat()} ate {end_dt.isoformat()} "
+            f"Fechamento criado periodo={start_dt.isoformat()} ate {fechamento_fim.isoformat()} "
             f"total={payload['resumo']['total_pagamentos']}"
         ),
     )
