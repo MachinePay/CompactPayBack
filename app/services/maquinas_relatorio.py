@@ -220,8 +220,36 @@ def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: dateti
     }
 
 
+def real_revenue_breakdown_fechamento_aware(
+    db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime
+) -> dict:
+    """Como real_revenue_breakdown, mas cada maquina usa seu proprio "inicio
+    efetivo" (max(start_dt, fim do ultimo fechamento dela)) - pagamento que ja
+    entrou num fechamento nao pode ser contado de novo no total corrente."""
+    if not machine_ids:
+        return {"total": 0.0, "digital": 0.0, "fisico": 0.0, "count": 0, "devolvido": 0.0}
+
+    ultimos_fechamentos = _ultimo_fechamento_fim_por_maquina(db, machine_ids)
+    grupos: dict[datetime, list[str]] = {}
+    for machine_id in machine_ids:
+        fim = ultimos_fechamentos.get(machine_id)
+        effective_start = max(start_dt, fim) if fim else start_dt
+        grupos.setdefault(effective_start, []).append(machine_id)
+
+    total = digital = fisico = devolvido = 0.0
+    count = 0
+    for effective_start, ids_do_grupo in grupos.items():
+        breakdown = real_revenue_breakdown(db, ids_do_grupo, effective_start, end_dt)
+        total += breakdown["total"]
+        digital += breakdown["digital"]
+        fisico += breakdown["fisico"]
+        devolvido += breakdown["devolvido"]
+        count += breakdown["count"]
+    return {"total": total, "digital": digital, "fisico": fisico, "count": count, "devolvido": devolvido}
+
+
 def compute_financial_summary(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
-    breakdown = real_revenue_breakdown(db, machine_ids, start_dt, end_dt)
+    breakdown = real_revenue_breakdown_fechamento_aware(db, machine_ids, start_dt, end_dt)
     zero_summary = {
         "faturamento_total": 0.0,
         "faturamento_fisico": 0.0,
@@ -239,14 +267,31 @@ def compute_financial_summary(db: Session, machine_ids: list[str], start_dt: dat
 
     # Creditos de teste (botao "Credito" de teste) sao gravados so em HistoricoOperacao
     # (categoria=TESTE), nunca em VendaPagamento - por isso a contagem vem de la.
-    testes_query = db.query(HistoricoOperacao).filter(
-        HistoricoOperacao.maquina_id.in_(machine_ids),
-        HistoricoOperacao.categoria == "TESTE",
-        HistoricoOperacao.created_at >= start_dt,
-        HistoricoOperacao.created_at <= end_dt,
+    # Mesmo clamp de fechamento por maquina do faturamento acima - teste feito
+    # antes do fechamento nao pode continuar contando no periodo corrente.
+    ultimos_fechamentos = _ultimo_fechamento_fim_por_maquina(db, machine_ids)
+
+    def _effective_start(machine_id: str) -> datetime:
+        fim = ultimos_fechamentos.get(machine_id)
+        return max(start_dt, fim) if fim else start_dt
+
+    testes_rows = (
+        db.query(HistoricoOperacao.maquina_id, HistoricoOperacao.valor, HistoricoOperacao.created_at)
+        .filter(
+            HistoricoOperacao.maquina_id.in_(machine_ids),
+            HistoricoOperacao.categoria == "TESTE",
+            HistoricoOperacao.created_at >= start_dt,
+            HistoricoOperacao.created_at <= end_dt,
+        )
+        .all()
     )
-    testes_count = testes_query.with_entities(func.count(HistoricoOperacao.id)).scalar() or 0
-    testes_valor = float(testes_query.with_entities(func.sum(HistoricoOperacao.valor)).scalar() or 0.0)
+    testes_count = 0
+    testes_valor = 0.0
+    for maquina_id, valor, created_at in testes_rows:
+        if created_at < _effective_start(maquina_id):
+            continue
+        testes_count += 1
+        testes_valor += float(valor or 0.0)
 
     estornos_query = db.query(VendaPagamento).filter(
         VendaPagamento.maquina_id.in_(machine_ids),
@@ -322,6 +367,15 @@ def compute_financial_summary_by_machine(
         for machine_id in machine_ids
     }
 
+    # Cada maquina pode ter seu proprio ultimo fechamento - pagamento/teste
+    # anterior a esse corte nao pode continuar contando no total corrente
+    # (senao "Faturamento hoje/mes" do dashboard nao desconta o fechamento).
+    ultimos_fechamentos = _ultimo_fechamento_fim_por_maquina(db, machine_ids)
+
+    def _effective_start(machine_id: str) -> datetime:
+        fim = ultimos_fechamentos.get(machine_id)
+        return max(start_dt, fim) if fim else start_dt
+
     vendas_rows = (
         db.query(
             VendaPagamento.maquina_id,
@@ -329,6 +383,7 @@ def compute_financial_summary_by_machine(
             VendaPagamento.provider,
             VendaPagamento.valor_liquido,
             VendaPagamento.conta_ticket_medio,
+            VendaPagamento.created_at,
         )
         .filter(
             VendaPagamento.maquina_id.in_(machine_ids),
@@ -342,7 +397,9 @@ def compute_financial_summary_by_machine(
         )
         .all()
     )
-    for maquina_id, origem, provider, valor_liquido, conta_ticket_medio in vendas_rows:
+    for maquina_id, origem, provider, valor_liquido, conta_ticket_medio, created_at in vendas_rows:
+        if created_at < _effective_start(maquina_id):
+            continue
         bucket = raw[maquina_id]
         valor = float(valor_liquido or 0.0)
         if origem == "fisico" or provider == "fisico":
@@ -359,19 +416,19 @@ def compute_financial_summary_by_machine(
             ~HistoricoOperacao.id.in_(historicos_com_venda),
             HistoricoOperacao.refunded_at.is_(None),
         )
-        .with_entities(HistoricoOperacao.maquina_id, HistoricoOperacao.valor)
+        .with_entities(HistoricoOperacao.maquina_id, HistoricoOperacao.valor, HistoricoOperacao.created_at)
         .all()
     )
-    for maquina_id, valor in digital_legado_rows:
+    for maquina_id, valor, created_at in digital_legado_rows:
         bucket = raw.get(maquina_id)
-        if bucket is None:
+        if bucket is None or created_at < _effective_start(maquina_id):
             continue
         bucket["digital"] += float(valor or 0.0)
         bucket["count"] += 1
 
     transacoes_com_venda = db.query(VendaPagamento.transacao_id).filter(VendaPagamento.transacao_id.isnot(None))
     fisico_legado_rows = (
-        db.query(Transacao.maquina_id, Transacao.valor)
+        db.query(Transacao.maquina_id, Transacao.valor, Transacao.data_hora)
         .filter(
             Transacao.maquina_id.in_(machine_ids),
             transacao_tipo_in_filter(),
@@ -382,15 +439,15 @@ def compute_financial_summary_by_machine(
         )
         .all()
     )
-    for maquina_id, valor in fisico_legado_rows:
+    for maquina_id, valor, data_hora in fisico_legado_rows:
         bucket = raw.get(maquina_id)
-        if bucket is None:
+        if bucket is None or data_hora < _effective_start(maquina_id):
             continue
         bucket["fisico"] += float(valor or 0.0)
         bucket["count"] += 1
 
     testes_rows = (
-        db.query(HistoricoOperacao.maquina_id, HistoricoOperacao.valor)
+        db.query(HistoricoOperacao.maquina_id, HistoricoOperacao.valor, HistoricoOperacao.created_at)
         .filter(
             HistoricoOperacao.maquina_id.in_(machine_ids),
             HistoricoOperacao.categoria == "TESTE",
@@ -399,7 +456,9 @@ def compute_financial_summary_by_machine(
         )
         .all()
     )
-    for maquina_id, valor in testes_rows:
+    for maquina_id, valor, created_at in testes_rows:
+        if created_at < _effective_start(maquina_id):
+            continue
         bucket = raw[maquina_id]
         bucket["testes_count"] += 1
         bucket["testes_valor"] += float(valor or 0.0)

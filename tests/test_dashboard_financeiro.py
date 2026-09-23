@@ -19,6 +19,7 @@ from app.db.session import SessionLocal, engine
 from app.models.models import (
     Cliente,
     EventoTipo,
+    FechamentoMaquina,
     HistoricoOperacao,
     Maquina,
     MetodoPagamento,
@@ -223,6 +224,54 @@ def test_compute_financial_summary_returns_zero_summary_for_empty_machine_list()
     assert resumo["vendas_count"] == 0
     assert resumo["ticket_medio"] == 0.0
     assert resumo["pulsos_ausentes"] == 0
+
+
+def test_compute_financial_summary_excludes_amount_already_fechado():
+    # "Faturamento hoje/mes" do dashboard precisa descontar o que ja entrou
+    # num fechamento - senao venda de antes do fechamento continua contando
+    # pra sempre no total corrente, mesmo depois do caixa ter sido fechado.
+    machine_id = "CPM-DASH-FECHAMENTO"
+    _create_maquina(machine_id)
+    fechamento_corte = datetime.utcnow() - timedelta(minutes=30)
+    _add_venda(machine_id, valor_liquido=50.0, created_at=fechamento_corte - timedelta(minutes=10))
+    _add_venda(machine_id, valor_liquido=7.0, created_at=fechamento_corte + timedelta(minutes=10))
+    _add_teste_historico(machine_id, 3.0, created_at=fechamento_corte - timedelta(minutes=5))
+    _add_teste_historico(machine_id, 2.0, created_at=fechamento_corte + timedelta(minutes=5))
+
+    db = SessionLocal()
+    try:
+        db.add(
+            FechamentoMaquina(
+                maquina_id=machine_id,
+                periodo_inicio=WINDOW_START,
+                periodo_fim=fechamento_corte,
+                total_pagamentos=50.0,
+                total_digital=50.0,
+                total_fisico=0.0,
+                quantidade_pagamentos=1,
+                quantidade_testes=1,
+                quantidade_saidas=0,
+                criado_por_email="teste@teste.com",
+                created_at=datetime.utcnow(),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    resumo = _summary([machine_id])
+    assert resumo["faturamento_total"] == 7.0
+    assert resumo["testes_count"] == 1
+    assert resumo["testes_valor"] == 2.0
+
+    db = SessionLocal()
+    try:
+        por_lote = compute_financial_summary_by_machine(db, [machine_id], WINDOW_START, WINDOW_END)
+    finally:
+        db.close()
+    assert por_lote[machine_id]["faturamento_total"] == 7.0
+    assert por_lote[machine_id]["testes_count"] == 1
+    assert por_lote[machine_id]["testes_valor"] == 2.0
 
 
 def test_compute_financial_summary_by_machine_matches_per_machine_calls():
