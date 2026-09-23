@@ -277,6 +277,20 @@ def processar_callback_mercado_pago(dados: dict):
             print(f"[MP webhook] payment ignorado: payment_id={payment_id} status={payment_status}")
             return {"status": "ignorado", "detalhe": f"Pagamento ainda nao aprovado ({payment_status})"}
 
+        # Diagnostico temporario: bank_name (issuer) vem sempre vazio em
+        # producao pra pagamento na maquininha fisica - log pra confirmar se
+        # o Mercado Pago manda o campo com outro nome/formato (ex.: issuer_id
+        # solto em vez do objeto issuer aninhado) em vez de ficar so
+        # adivinhando.
+        print(
+            f"[MP webhook] debug emissor payment_id={payment_id} "
+            f"payment_method_id={payment_data.get('payment_method_id')} "
+            f"payment_type_id={payment_data.get('payment_type_id')} "
+            f"issuer_id={payment_data.get('issuer_id')} "
+            f"issuer={payment_data.get('issuer')} "
+            f"card={payment_data.get('card')}"
+        )
+
         terminal_id = extract_terminal_id(payment_data)
         amount = float(payment_data.get("transaction_amount") or 1.0)
 
