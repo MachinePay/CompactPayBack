@@ -1,4 +1,7 @@
+import json
 import re
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -255,6 +258,42 @@ def resolve_card_issuer_name(payment_method_id: str | None, issuer_id, token: st
     return name
 
 
+# Nomes genericos que o catalogo de emissores do Mercado Pago devolve quando
+# ele mesmo nao sabe identificar o banco (confirmado em producao: um cartao
+# Santander de verdade voltou "Outro") - nesses casos vale tentar a segunda
+# fonte (BIN) em vez de aceitar um nome inutil.
+_UNHELPFUL_BANK_NAMES = {"outro", "outros", "other", "others", "otro", "otros bancos"}
+
+_BIN_BANK_NAME_CACHE: dict[str, str] = {}
+
+
+def resolve_bank_name_from_bin(bin_number) -> str | None:
+    """O BIN (6-8 primeiros digitos do cartao, que o Mercado Pago ja manda em
+    card.first_six_digits) identifica o banco emissor de forma independente
+    do catalogo do Mercado Pago - usa a API publica/gratuita binlist.net
+    como segunda fonte quando o Mercado Pago nao sabe o banco. Sem chave de
+    API, cacheado em memoria por BIN. Qualquer falha aqui so deixa o banco
+    sem nome, nunca derruba o processamento do pagamento."""
+    if not bin_number:
+        return None
+    bin_str = str(bin_number)[:8]
+    if bin_str in _BIN_BANK_NAME_CACHE:
+        return _BIN_BANK_NAME_CACHE[bin_str]
+    try:
+        request = urllib.request.Request(
+            f"https://lookup.binlist.net/{bin_str}",
+            headers={"Accept-Version": "3"},
+        )
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    name = ((data.get("bank") or {}).get("name") or "").strip()
+    if name:
+        _BIN_BANK_NAME_CACHE[bin_str] = name
+    return name or None
+
+
 def payment_metadata(payment_data: dict, token: str | None = None) -> dict:
     issuer = payment_data.get("issuer") or {}
     card = payment_data.get("card") or {}
@@ -262,6 +301,8 @@ def payment_metadata(payment_data: dict, token: str | None = None) -> dict:
     if not bank_name:
         issuer_id = payment_data.get("issuer_id") or issuer.get("id")
         bank_name = resolve_card_issuer_name(payment_data.get("payment_method_id"), issuer_id, token)
+    if not bank_name or bank_name.strip().lower() in _UNHELPFUL_BANK_NAMES:
+        bank_name = resolve_bank_name_from_bin(card.get("first_six_digits") or card.get("bin")) or bank_name
     return {
         "provider": "mercado_pago",
         "provider_payment_id": str(payment_data.get("id") or "").strip() or None,

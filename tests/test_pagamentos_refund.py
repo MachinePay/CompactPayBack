@@ -1,5 +1,6 @@
+import json
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from app.services.pagamentos_helpers import (
     extract_terminal_id,
@@ -102,3 +103,43 @@ def test_payment_metadata_bank_name_none_when_issuer_lookup_fails():
         metadata = payment_metadata(payment_data, token="token-teste")
 
     assert metadata["bank_name"] is None
+
+
+def test_payment_metadata_falls_back_to_bin_lookup_when_issuer_name_is_unhelpful():
+    # Mercado Pago as vezes devolve um nome de emissor generico tipo "Outro"
+    # mesmo pra um cartao com banco identificavel de verdade (confirmado em
+    # producao com um cartao Santander real) - nesse caso tenta resolver pelo
+    # BIN do cartao (binlist.net), independente do catalogo do Mercado Pago.
+    pagamentos_helpers._CARD_ISSUER_NAME_CACHE.clear()
+    pagamentos_helpers._BIN_BANK_NAME_CACHE.clear()
+    payment_data = {
+        "id": 2,
+        "payment_type_id": "debit_card",
+        "payment_method_id": "debvisa",
+        "issuer_id": "9999",
+        "issuer": None,
+        "card": {"first_six_digits": "480630", "last_four_digits": "7575"},
+    }
+    fake_response = MagicMock()
+    fake_response.read.return_value = json.dumps(
+        {"bank": {"name": "Banco Santander (Brasil) S.A."}}
+    ).encode("utf-8")
+    fake_response.__enter__.return_value = fake_response
+    fake_response.__exit__.return_value = False
+
+    with patch("app.services.pagamentos_helpers.mp_request") as mp_request_mock, patch(
+        "urllib.request.urlopen", return_value=fake_response
+    ) as urlopen_mock:
+        mp_request_mock.return_value = [{"id": 9999, "name": "Outro"}]
+        metadata = payment_metadata(payment_data, token="token-teste")
+
+    assert metadata["bank_name"] == "Banco Santander (Brasil) S.A."
+    urlopen_mock.assert_called_once()
+    called_request = urlopen_mock.call_args.args[0]
+    assert called_request.full_url == "https://lookup.binlist.net/480630"
+
+
+def test_resolve_bank_name_from_bin_returns_none_on_failure():
+    pagamentos_helpers._BIN_BANK_NAME_CACHE.clear()
+    with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
+        assert pagamentos_helpers.resolve_bank_name_from_bin("480630") is None
