@@ -220,5 +220,6 @@ def payment_metadata(payment_data: dict) -> dict:
         "provider_payment_id": str(payment_data.get("id") or "").strip() or None,
         "payment_type": payment_data.get("payment_type_id") or payment_data.get("payment_method_id"),
         "card_brand": payment_data.get("payment_method_id") or card.get("cardholder", {}).get("name"),
+        "card_last_four": card.get("last_four_digits") or None,
         "bank_name": issuer.get("name") or issuer.get("id"),
     }

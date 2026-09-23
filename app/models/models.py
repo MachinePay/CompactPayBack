@@ -176,6 +176,7 @@ class HistoricoOperacao(Base):
     provider_payment_id = Column(String, nullable=True)
     payment_type = Column(String, nullable=True)
     card_brand = Column(String, nullable=True)
+    card_last_four = Column(String, nullable=True)
     bank_name = Column(String, nullable=True)
     pulse_status = Column(String, nullable=True)
     command_id = Column(String, nullable=True, index=True)

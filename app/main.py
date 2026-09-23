@@ -267,6 +267,7 @@ def startup_event():
             "provider_payment_id",
             "payment_type",
             "card_brand",
+            "card_last_four",
             "bank_name",
             "pulse_status",
             "command_id",
