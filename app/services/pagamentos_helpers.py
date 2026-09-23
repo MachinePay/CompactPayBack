@@ -228,14 +228,21 @@ def resolve_card_issuer_name(payment_method_id: str | None, issuer_id, token: st
     aqui so significa que o banco fica sem nome, nada mais."""
     if not payment_method_id or issuer_id is None or not token:
         return None
+    # A lista de emissores do Mercado Pago e' organizada por bandeira/rede, nao
+    # por variante debito/credito - "debvisa"/"debmaster" (o payment_method_id
+    # que a maquininha manda pra debito) da 404 nessa consulta (confirmado em
+    # producao); a bandeira base ("visa"/"master") sim.
+    lookup_payment_method_id = (
+        payment_method_id[len("deb"):] if payment_method_id.startswith("deb") else payment_method_id
+    )
     issuer_id_str = str(issuer_id)
-    cache_key = (payment_method_id, issuer_id_str)
+    cache_key = (lookup_payment_method_id, issuer_id_str)
     if cache_key in _CARD_ISSUER_NAME_CACHE:
         return _CARD_ISSUER_NAME_CACHE[cache_key]
     try:
         issuers = mp_request(
             "GET",
-            f"https://api.mercadopago.com/v1/payment_methods/card_issuers?payment_method_id={payment_method_id}",
+            f"https://api.mercadopago.com/v1/payment_methods/card_issuers?payment_method_id={lookup_payment_method_id}",
             token,
         )
     except Exception:

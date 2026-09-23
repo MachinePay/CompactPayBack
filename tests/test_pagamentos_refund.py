@@ -76,7 +76,9 @@ def test_payment_metadata_resolves_bank_name_from_issuer_id_when_issuer_object_i
     mp_request_mock.assert_called_once()
     called_url = mp_request_mock.call_args.args[1]
     assert "card_issuers" in called_url
-    assert "payment_method_id=debvisa" in called_url
+    # A consulta de emissores da 404 pra "debvisa" (confirmado em producao) -
+    # tem que consultar pela bandeira base "visa", sem o prefixo de debito.
+    assert "payment_method_id=visa" in called_url
 
     # Segunda chamada com o mesmo issuer_id/bandeira usa o cache, nao bate na API de novo.
     with patch("app.services.pagamentos_helpers.mp_request") as mp_request_mock_2:
