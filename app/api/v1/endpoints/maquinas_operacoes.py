@@ -4,6 +4,7 @@ import time
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -21,6 +22,40 @@ router = APIRouter()
 
 FIRMWARE_UPDATE_IN_FLIGHT_STATUSES = {"sent", "downloading", "restarting"}
 FIRMWARE_UPDATE_LOCK_TIMEOUT = timedelta(minutes=10)
+
+# Mesma tabela de codigos de desconexao Wi-Fi (ESP-IDF wifi_err_reason_t)
+# usada no frontend (formatWifiDisconnectReason em SaudeMaquinas.jsx) -
+# mantida tambem aqui pra "Historico de quedas" ja devolver o motivo
+# traduzido pronto pra exibir.
+WIFI_DISCONNECT_REASON_LABELS = {
+    2: "Autenticacao expirou",
+    3: "Desconexao pelo cliente",
+    4: "Associacao expirou",
+    6: "Nao autenticado",
+    8: "Desconectado (AP saiu)",
+    15: "Timeout no handshake (senha errada?)",
+    36: "Roteador encerrou a conexao (nao e sinal fraco)",
+    200: "Sinal perdido (beacon timeout)",
+    201: "Rede nao encontrada",
+    202: "Falha de autenticacao",
+    203: "Falha de associacao",
+    204: "Timeout de handshake",
+    205: "Falha ao conectar",
+    206: "AP reiniciou (TSF reset)",
+    207: "Roaming",
+}
+FORCED_RESTART_REASON_LABELS = {
+    "wifi_offline_5min": "Wi-Fi preso (radio nao voltava mesmo reciclando)",
+    "mqtt_offline_5min": "MQTT preso (Wi-Fi conectado mas sem falar com o broker)",
+}
+_WIFI_DISC_REASON_RE = re.compile(r"wifi_disc_reason=(-?\d+)")
+_WIFI_DISC_COUNT_RE = re.compile(r"wifi_disc_count=(-?\d+)")
+_FORCED_RESTART_MOTIVO_RE = re.compile(r"reiniciou sozinha apos ficar presa \(motivo: ([^)]+)\)")
+
+
+def _translate_wifi_disconnect_reason(code: int) -> str:
+    label = WIFI_DISCONNECT_REASON_LABELS.get(code)
+    return f"{label} (codigo {code})" if label else f"Codigo {code}"
 
 
 def get_db():
@@ -203,6 +238,123 @@ def listar_eventos_dispositivo(
             for item in eventos
         ],
     }
+
+
+@router.get("/maquinas/quedas")
+def listar_quedas(
+    maquina_id: str | None = None,
+    data_inicio: str | None = None,
+    data_fim: str | None = None,
+    limit: int = 300,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Historico consolidado de quedas (conexao caiu de forma suja ou a placa
+    se reiniciou sozinha por ter travado) de todas as maquinas visiveis ao
+    usuario, com filtro por maquina e por periodo - pra nao precisar abrir um
+    diagnostico por maquina pra montar esse quadro na mao. Visivel pra
+    qualquer papel (cada um ve so as maquinas que ja enxerga hoje)."""
+    _, role, cliente_id = user
+
+    maquinas_query = db.query(Maquina)
+    if role != "admin":
+        maquinas_query = maquinas_query.filter(Maquina.cliente_id == cliente_id)
+    if maquina_id:
+        maquinas_query = maquinas_query.filter(Maquina.id_hardware == maquina_id)
+    maquinas = {m.id_hardware: m for m in maquinas_query.all()}
+    if not maquinas:
+        return {"quedas": [], "total": 0}
+
+    query = db.query(HistoricoOperacao).filter(
+        HistoricoOperacao.maquina_id.in_(maquinas.keys()),
+        HistoricoOperacao.categoria == "DISPOSITIVO",
+        or_(
+            HistoricoOperacao.descricao.ilike("Maquina caiu%"),
+            HistoricoOperacao.descricao.ilike("Maquina se reiniciou sozinha%"),
+        ),
+    )
+    if data_inicio:
+        try:
+            query = query.filter(HistoricoOperacao.created_at >= datetime.fromisoformat(data_inicio))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="data_inicio invalida") from None
+    if data_fim:
+        try:
+            query = query.filter(HistoricoOperacao.created_at <= datetime.fromisoformat(data_fim))
+        except ValueError:
+            raise HTTPException(status_code=422, detail="data_fim invalida") from None
+
+    total = query.count()
+    linhas = (
+        query.order_by(HistoricoOperacao.created_at.desc())
+        .limit(min(max(limit, 1), 500))
+        .all()
+    )
+
+    resultado = []
+    for linha in linhas:
+        maquina = maquinas.get(linha.maquina_id)
+        is_reinicio = linha.descricao.startswith("Maquina se reiniciou sozinha")
+        motivo_tecnico = None
+        wifi_reason_code = None
+        wifi_disc_count = None
+
+        if is_reinicio:
+            tipo = "reinicio_forcado"
+            match = _FORCED_RESTART_MOTIVO_RE.search(linha.descricao)
+            motivo_tecnico = match.group(1) if match else None
+            motivo = FORCED_RESTART_REASON_LABELS.get(
+                motivo_tecnico, motivo_tecnico or "Motivo desconhecido"
+            )
+        else:
+            tipo = "queda_conexao"
+            motivo = "Queda de conexao (energia, crash ou rede caiu sem aviso limpo)"
+
+        # A propria linha da queda nao carrega o motivo tecnico do Wi-Fi (o
+        # last will e' so "STATUS|OFFLINE") - quem carrega e' o proximo
+        # evento de telemetria da mesma maquina, que reporta o ultimo motivo
+        # de desconexao conhecido pela placa assim que ela volta a falar.
+        proximo = (
+            db.query(HistoricoOperacao)
+            .filter(
+                HistoricoOperacao.maquina_id == linha.maquina_id,
+                HistoricoOperacao.categoria == "DISPOSITIVO",
+                HistoricoOperacao.created_at > linha.created_at,
+            )
+            .order_by(HistoricoOperacao.created_at.asc())
+            .first()
+        )
+        reconectou_em = None
+        duracao_offline_segundos = None
+        if proximo:
+            reconectou_em = proximo.created_at
+            duracao_offline_segundos = (proximo.created_at - linha.created_at).total_seconds()
+            if tipo == "queda_conexao":
+                reason_match = _WIFI_DISC_REASON_RE.search(proximo.descricao or "")
+                if reason_match:
+                    wifi_reason_code = int(reason_match.group(1))
+                    motivo = f"{motivo} - {_translate_wifi_disconnect_reason(wifi_reason_code)}"
+            count_match = _WIFI_DISC_COUNT_RE.search(proximo.descricao or "")
+            if count_match:
+                wifi_disc_count = int(count_match.group(1))
+
+        resultado.append(
+            {
+                "id": linha.id,
+                "maquina_id": linha.maquina_id,
+                "maquina_nome": maquina.nome_local if maquina else linha.maquina_id,
+                "created_at": linha.created_at,
+                "tipo": tipo,
+                "motivo": motivo,
+                "motivo_tecnico": motivo_tecnico,
+                "wifi_disconnect_reason_code": wifi_reason_code,
+                "wifi_disconnect_count": wifi_disc_count,
+                "reconectou_em": reconectou_em,
+                "duracao_offline_segundos": duracao_offline_segundos,
+            }
+        )
+
+    return {"quedas": resultado, "total": total}
 
 
 @router.get("/maquinas/{machine_id}/caixa")

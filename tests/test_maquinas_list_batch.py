@@ -17,6 +17,7 @@ from app.core.security import get_password_hash
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
 from app.models.models import (
+    Cliente,
     EventoTipo,
     HistoricoOperacao,
     Maquina,
@@ -195,6 +196,133 @@ def test_listar_maquinas_endpoint_returns_batched_summary():
     item = next(m for m in data if m["id_hardware"] == machine_id)
     assert item["faturamento"] == 42.0
     assert item["status_online"] is True
+
+
+def _create_cliente_com_maquina(machine_id, nome_empresa):
+    db = SessionLocal()
+    try:
+        cliente = Cliente(
+            nome_empresa=nome_empresa,
+            email_contato=f"{machine_id.lower()}@teste.com",
+            api_key=f"api-key-{machine_id.lower()}",
+        )
+        db.add(cliente)
+        db.flush()
+        maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
+        if not maquina:
+            maquina = Maquina(id_hardware=machine_id, nome_local=machine_id)
+            db.add(maquina)
+        maquina.cliente_id = cliente.id
+        db.commit()
+        return cliente.id
+    finally:
+        db.close()
+
+
+def _create_cliente_token(client, email, cliente_id):
+    db = SessionLocal()
+    try:
+        db.add(
+            Usuario(
+                email=email,
+                hashed_password=get_password_hash("123456"),
+                role=UserRole.cliente,
+                cliente_id=cliente_id,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+    response = client.post("/api/v1/login", data={"username": email, "password": "123456"})
+    return response.json()["access_token"]
+
+
+def test_quedas_endpoint_translates_wifi_reason_and_computes_duracao():
+    machine_id = "CPM-QUEDAS-WIFI"
+    _create_maquina(machine_id)
+    queda_em = datetime.utcnow() - timedelta(minutes=10)
+    _add_evento_dispositivo(
+        machine_id,
+        "Maquina caiu (MQTT last will - queda de energia, crash ou rede sem desconexao limpa)",
+        created_at=queda_em,
+    )
+    _add_evento_dispositivo(
+        machine_id,
+        "Evento ESP: status=ONLINE fw=1.0.0 wifi_disc_reason=36 wifi_disc_count=45",
+        created_at=queda_em + timedelta(seconds=30),
+    )
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-quedas@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get(f"/api/v1/maquinas/quedas?maquina_id={machine_id}", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total"] == 1
+    queda = data["quedas"][0]
+    assert queda["tipo"] == "queda_conexao"
+    assert "Roteador encerrou a conexao" in queda["motivo"]
+    assert queda["wifi_disconnect_reason_code"] == 36
+    assert queda["wifi_disconnect_count"] == 45
+    assert queda["duracao_offline_segundos"] == 30.0
+
+
+def test_quedas_endpoint_translates_reinicio_forcado_motivo():
+    machine_id = "CPM-QUEDAS-REINICIO"
+    _create_maquina(machine_id)
+    _add_evento_dispositivo(
+        machine_id,
+        "Maquina se reiniciou sozinha apos ficar presa (motivo: wifi_offline_5min)",
+    )
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-quedas-reinicio@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get(f"/api/v1/maquinas/quedas?maquina_id={machine_id}", headers=headers)
+
+    assert response.status_code == 200
+    queda = response.json()["quedas"][0]
+    assert queda["tipo"] == "reinicio_forcado"
+    assert queda["motivo_tecnico"] == "wifi_offline_5min"
+    assert "Wi-Fi preso" in queda["motivo"]
+
+
+def test_quedas_endpoint_filters_by_date_range():
+    machine_id = "CPM-QUEDAS-PERIODO"
+    _create_maquina(machine_id)
+    _add_evento_dispositivo(machine_id, "Maquina caiu (MQTT last will)", created_at=datetime.utcnow() - timedelta(days=10))
+    _add_evento_dispositivo(machine_id, "Maquina caiu (MQTT last will)", created_at=datetime.utcnow() - timedelta(hours=1))
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-quedas-periodo@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        data_inicio = (datetime.utcnow() - timedelta(days=1)).isoformat()
+        response = client.get(
+            f"/api/v1/maquinas/quedas?maquina_id={machine_id}&data_inicio={data_inicio}",
+            headers=headers,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+
+
+def test_quedas_endpoint_scopes_by_cliente_for_non_admin():
+    machine_a = "CPM-QUEDAS-CLI-A"
+    machine_b = "CPM-QUEDAS-CLI-B"
+    cliente_a_id = _create_cliente_com_maquina(machine_a, "Cliente Quedas A")
+    _create_cliente_com_maquina(machine_b, "Cliente Quedas B")
+    _add_evento_dispositivo(machine_a, "Maquina caiu (MQTT last will)")
+    _add_evento_dispositivo(machine_b, "Maquina caiu (MQTT last will)")
+
+    with TestClient(app) as client:
+        token = _create_cliente_token(client, "cliente-quedas-a@test.local", cliente_a_id)
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get("/api/v1/maquinas/quedas", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert {item["maquina_id"] for item in data["quedas"]} == {machine_a}
 
 
 def _add_evento_dispositivo(machine_id, descricao, created_at=None):
