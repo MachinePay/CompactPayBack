@@ -171,14 +171,19 @@ def test_latest_pulse_by_machine_ignores_rows_without_pulse_status():
     machine_id = "CPM-HEALTH-PULSE"
     _create_maquina(machine_id)
     _add_historico(machine_id, descricao="sem pulso", pulse_status=None, created_at=datetime.utcnow())
+    # categoria != DISPOSITIVO: eventos brutos por-pulso da placa (que a
+    # placa manda um por vez, sem a trava de finalidade do pagamento/teste
+    # em si) nao contam pra "ultimo pulso" - ver latest_pulse_by_machine.
     _add_historico(
         machine_id,
+        categoria="PAGAMENTO",
         descricao="pulso antigo",
         pulse_status="pulso_confirmado",
         created_at=datetime.utcnow() - timedelta(minutes=10),
     )
     _add_historico(
         machine_id,
+        categoria="PAGAMENTO",
         descricao="pulso recente",
         pulse_status="falha_timeout",
         created_at=datetime.utcnow() - timedelta(minutes=1),
@@ -191,6 +196,39 @@ def test_latest_pulse_by_machine_ignores_rows_without_pulse_status():
         db.close()
 
     assert result[machine_id]["status"] == "falha_timeout"
+
+
+def test_latest_pulse_by_machine_ignores_late_dispositivo_event_after_final_result():
+    # Reproduz caso real de producao: o pagamento fechou certo
+    # (pulso_confirmado, via PULSOS_ENVIADOS_SEM_RETORNO), mas a placa ainda
+    # mandou um PULSO_NAO_CONFIRMADO por-pulso tardio (evento bruto, grava
+    # sua propria linha DISPOSITIVO) alguns instantes depois. A placa
+    # respondeu certo - "ultimo pulso" nao pode regredir pra esse evento
+    # tecnico so porque a linha dele e' mais recente.
+    machine_id = "CPM-HEALTH-PULSE-LATE-DEVICE"
+    _create_maquina(machine_id)
+    _add_historico(
+        machine_id,
+        categoria="PAGAMENTO",
+        descricao="Pagamento aprovado",
+        pulse_status="pulso_confirmado",
+        created_at=datetime.utcnow() - timedelta(seconds=5),
+    )
+    _add_historico(
+        machine_id,
+        categoria="DISPOSITIVO",
+        descricao="Evento ESP: status=PULSO_NAO_CONFIRMADO",
+        pulse_status="pulso_sem_retorno",
+        created_at=datetime.utcnow(),
+    )
+
+    db = SessionLocal()
+    try:
+        result = latest_pulse_by_machine(db, [machine_id])
+    finally:
+        db.close()
+
+    assert result[machine_id]["status"] == "pulso_confirmado"
 
 
 def test_noise_counts_by_machine_counts_matching_patterns_inside_window():
@@ -238,7 +276,9 @@ def test_saude_endpoint_flags_offline_wifi_ruim_and_pulso_ausente():
     _add_venda(machine_wifi_ruim, valor_liquido=15.0, status_pulso="falha_timeout")
     # "ultimo_pulso" no painel de saude vem de HistoricoOperacao.pulse_status (nao
     # de VendaPagamento.status_pulso), entao o fixture precisa gravar os dois.
-    _add_historico(machine_wifi_ruim, pulse_status="falha_timeout")
+    # categoria != DISPOSITIVO: eventos brutos por-pulso da placa nao contam
+    # pra "ultimo pulso" (ver latest_pulse_by_machine).
+    _add_historico(machine_wifi_ruim, categoria="PAGAMENTO", pulse_status="falha_timeout")
 
     with TestClient(app) as client:
         token = _create_admin_token(client, "admin-saude@test.local")
@@ -260,7 +300,7 @@ def test_alertas_endpoint_generates_pulso_ausente_and_ruido_alerts():
     machine_id = "CPM-HEALTH-EP-ALERT"
     _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), wifi_quality=90)
     _add_venda(machine_id, valor_liquido=30.0, status_pulso="falha_sem_confirmacao")
-    _add_historico(machine_id, pulse_status="falha_sem_confirmacao")
+    _add_historico(machine_id, categoria="PAGAMENTO", pulse_status="falha_sem_confirmacao")
     for _ in range(10):
         _add_historico(machine_id, descricao="STATUS|COIN_PULSE_CURTO_IGNORADO|width_ms=5", created_at=datetime.utcnow())
 

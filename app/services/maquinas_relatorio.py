@@ -652,6 +652,15 @@ def latest_pulse_by_machine(db: Session, machine_ids: list[str]) -> dict[str, di
         .filter(
             HistoricoOperacao.maquina_id.in_(machine_ids),
             HistoricoOperacao.pulse_status.isnot(None),
+            # Cada evento bruto da placa (categoria=DISPOSITIVO, ex.: um
+            # PULSO_NAO_CONFIRMADO por-pulso) grava sua PROPRIA linha com seu
+            # proprio pulse_status, sem passar pela trava de finalidade que
+            # protege o pagamento/teste em si (update_pulse_status). Incluir
+            # essas linhas aqui fazia esta consulta as vezes escolher um
+            # evento tecnico tardio e nao-final em vez do resultado final
+            # real do pagamento/teste - a placa respondia certo, so essa
+            # tela mostrava o evento errado.
+            HistoricoOperacao.categoria != "DISPOSITIVO",
         )
         .subquery()
     )
