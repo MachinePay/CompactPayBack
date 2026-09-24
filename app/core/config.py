@@ -4,10 +4,25 @@ import ssl
 from pydantic_settings import BaseSettings
 
 
+def _normalize_database_url(url: str) -> str:
+    """Força o driver psycopg2 para Postgres, independente do driver
+    default que a versao instalada do SQLAlchemy resolveria para uma
+    URL "postgresql://" sem driver explicito (isso ja mudou entre
+    versoes do SQLAlchemy e derrubou o deploy por ModuleNotFoundError).
+    """
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://"):
+        url = "postgresql+psycopg2://" + url[len("postgresql://"):]
+    return url
+
+
 class Settings(BaseSettings):
     APP_VERSION: str = os.getenv("APP_VERSION", "dev")
     APP_REVISION: str = os.getenv("APP_REVISION", "")
-    DATABASE_URL: str = os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/compactpay")
+    DATABASE_URL: str = _normalize_database_url(
+        os.getenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/compactpay")
+    )
     MQTT_BROKER_URL: str = os.getenv("MQTT_BROKER_URL", "a11hfacfencseq-ats.iot.us-west-2.amazonaws.com")
     MQTT_BROKER_PORT: int = int(os.getenv("MQTT_BROKER_PORT", 8883))
     MQTT_USE_TLS: bool = os.getenv("MQTT_USE_TLS", "true").lower() == "true"
