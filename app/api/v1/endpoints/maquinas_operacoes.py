@@ -167,7 +167,7 @@ def alternar_filtro_saida_pos_credito(
 @router.get("/maquinas/{machine_id}/eventos-dispositivo")
 def listar_eventos_dispositivo(
     machine_id: str,
-    limit: int = 50,
+    limit: int = 200,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
