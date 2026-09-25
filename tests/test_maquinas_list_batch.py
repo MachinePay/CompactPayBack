@@ -307,6 +307,24 @@ def test_quedas_endpoint_filters_by_date_range():
     assert response.json()["total"] == 1
 
 
+def test_quedas_endpoint_admin_can_filter_by_cliente_id():
+    machine_a = "CPM-QUEDAS-ADMIN-CLI-A"
+    machine_b = "CPM-QUEDAS-ADMIN-CLI-B"
+    cliente_a_id = _create_cliente_com_maquina(machine_a, "Cliente Quedas Admin A")
+    _create_cliente_com_maquina(machine_b, "Cliente Quedas Admin B")
+    _add_evento_dispositivo(machine_a, "Maquina caiu (MQTT last will)")
+    _add_evento_dispositivo(machine_b, "Maquina caiu (MQTT last will)")
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-quedas-cliente@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get(f"/api/v1/maquinas/quedas?cliente_id={cliente_a_id}", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert {item["maquina_id"] for item in data["quedas"]} == {machine_a}
+
+
 def test_quedas_endpoint_scopes_by_cliente_for_non_admin():
     machine_a = "CPM-QUEDAS-CLI-A"
     machine_b = "CPM-QUEDAS-CLI-B"

@@ -243,6 +243,7 @@ def listar_eventos_dispositivo(
 @router.get("/maquinas/quedas")
 def listar_quedas(
     maquina_id: str | None = None,
+    cliente_id: int | None = None,
     data_inicio: str | None = None,
     data_fim: str | None = None,
     limit: int = 300,
@@ -253,12 +254,16 @@ def listar_quedas(
     se reiniciou sozinha por ter travado) de todas as maquinas visiveis ao
     usuario, com filtro por maquina e por periodo - pra nao precisar abrir um
     diagnostico por maquina pra montar esse quadro na mao. Visivel pra
-    qualquer papel (cada um ve so as maquinas que ja enxerga hoje)."""
-    _, role, cliente_id = user
+    qualquer papel (cada um ve so as maquinas que ja enxerga hoje); o filtro
+    por cliente (cliente_id) so faz efeito pra admin, que enxerga todos."""
+    _, role, user_cliente_id = user
 
     maquinas_query = db.query(Maquina)
-    if role != "admin":
-        maquinas_query = maquinas_query.filter(Maquina.cliente_id == cliente_id)
+    if role == "admin":
+        if cliente_id is not None:
+            maquinas_query = maquinas_query.filter(Maquina.cliente_id == cliente_id)
+    else:
+        maquinas_query = maquinas_query.filter(Maquina.cliente_id == user_cliente_id)
     if maquina_id:
         maquinas_query = maquinas_query.filter(Maquina.id_hardware == maquina_id)
     maquinas = {m.id_hardware: m for m in maquinas_query.all()}
