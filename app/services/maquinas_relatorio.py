@@ -699,10 +699,37 @@ def noise_counts_by_machine(db: Session, machine_ids: list[str], since: datetime
     return dict(rows)
 
 
+def quedas_counts_by_machine(db: Session, machine_ids: list[str], since: datetime) -> dict[str, int]:
+    """Conta quedas de conexao (MQTT last will) e reinicios forcados por
+    maquina desde `since` - mesmo criterio usado no Historico de quedas
+    (GET /maquinas/quedas), reaproveitado aqui pra alertar sozinho quando uma
+    maquina esta flapando (varias quedas num intervalo curto), sem precisar
+    abrir aquela tela pra perceber."""
+    if not machine_ids:
+        return {}
+    rows = (
+        db.query(HistoricoOperacao.maquina_id, func.count(HistoricoOperacao.id))
+        .filter(
+            HistoricoOperacao.maquina_id.in_(machine_ids),
+            HistoricoOperacao.categoria == "DISPOSITIVO",
+            HistoricoOperacao.created_at >= since,
+            or_(
+                HistoricoOperacao.descricao.ilike("Maquina caiu%"),
+                HistoricoOperacao.descricao.ilike("Maquina se reiniciou sozinha%"),
+            ),
+        )
+        .group_by(HistoricoOperacao.maquina_id)
+        .all()
+    )
+    return dict(rows)
+
+
 OFFLINE_ALERT_AFTER = timedelta(minutes=5)
 NO_PAYMENT_ALERT_AFTER = timedelta(days=7)
 NOISE_ALERT_WINDOW = timedelta(hours=24)
 NOISE_ALERT_THRESHOLD = 10
+QUEDA_ALERT_WINDOW = timedelta(hours=2)
+QUEDA_ALERT_THRESHOLD = 3
 
 
 def latest_payment_map(db: Session, machine_ids: list[str]) -> dict[str, dict]:
@@ -808,7 +835,7 @@ def make_alert(machine: dict, tipo: str, severidade: str, titulo: str, mensagem:
     }
 
 
-def build_machine_alerts(machine: dict, now: datetime, noise_count: int) -> list[dict]:
+def build_machine_alerts(machine: dict, now: datetime, noise_count: int, queda_count: int = 0) -> list[dict]:
     alerts = []
     last_signal = machine.get("ultimo_sinal")
     if not machine["status_online"] and last_signal and now - last_signal >= OFFLINE_ALERT_AFTER:
@@ -900,6 +927,20 @@ def build_machine_alerts(machine: dict, now: datetime, noise_count: int) -> list
             )
         )
 
+    if queda_count >= QUEDA_ALERT_THRESHOLD:
+        horas = int(QUEDA_ALERT_WINDOW.total_seconds() // 3600)
+        alerts.append(
+            make_alert(
+                machine,
+                "quedas_frequentes",
+                "critico",
+                "Quedas de conexao frequentes",
+                f"{queda_count} quedas/reinicios nas ultimas {horas}h - normalmente e o roteador/rede do local, veja o Historico de quedas.",
+                now,
+                {"quedas": queda_count, "janela_horas": horas},
+            )
+        )
+
     return alerts
 
 
@@ -910,9 +951,17 @@ def compute_active_alerts(db: Session, maquinas: list[Maquina], now: datetime | 
     machine_ids = [maquina.id_hardware for maquina in maquinas]
     machines = compute_all_machines_health(db, maquinas, now)
     ruido_por_maquina = noise_counts_by_machine(db, machine_ids, now - NOISE_ALERT_WINDOW)
+    quedas_por_maquina = quedas_counts_by_machine(db, machine_ids, now - QUEDA_ALERT_WINDOW)
     alerts = []
     for machine in machines:
-        alerts.extend(build_machine_alerts(machine, now, ruido_por_maquina.get(machine["id_hardware"], 0)))
+        alerts.extend(
+            build_machine_alerts(
+                machine,
+                now,
+                ruido_por_maquina.get(machine["id_hardware"], 0),
+                quedas_por_maquina.get(machine["id_hardware"], 0),
+            )
+        )
     alerts.sort(key=lambda item: item.get("detected_at") or datetime.min, reverse=True)
     return alerts
 

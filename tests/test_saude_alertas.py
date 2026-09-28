@@ -316,3 +316,52 @@ def test_alertas_endpoint_generates_pulso_ausente_and_ruido_alerts():
     }
     assert "pulso_ausente" in alert_types
     assert "ruido_contador" in alert_types
+
+
+def test_alertas_endpoint_generates_quedas_frequentes_alert():
+    machine_id = "CPM-HEALTH-EP-QUEDAS"
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), wifi_quality=90)
+    for minutos_atras in (5, 40, 90):
+        _add_historico(
+            machine_id,
+            descricao="Maquina caiu (MQTT last will - queda de energia, crash ou rede sem desconexao limpa)",
+            created_at=datetime.utcnow() - timedelta(minutes=minutos_atras),
+        )
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-alertas-quedas@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get("/api/v1/maquinas/alertas", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    alerta = next(
+        alert
+        for alert in data["alertas"]
+        if alert["maquina"]["id_hardware"] == machine_id and alert["tipo"] == "quedas_frequentes"
+    )
+    assert alerta["severidade"] == "critico"
+    assert alerta["extra"]["quedas"] == 3
+    assert data["resumo"]["quedas_frequentes"] >= 1
+
+
+def test_alertas_endpoint_does_not_alert_for_isolated_queda():
+    machine_id = "CPM-HEALTH-EP-QUEDA-UNICA"
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), wifi_quality=90)
+    _add_historico(
+        machine_id,
+        descricao="Maquina caiu (MQTT last will - queda de energia, crash ou rede sem desconexao limpa)",
+        created_at=datetime.utcnow() - timedelta(minutes=5),
+    )
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-alertas-queda-unica@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get("/api/v1/maquinas/alertas", headers=headers)
+
+    assert response.status_code == 200
+    data = response.json()
+    alert_types = {
+        alert["tipo"] for alert in data["alertas"] if alert["maquina"]["id_hardware"] == machine_id
+    }
+    assert "quedas_frequentes" not in alert_types

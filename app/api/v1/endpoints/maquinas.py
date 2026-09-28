@@ -229,6 +229,7 @@ def listar_alertas_maquinas(
         "pulso_ausente": sum(1 for item in alerts if item["tipo"] == "pulso_ausente"),
         "firmware": sum(1 for item in alerts if item["tipo"] == "firmware"),
         "ruido_contador": sum(1 for item in alerts if item["tipo"] == "ruido_contador"),
+        "quedas_frequentes": sum(1 for item in alerts if item["tipo"] == "quedas_frequentes"),
         "filtrados": len(filtered),
     }
     return {"resumo": resumo, "alertas": filtered}
