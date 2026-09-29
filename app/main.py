@@ -241,6 +241,17 @@ def startup_event():
         for column_name in ["wifi_hard_reset_ms", "wifi_full_restart_ms"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} INTEGER"))
+        for column_name in [
+            "pulse_coin",
+            "pulse_out",
+            "pulse_credit",
+            "pulse_value",
+            "pulse_quantity",
+            "coin_debounce_us",
+            "coin_release_ms",
+        ]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
         if "firmware_versions" not in inspector.get_table_names():
             connection.execute(text("""
                 CREATE TABLE firmware_versions (

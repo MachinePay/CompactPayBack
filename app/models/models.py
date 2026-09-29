@@ -133,6 +133,18 @@ class Maquina(Base):
     # roteador instavel que precisam de um tempo diferente do padrao.
     wifi_hard_reset_ms = Column(Integer, nullable=True)
     wifi_full_restart_ms = Column(Integer, nullable=True)
+    # Espelham 1:1 os campos do portal fisico de configuracao da placa (menos
+    # SSID/senha de Wi-Fi, que continuam so pelo portal) - NULL aqui so
+    # significa "nunca foi ajustado por aqui", a placa continua com o que ja
+    # tinha gravado; ajustaveis remotamente via POST
+    # /maquinas/{id}/config-dispositivo, sem precisar abrir o portal fisico.
+    pulse_coin = Column(String, nullable=True)
+    pulse_out = Column(String, nullable=True)
+    pulse_credit = Column(String, nullable=True)
+    pulse_value = Column(String, nullable=True)
+    pulse_quantity = Column(String, nullable=True)
+    coin_debounce_us = Column(String, nullable=True)
+    coin_release_ms = Column(String, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")
 

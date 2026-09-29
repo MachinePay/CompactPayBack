@@ -102,18 +102,40 @@ def publish_machine_update(
     return payload
 
 
-def publish_machine_reconnect_config(
+def publish_machine_device_config(
     machine_id: str,
     command_id: str,
+    pulse_coin: str | None = None,
+    pulse_out: str | None = None,
+    pulse_credit: str | None = None,
+    pulse_value: str | None = None,
+    pulse_quantity: str | None = None,
+    coin_debounce_us: str | None = None,
+    coin_release_ms: str | None = None,
     wifi_hard_reset_ms: int | None = None,
     wifi_full_restart_ms: int | None = None,
 ) -> str:
-    """Ajusta remotamente os tempos da escada de reconexao de Wi-Fi de UMA
-    maquina especifica (reciclar radio / reiniciar a placa inteira) - util
-    pra locais com roteador instavel que precisam de um tempo diferente do
-    padrao usado pela maioria das maquinas, sem precisar regravar firmware."""
+    """Ajusta remotamente a configuracao de UMA maquina especifica - tudo que
+    hoje so dava pra mudar reabrindo o portal fisico de Wi-Fi (pulso/moeda,
+    debounce/liberacao do IN, tempos da escada de reconexao) EXCETO SSID/
+    senha de Wi-Fi, que continuam so pelo portal fisico. Cada campo None e'
+    omitido da mensagem - a placa mantem o que ja tinha pra esse campo."""
     topic = f"/TEF/{machine_id}/cmd"
     payload = f"{machine_id}@config|cmd={command_id}|"
+    if pulse_coin is not None:
+        payload += f"pulse_coin={pulse_coin}|"
+    if pulse_out is not None:
+        payload += f"pulse_out={pulse_out}|"
+    if pulse_credit is not None:
+        payload += f"pulse_credit={pulse_credit}|"
+    if pulse_value is not None:
+        payload += f"pulse_value={pulse_value}|"
+    if pulse_quantity is not None:
+        payload += f"pulse_quantity={pulse_quantity}|"
+    if coin_debounce_us is not None:
+        payload += f"coin_debounce_us={coin_debounce_us}|"
+    if coin_release_ms is not None:
+        payload += f"coin_release_ms={coin_release_ms}|"
     if wifi_hard_reset_ms is not None:
         payload += f"wifi_hard_reset_ms={int(wifi_hard_reset_ms)}|"
     if wifi_full_restart_ms is not None:
@@ -128,7 +150,7 @@ def publish_machine_reconnect_config(
         topic=topic,
         payload=payload,
     )
-    logging.info("MQTT config de reconexao publicado machine_id=%s payload=%s", machine_id, payload)
+    logging.info("MQTT config de dispositivo publicado machine_id=%s payload=%s", machine_id, payload)
     return payload
 
 

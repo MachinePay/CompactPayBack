@@ -54,6 +54,13 @@ class MaquinaOut(BaseModel):
     ignorar_saida_pos_credito: bool = True
     wifi_hard_reset_ms: Optional[int] = None
     wifi_full_restart_ms: Optional[int] = None
+    pulse_coin: Optional[str] = None
+    pulse_out: Optional[str] = None
+    pulse_credit: Optional[str] = None
+    pulse_value: Optional[str] = None
+    pulse_quantity: Optional[str] = None
+    coin_debounce_us: Optional[str] = None
+    coin_release_ms: Optional[str] = None
 
     class Config:
         from_attributes = True

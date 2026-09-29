@@ -1389,6 +1389,13 @@ def serialize_machine_summary(
         "ignorar_saida_pos_credito": bool(maquina.ignorar_saida_pos_credito),
         "wifi_hard_reset_ms": maquina.wifi_hard_reset_ms,
         "wifi_full_restart_ms": maquina.wifi_full_restart_ms,
+        "pulse_coin": maquina.pulse_coin,
+        "pulse_out": maquina.pulse_out,
+        "pulse_credit": maquina.pulse_credit,
+        "pulse_value": maquina.pulse_value,
+        "pulse_quantity": maquina.pulse_quantity,
+        "coin_debounce_us": maquina.coin_debounce_us,
+        "coin_release_ms": maquina.coin_release_ms,
     }
 
 
@@ -1497,6 +1504,13 @@ def serialize_machines_summary_batch(
                 "ignorar_saida_pos_credito": bool(maquina.ignorar_saida_pos_credito),
                 "wifi_hard_reset_ms": maquina.wifi_hard_reset_ms,
                 "wifi_full_restart_ms": maquina.wifi_full_restart_ms,
+                "pulse_coin": maquina.pulse_coin,
+                "pulse_out": maquina.pulse_out,
+                "pulse_credit": maquina.pulse_credit,
+                "pulse_value": maquina.pulse_value,
+                "pulse_quantity": maquina.pulse_quantity,
+                "coin_debounce_us": maquina.coin_debounce_us,
+                "coin_release_ms": maquina.coin_release_ms,
             }
         )
 

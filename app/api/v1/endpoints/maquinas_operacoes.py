@@ -15,8 +15,8 @@ from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import (
     publish_machine_credit,
+    publish_machine_device_config,
     publish_machine_ping,
-    publish_machine_reconnect_config,
     publish_machine_update,
 )
 from app.services.pagamentos_helpers import (
@@ -209,34 +209,50 @@ def alternar_filtro_saida_pos_credito(
     return {"ok": True, "machine_id": machine_id, "ignorar_saida_pos_credito": ativo}
 
 
-# Limites de seguranca espelhando os do firmware (WIFI_RECONNECT_TIMING_MIN_MS/
-# WIFI_RECONNECT_TIMING_MAX_MS) - evita salvar um valor que faria a placa
-# entrar num loop de reboot ou demorar horas pra reagir a uma queda de verdade.
+# Limites de seguranca pros tempos de reconexao, espelhando os do firmware
+# (WIFI_RECONNECT_TIMING_MIN_MS/MAX_MS) - evita salvar um valor que faria a
+# placa entrar num loop de reboot ou demorar horas pra reagir a uma queda.
 WIFI_RECONNECT_TIMING_MIN_MS = 10_000
 WIFI_RECONNECT_TIMING_MAX_MS = 10 * 60_000
 
+# Campos de texto livre (espelham 1:1 os campos do portal fisico de Wi-Fi,
+# exceto SSID/senha) - so limitamos tamanho pra nao mandar lixo gigante pro
+# buffer fixo da placa (char[10]/char[12] no firmware).
+DEVICE_CONFIG_TEXT_FIELDS = [
+    "pulse_coin",
+    "pulse_out",
+    "pulse_credit",
+    "pulse_value",
+    "pulse_quantity",
+    "coin_debounce_us",
+    "coin_release_ms",
+]
+DEVICE_CONFIG_TEXT_FIELD_MAX_LEN = 11
 
-@router.post("/maquinas/{machine_id}/config-reconexao")
-def configurar_tempos_reconexao_wifi(
+
+@router.post("/maquinas/{machine_id}/config-dispositivo")
+def configurar_dispositivo_remotamente(
     machine_id: str,
     payload: dict,
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
-    """Ajusta, so para esta maquina, os tempos da escada de reconexao de
-    Wi-Fi (reciclar radio / reiniciar a placa inteira) - util pra locais com
-    roteador instavel (ex.: aeroporto) que precisam de um tempo diferente do
-    padrao usado pela maioria das maquinas, sem precisar regravar firmware.
-    Campos omitidos ou nulos no payload voltam a usar o padrao do firmware."""
+    """Ajusta, so para esta maquina, toda a configuracao que hoje so dava pra
+    mudar reabrindo o portal fisico de Wi-Fi (pulso/moeda, debounce/liberacao
+    do IN, tempos da escada de reconexao) - EXCETO SSID/senha de Wi-Fi, que
+    continuam so pelo portal fisico. Cada campo so e' alterado se vier
+    explicitamente no payload; os dois campos de tempo de reconexao usam
+    null pra voltar ao padrao do firmware, os demais campos de texto so sao
+    mudados se vierem preenchidos (nao tem "resetar pro padrao de fabrica")."""
     _, role, _ = user
     if role != "admin":
-        raise HTTPException(status_code=403, detail="Apenas admin pode alterar esse ajuste")
+        raise HTTPException(status_code=403, detail="Apenas admin pode alterar essa configuracao")
 
     maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
     if not maquina:
         raise HTTPException(status_code=404, detail="Maquina nao encontrada")
 
-    def _valida(campo: str):
+    def _valida_tempo_reconexao(campo: str):
         valor = payload.get(campo)
         if valor is None:
             return None
@@ -251,32 +267,55 @@ def configurar_tempos_reconexao_wifi(
             )
         return valor_int
 
-    hard_reset_ms = _valida("wifi_hard_reset_ms") if "wifi_hard_reset_ms" in payload else maquina.wifi_hard_reset_ms
-    full_restart_ms = _valida("wifi_full_restart_ms") if "wifi_full_restart_ms" in payload else maquina.wifi_full_restart_ms
+    if "wifi_hard_reset_ms" in payload:
+        maquina.wifi_hard_reset_ms = _valida_tempo_reconexao("wifi_hard_reset_ms")
+    if "wifi_full_restart_ms" in payload:
+        maquina.wifi_full_restart_ms = _valida_tempo_reconexao("wifi_full_restart_ms")
 
-    maquina.wifi_hard_reset_ms = hard_reset_ms
-    maquina.wifi_full_restart_ms = full_restart_ms
+    campos_alterados = []
+    for campo in DEVICE_CONFIG_TEXT_FIELDS:
+        if campo not in payload:
+            continue
+        valor = str(payload.get(campo) or "").strip()
+        if not valor:
+            continue
+        if len(valor) > DEVICE_CONFIG_TEXT_FIELD_MAX_LEN:
+            raise HTTPException(status_code=422, detail=f"{campo} e' longo demais (max {DEVICE_CONFIG_TEXT_FIELD_MAX_LEN} caracteres)")
+        setattr(maquina, campo, valor)
+        campos_alterados.append(campo)
+
     registrar_auditoria(
         db,
         user,
-        acao="CONFIG_RECONEXAO_WIFI",
+        acao="CONFIG_DISPOSITIVO",
         entidade_tipo="maquina",
         entidade_id=machine_id,
-        descricao=f"Tempos de reconexao Wi-Fi ajustados: hard_reset_ms={hard_reset_ms} full_restart_ms={full_restart_ms}",
+        descricao=(
+            f"Configuracao remota da placa ajustada - campos: {', '.join(campos_alterados) or '(nenhum campo de texto)'}; "
+            f"wifi_hard_reset_ms={maquina.wifi_hard_reset_ms} wifi_full_restart_ms={maquina.wifi_full_restart_ms}"
+        ),
     )
     db.commit()
 
-    # Config sempre fica salva no banco mesmo se o envio MQTT falhar agora -
-    # o proprio mecanismo de retry dos comandos (igual o do credito) tenta de
-    # novo sozinho depois, entao nao precisa travar a resposta nisso.
+    # Manda o ESTADO ATUAL COMPLETO (nao so o que mudou agora) pra placa -
+    # como MQTT nao e retido, se uma mensagem anterior se perder (placa
+    # offline no momento), a proxima configuracao enviada ja resincroniza
+    # tudo de uma vez, em vez de deixar campos "esquecidos" pra tras.
     command_id = str(uuid4())
     enviado = True
     try:
-        publish_machine_reconnect_config(
+        publish_machine_device_config(
             machine_id,
             command_id,
-            wifi_hard_reset_ms=hard_reset_ms,
-            wifi_full_restart_ms=full_restart_ms,
+            pulse_coin=maquina.pulse_coin,
+            pulse_out=maquina.pulse_out,
+            pulse_credit=maquina.pulse_credit,
+            pulse_value=maquina.pulse_value,
+            pulse_quantity=maquina.pulse_quantity,
+            coin_debounce_us=maquina.coin_debounce_us,
+            coin_release_ms=maquina.coin_release_ms,
+            wifi_hard_reset_ms=maquina.wifi_hard_reset_ms,
+            wifi_full_restart_ms=maquina.wifi_full_restart_ms,
         )
     except Exception:
         enviado = False
@@ -284,8 +323,15 @@ def configurar_tempos_reconexao_wifi(
     return {
         "ok": True,
         "machine_id": machine_id,
-        "wifi_hard_reset_ms": hard_reset_ms,
-        "wifi_full_restart_ms": full_restart_ms,
+        "wifi_hard_reset_ms": maquina.wifi_hard_reset_ms,
+        "wifi_full_restart_ms": maquina.wifi_full_restart_ms,
+        "pulse_coin": maquina.pulse_coin,
+        "pulse_out": maquina.pulse_out,
+        "pulse_credit": maquina.pulse_credit,
+        "pulse_value": maquina.pulse_value,
+        "pulse_quantity": maquina.pulse_quantity,
+        "coin_debounce_us": maquina.coin_debounce_us,
+        "coin_release_ms": maquina.coin_release_ms,
         "command_id": command_id,
         "enviado": enviado,
     }
