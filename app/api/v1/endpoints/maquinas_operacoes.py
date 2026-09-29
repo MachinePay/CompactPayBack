@@ -14,7 +14,11 @@ from app.models.models import AuditoriaOperacao, FirmwareVersion, HistoricoOpera
 from app.services.auditoria import registrar_auditoria
 from app.services.mercado_pago import mp_request
 from app.services.mqtt_commands import publish_machine_credit, publish_machine_ping, publish_machine_update
-from app.services.pagamentos_helpers import extract_provider_payment_id, should_allow_refund
+from app.services.pagamentos_helpers import (
+    calcular_pulsos_por_valor,
+    extract_provider_payment_id,
+    should_allow_refund,
+)
 from app.services.command_queue import get_command_status
 from app.services.pulse_tracking import update_pulse_status
 
@@ -159,6 +163,7 @@ def enviar_credito_teste(
         "topic": f"/TEF/{machine_id}/cmd",
         "payload": mqtt_payload,
         "valor": valor,
+        "pulsos": calcular_pulsos_por_valor(valor),
         "command_id": command_id,
         "command_status": command_status,
     }
