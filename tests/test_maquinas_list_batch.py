@@ -403,9 +403,12 @@ def test_eventos_dispositivo_endpoint_rejects_non_admin():
     assert response.status_code == 403
 
 
+SUPPORTED_DEVICE_CONFIG_FW = "version_2.1.0-remote-device-config-2026-09-29"
+
+
 def test_config_dispositivo_endpoint_saves_and_publishes_wifi_timing_for_admin():
     machine_id = "CPM-LIST-RECONEXAO"
-    _create_maquina(machine_id)
+    _create_maquina(machine_id, firmware_version=SUPPORTED_DEVICE_CONFIG_FW)
 
     with TestClient(app) as client:
         token = _create_admin_token(client, "admin-reconexao@test.local")
@@ -434,7 +437,7 @@ def test_config_dispositivo_endpoint_saves_and_publishes_wifi_timing_for_admin()
 
 def test_config_dispositivo_endpoint_rejects_value_out_of_range():
     machine_id = "CPM-LIST-RECONEXAO-2"
-    _create_maquina(machine_id)
+    _create_maquina(machine_id, firmware_version=SUPPORTED_DEVICE_CONFIG_FW)
 
     with TestClient(app) as client:
         token = _create_admin_token(client, "admin-reconexao-2@test.local")
@@ -450,7 +453,12 @@ def test_config_dispositivo_endpoint_rejects_value_out_of_range():
 
 def test_config_dispositivo_endpoint_null_resets_wifi_timing_to_default():
     machine_id = "CPM-LIST-RECONEXAO-3"
-    _create_maquina(machine_id, wifi_hard_reset_ms=20000, wifi_full_restart_ms=60000)
+    _create_maquina(
+        machine_id,
+        wifi_hard_reset_ms=20000,
+        wifi_full_restart_ms=60000,
+        firmware_version=SUPPORTED_DEVICE_CONFIG_FW,
+    )
 
     with TestClient(app) as client:
         token = _create_admin_token(client, "admin-reconexao-3@test.local")
@@ -499,7 +507,7 @@ def test_config_dispositivo_endpoint_rejects_non_admin():
 
 def test_config_dispositivo_endpoint_updates_pulse_and_coin_fields():
     machine_id = "CPM-LIST-RECONEXAO-5"
-    _create_maquina(machine_id)
+    _create_maquina(machine_id, firmware_version=SUPPORTED_DEVICE_CONFIG_FW)
 
     with TestClient(app) as client:
         token = _create_admin_token(client, "admin-reconexao-5@test.local")
@@ -529,7 +537,7 @@ def test_config_dispositivo_endpoint_updates_pulse_and_coin_fields():
 
 def test_config_dispositivo_endpoint_rejects_text_field_too_long():
     machine_id = "CPM-LIST-RECONEXAO-6"
-    _create_maquina(machine_id)
+    _create_maquina(machine_id, firmware_version=SUPPORTED_DEVICE_CONFIG_FW)
 
     with TestClient(app) as client:
         token = _create_admin_token(client, "admin-reconexao-6@test.local")
@@ -541,3 +549,36 @@ def test_config_dispositivo_endpoint_rejects_text_field_too_long():
         )
 
     assert response.status_code == 422
+
+
+def test_config_dispositivo_endpoint_rejects_old_firmware():
+    machine_id = "CPM-LIST-RECONEXAO-7"
+    _create_maquina(machine_id, firmware_version="version_2.0.9-mqtt-lwt-forced-restart-log-2026-08-21")
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-reconexao-7@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.post(
+            f"/api/v1/maquinas/{machine_id}/config-dispositivo",
+            json={"pulse_credit": "150"},
+            headers=headers,
+        )
+
+    assert response.status_code == 409
+    assert "2.0.9" in response.json()["detail"]
+
+
+def test_config_dispositivo_endpoint_rejects_unknown_firmware():
+    machine_id = "CPM-LIST-RECONEXAO-8"
+    _create_maquina(machine_id, firmware_version=None)
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-reconexao-8@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.post(
+            f"/api/v1/maquinas/{machine_id}/config-dispositivo",
+            json={"pulse_credit": "150"},
+            headers=headers,
+        )
+
+    assert response.status_code == 409

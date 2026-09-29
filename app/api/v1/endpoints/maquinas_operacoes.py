@@ -229,6 +229,22 @@ DEVICE_CONFIG_TEXT_FIELDS = [
 ]
 DEVICE_CONFIG_TEXT_FIELD_MAX_LEN = 11
 
+# A mensagem MQTT "@config|" so existe a partir desta versao do firmware -
+# numa placa mais antiga ela cai no "else" do mqtt_callback (CMD_IGNORADO),
+# entao o admin acharia que configurou algo que na real nunca chegou a
+# aplicar. Bloqueamos aqui em vez de deixar enviar e falhar silenciosamente.
+MIN_FIRMWARE_VERSION_FOR_DEVICE_CONFIG = (2, 1, 0)
+_FIRMWARE_VERSION_RE = re.compile(r"version_(\d+)\.(\d+)\.(\d+)")
+
+
+def _firmware_version_tuple(firmware_version: str | None) -> tuple[int, int, int] | None:
+    if not firmware_version:
+        return None
+    match = _FIRMWARE_VERSION_RE.search(firmware_version)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
 
 @router.post("/maquinas/{machine_id}/config-dispositivo")
 def configurar_dispositivo_remotamente(
@@ -251,6 +267,18 @@ def configurar_dispositivo_remotamente(
     maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
     if not maquina:
         raise HTTPException(status_code=404, detail="Maquina nao encontrada")
+
+    versao_atual = _firmware_version_tuple(maquina.firmware_version)
+    if versao_atual is None or versao_atual < MIN_FIRMWARE_VERSION_FOR_DEVICE_CONFIG:
+        minima = ".".join(str(part) for part in MIN_FIRMWARE_VERSION_FOR_DEVICE_CONFIG)
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"Esta maquina esta com firmware {maquina.firmware_version or 'desconhecido'}, "
+                f"que nao suporta configuracao remota. Atualize para a versao {minima} ou mais "
+                "recente (Atualizar firmware) antes de usar esse ajuste."
+            ),
+        )
 
     def _valida_tempo_reconexao(campo: str):
         valor = payload.get(campo)
