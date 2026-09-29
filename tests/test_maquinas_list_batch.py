@@ -3,6 +3,7 @@ import sys
 import tempfile
 from datetime import datetime, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/compactpay-test.db"
 os.environ["START_MQTT_WORKER"] = "false"
@@ -398,5 +399,99 @@ def test_eventos_dispositivo_endpoint_rejects_non_admin():
         token = response.json()["access_token"]
         headers = {"Authorization": f"Bearer {token}"}
         response = client.get(f"/api/v1/maquinas/{machine_id}/eventos-dispositivo", headers=headers)
+
+    assert response.status_code == 403
+
+
+def test_config_reconexao_endpoint_saves_and_publishes_for_admin():
+    machine_id = "CPM-LIST-RECONEXAO"
+    _create_maquina(machine_id)
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-reconexao@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.services.mqtt_commands.publish_raw_mqtt_command") as publish_mock:
+            response = client.post(
+                f"/api/v1/maquinas/{machine_id}/config-reconexao",
+                json={"wifi_hard_reset_ms": 20000, "wifi_full_restart_ms": 60000},
+                headers=headers,
+            )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["enviado"] is True
+    assert data["wifi_hard_reset_ms"] == 20000
+    assert data["wifi_full_restart_ms"] == 60000
+    publish_mock.assert_called_once()
+    published_payload = publish_mock.call_args[0][1]
+    assert "wifi_hard_reset_ms=20000" in published_payload
+    assert "wifi_full_restart_ms=60000" in published_payload
+
+    maquina = _get_maquina(machine_id)
+    assert maquina.wifi_hard_reset_ms == 20000
+    assert maquina.wifi_full_restart_ms == 60000
+
+
+def test_config_reconexao_endpoint_rejects_value_out_of_range():
+    machine_id = "CPM-LIST-RECONEXAO-2"
+    _create_maquina(machine_id)
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-reconexao-2@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.post(
+            f"/api/v1/maquinas/{machine_id}/config-reconexao",
+            json={"wifi_hard_reset_ms": 1000},
+            headers=headers,
+        )
+
+    assert response.status_code == 422
+
+
+def test_config_reconexao_endpoint_null_resets_to_default():
+    machine_id = "CPM-LIST-RECONEXAO-3"
+    _create_maquina(machine_id, wifi_hard_reset_ms=20000, wifi_full_restart_ms=60000)
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-reconexao-3@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.services.mqtt_commands.publish_raw_mqtt_command"):
+            response = client.post(
+                f"/api/v1/maquinas/{machine_id}/config-reconexao",
+                json={"wifi_hard_reset_ms": None, "wifi_full_restart_ms": None},
+                headers=headers,
+            )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["wifi_hard_reset_ms"] is None
+    assert data["wifi_full_restart_ms"] is None
+    maquina = _get_maquina(machine_id)
+    assert maquina.wifi_hard_reset_ms is None
+    assert maquina.wifi_full_restart_ms is None
+
+
+def test_config_reconexao_endpoint_rejects_non_admin():
+    machine_id = "CPM-LIST-RECONEXAO-4"
+    _create_maquina(machine_id)
+
+    db = SessionLocal()
+    try:
+        db.add(Usuario(email="cliente-reconexao@test.local", hashed_password=get_password_hash("123456"), role=UserRole.cliente))
+        db.commit()
+    finally:
+        db.close()
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/v1/login", data={"username": "cliente-reconexao@test.local", "password": "123456"}
+        )
+        token = response.json()["access_token"]
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.post(
+            f"/api/v1/maquinas/{machine_id}/config-reconexao",
+            json={"wifi_hard_reset_ms": 20000},
+            headers=headers,
+        )
 
     assert response.status_code == 403

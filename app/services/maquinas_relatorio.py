@@ -1387,6 +1387,8 @@ def serialize_machine_summary(
         "faturamento": float(faturamento),
         "quantidade_saidas": int(quantidade_saidas),
         "ignorar_saida_pos_credito": bool(maquina.ignorar_saida_pos_credito),
+        "wifi_hard_reset_ms": maquina.wifi_hard_reset_ms,
+        "wifi_full_restart_ms": maquina.wifi_full_restart_ms,
     }
 
 
@@ -1493,6 +1495,8 @@ def serialize_machines_summary_batch(
                 "faturamento": float(faturamento),
                 "quantidade_saidas": int(quantidade_saidas),
                 "ignorar_saida_pos_credito": bool(maquina.ignorar_saida_pos_credito),
+                "wifi_hard_reset_ms": maquina.wifi_hard_reset_ms,
+                "wifi_full_restart_ms": maquina.wifi_full_restart_ms,
             }
         )
 

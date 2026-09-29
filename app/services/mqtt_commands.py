@@ -102,6 +102,36 @@ def publish_machine_update(
     return payload
 
 
+def publish_machine_reconnect_config(
+    machine_id: str,
+    command_id: str,
+    wifi_hard_reset_ms: int | None = None,
+    wifi_full_restart_ms: int | None = None,
+) -> str:
+    """Ajusta remotamente os tempos da escada de reconexao de Wi-Fi de UMA
+    maquina especifica (reciclar radio / reiniciar a placa inteira) - util
+    pra locais com roteador instavel que precisam de um tempo diferente do
+    padrao usado pela maioria das maquinas, sem precisar regravar firmware."""
+    topic = f"/TEF/{machine_id}/cmd"
+    payload = f"{machine_id}@config|cmd={command_id}|"
+    if wifi_hard_reset_ms is not None:
+        payload += f"wifi_hard_reset_ms={int(wifi_hard_reset_ms)}|"
+    if wifi_full_restart_ms is not None:
+        payload += f"wifi_full_restart_ms={int(wifi_full_restart_ms)}|"
+
+    from app.services.command_queue import track_and_publish_command
+
+    track_and_publish_command(
+        machine_id=machine_id,
+        command_id=command_id,
+        tipo="config",
+        topic=topic,
+        payload=payload,
+    )
+    logging.info("MQTT config de reconexao publicado machine_id=%s payload=%s", machine_id, payload)
+    return payload
+
+
 def publish_machine_ping(machine_id: str, command_id: str) -> str:
     topic = f"/TEF/{machine_id}/cmd"
     payload = f"{machine_id}@ping|cmd={command_id}|"

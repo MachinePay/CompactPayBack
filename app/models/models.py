@@ -126,6 +126,13 @@ class Maquina(Base):
     last_forced_restart_at = Column(DateTime, nullable=True)
     ignorar_saida_pos_credito = Column(Boolean, nullable=True, default=True)
     credito_liberado_em = Column(DateTime, nullable=True)
+    # Tempos (ms) da escada de reconexao de Wi-Fi da placa - NULL usa o padrao
+    # do firmware (ver WIFI_RECONNECT_HARD_RESET_AFTER_MS_DEFAULT/
+    # WIFI_RECONNECT_FULL_RESTART_AFTER_MS_DEFAULT no .ino); ajustavel por
+    # maquina via POST /maquinas/{id}/config-reconexao para locais com
+    # roteador instavel que precisam de um tempo diferente do padrao.
+    wifi_hard_reset_ms = Column(Integer, nullable=True)
+    wifi_full_restart_ms = Column(Integer, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")
 

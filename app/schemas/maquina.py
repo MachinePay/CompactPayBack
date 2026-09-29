@@ -52,6 +52,8 @@ class MaquinaOut(BaseModel):
     faturamento: float = 0.0
     quantidade_saidas: int = 0
     ignorar_saida_pos_credito: bool = True
+    wifi_hard_reset_ms: Optional[int] = None
+    wifi_full_restart_ms: Optional[int] = None
 
     class Config:
         from_attributes = True
