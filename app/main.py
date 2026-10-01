@@ -3,6 +3,13 @@ import re
 import threading
 import time
 from uuid import uuid4
+
+# Sem isso, o root logger fica no nivel padrao (WARNING) e TODO logging.info()
+# do projeto inteiro (workers em background: sumup_poller, retention,
+# alert_notifier, command_queue etc.) e' descartado silenciosamente - nunca
+# aparece no log do Render. So logging.warning/error/exception apareciam.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
