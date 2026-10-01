@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 import urllib.error
 import urllib.parse
@@ -158,8 +159,11 @@ def list_recent_transactions(access_token: str, merchant_code: str, changes_sinc
     if changes_since:
         params["changes_since"] = changes_since
     query = urllib.parse.urlencode(params)
-    data = su_request("GET", f"{API}/v2.1/merchants/{merchant_code}/transactions/history?{query}", access_token)
+    url = f"{API}/v2.1/merchants/{merchant_code}/transactions/history?{query}"
+    logging.info("[SumUp] consultando historico: %s", url)
+    data = su_request("GET", url, access_token)
     items = data.get("items") if isinstance(data, dict) else data
+    logging.info("[SumUp] resposta bruta do historico (ate 2000 chars): %s", json.dumps(data, default=str)[:2000])
     return items or []
 
 

@@ -90,8 +90,12 @@ def process_cliente(db, cliente: Cliente) -> None:
     maquina_by_reader_id = {m.sumup_reader_id: m for m in maquinas if m.sumup_reader_id}
     single_machine = maquinas[0] if len(maquinas) == 1 else None
 
+    # Formato exato da doc oficial ("2019-08-28T09:00:00Z") - sem isso,
+    # .isoformat() manda microssegundos e sem "Z" (ex.: "...23:08:39.967797"),
+    # formato que a API pode nao reconhecer e silenciosamente nao filtrar
+    # nada (sem erro, so' zero resultados sempre).
     changes_since = (
-        (cliente.sumup_last_sync_at - CHANGES_SINCE_SAFETY_MARGIN).isoformat()
+        (cliente.sumup_last_sync_at - CHANGES_SINCE_SAFETY_MARGIN).strftime("%Y-%m-%dT%H:%M:%SZ")
         if cliente.sumup_last_sync_at
         else None
     )
