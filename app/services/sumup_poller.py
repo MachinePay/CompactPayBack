@@ -2,7 +2,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from fastapi import HTTPException
 
@@ -15,6 +15,14 @@ from app.services.sumup_webhook import liberar_pulso_sumup, registrar_pagamento_
 # Status que a API de historico da SumUp pode mandar - tratamos qualquer
 # variacao de caixa/alias como "foi aprovado", o resto e' ignorado.
 SUCCESS_STATUSES = {"successful", "success", "paid"}
+
+# Margem de seguranca subtraida do changes_since - sem isso, uma transacao que
+# demore pra ficar visivel no historico da SumUp (relogio dessincronizado,
+# atraso de processamento no lado deles) podia nunca ser vista: o watermark
+# ja tinha avancado pra depois do timestamp dela antes dela aparecer. Reler
+# uma janela maior nao credita nada em dobro - _ja_processada ja filtra
+# qualquer transacao que a gente ja viu antes.
+CHANGES_SINCE_SAFETY_MARGIN = timedelta(minutes=5)
 
 
 def _extract_device_identifier(transacao: dict) -> str | None:
@@ -82,12 +90,20 @@ def process_cliente(db, cliente: Cliente) -> None:
     maquina_by_reader_id = {m.sumup_reader_id: m for m in maquinas if m.sumup_reader_id}
     single_machine = maquinas[0] if len(maquinas) == 1 else None
 
-    changes_since = cliente.sumup_last_sync_at.isoformat() if cliente.sumup_last_sync_at else None
+    changes_since = (
+        (cliente.sumup_last_sync_at - CHANGES_SINCE_SAFETY_MARGIN).isoformat()
+        if cliente.sumup_last_sync_at
+        else None
+    )
     try:
         transacoes = list_recent_transactions(access_token, merchant_code, changes_since=changes_since)
     except HTTPException as exc:
         logging.warning("[SumUp poller] falha ao consultar historico do cliente %s: %s", cliente.id, exc.detail)
         return
+    logging.info(
+        "[SumUp poller] cliente %s: %d transacao(oes) retornada(s) desde %s",
+        cliente.id, len(transacoes), changes_since,
+    )
 
     # Mapa device_identifier -> reader_id - buscado sempre (nao so' quando ha
     # mais de uma maquina), pra SEMPRE poder confirmar contra o reader real
@@ -167,7 +183,7 @@ def process_cliente(db, cliente: Cliente) -> None:
             machine_id=maquina.id_hardware,
             amount=valor,
             provider_payment_id=transaction_id,
-            descricao=f"Pagamento aprovado direto na maquininha SumUp (transaction_id={transaction_id})",
+            descricao=f"Pagamento aprovado direto na maquininha SumUp (transaction_id={transaction_id}, terminal_id={maquina.sumup_reader_id})",
             payment_type=transacao.get("card_type") or transacao.get("payment_type"),
         )
         if command_id is None:

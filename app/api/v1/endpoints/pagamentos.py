@@ -460,7 +460,7 @@ def resolver_pendencia_sumup(
         machine_id=machine_id,
         amount=pendencia.valor,
         provider_payment_id=pendencia.transaction_id,
-        descricao=f"Pagamento SumUp standalone vinculado manualmente (transaction_id={pendencia.transaction_id})",
+        descricao=f"Pagamento SumUp standalone vinculado manualmente (transaction_id={pendencia.transaction_id}, terminal_id={maquina.sumup_reader_id})",
     )
     pendencia.resolvido = True
     pendencia.maquina_id = machine_id

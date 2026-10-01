@@ -166,7 +166,7 @@ def processar_callback_sumup(dados: dict):
             machine_id=machine_id,
             amount=amount,
             provider_payment_id=transaction_id,
-            descricao=f"Pagamento aprovado via maquininha SumUp (checkout_id={checkout_id}, reader_id={reader_id})",
+            descricao=f"Pagamento aprovado via maquininha SumUp (checkout_id={checkout_id}, terminal_id={reader_id})",
             payment_type=checkout_data.get("card_type") or checkout_data.get("payment_type"),
         )
         pendente.processado = True
