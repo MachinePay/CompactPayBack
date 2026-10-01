@@ -173,7 +173,12 @@ def get_transaction_details(access_token: str, merchant_code: str, transaction_i
     # fisico processou a transacao (ver list_recent_transactions).
     query = urllib.parse.urlencode({"id": transaction_id})
     data = su_request("GET", f"{API}/v2.1/merchants/{merchant_code}/transactions?{query}", access_token)
-    return data.get("data") or data
+    result = data.get("data") or data
+    logging.info(
+        "[SumUp] resposta bruta do retrieve de transacao %s (ate 2000 chars): %s",
+        transaction_id, json.dumps(result, default=str)[:2000],
+    )
+    return result
 
 
 def create_sumup_refund(access_token: str, transaction_id: str) -> None:
