@@ -112,6 +112,13 @@ def get_reader_checkout(access_token: str, merchant_code: str, reader_id: str, c
     return data.get("data") or data
 
 
+def create_sumup_refund(access_token: str, transaction_id: str) -> None:
+    # Endpoint de refund da SumUp usa o transaction_id (nao o checkout_id) -
+    # ver get_reader_checkout, que devolve esse campo assim que o pagamento
+    # e' concluido com sucesso.
+    su_request("POST", f"{API}/v0.1/me/refund/{transaction_id}", access_token, body={})
+
+
 def terminate_reader_checkout(access_token: str, merchant_code: str, reader_id: str) -> None:
     su_request(
         "POST",

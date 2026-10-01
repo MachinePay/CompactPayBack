@@ -23,7 +23,9 @@ from app.services.pagamentos_helpers import (
     calcular_pulsos_por_valor,
     extract_provider_payment_id,
     should_allow_refund,
+    should_use_sumup_refund,
 )
+from app.services.sumup import create_sumup_refund
 from app.services.command_queue import get_command_status
 from app.services.pulse_tracking import update_pulse_status
 
@@ -820,21 +822,27 @@ def estornar_pagamento_maquina(
         raise HTTPException(status_code=400, detail="Pagamento ja foi estornado")
     payment_id = extract_provider_payment_id(historico)
     if not should_allow_refund(historico.pulse_status, historico.refunded_at, payment_id, historico.provider):
-        raise HTTPException(status_code=422, detail="Extorno permitido apenas para pagamentos com identificador do Mercado Pago e ainda nao estornados")
+        raise HTTPException(status_code=422, detail="Extorno permitido apenas para pagamentos com identificador do Mercado Pago/SumUp e ainda nao estornados")
     if not payment_id:
-        raise HTTPException(status_code=422, detail="Pagamento sem payment_id do Mercado Pago para estorno automatico")
+        raise HTTPException(status_code=422, detail="Pagamento sem identificador do provedor para estorno automatico")
 
-    token = (maquina.dono.mp_access_token if getattr(maquina, "dono", None) else "") or ""
-    if not token:
-        raise HTTPException(status_code=422, detail="Cliente sem token Mercado Pago para estorno")
+    if should_use_sumup_refund(historico):
+        token = (maquina.dono.sumup_api_key if getattr(maquina, "dono", None) else "") or ""
+        if not token:
+            raise HTTPException(status_code=422, detail="Cliente sem API key SumUp para estorno")
+        create_sumup_refund(token.strip(), payment_id)
+    else:
+        token = (maquina.dono.mp_access_token if getattr(maquina, "dono", None) else "") or ""
+        if not token:
+            raise HTTPException(status_code=422, detail="Cliente sem token Mercado Pago para estorno")
 
-    mp_request(
-        "POST",
-        f"https://api.mercadopago.com/v1/payments/{payment_id}/refunds",
-        token.strip(),
-        body={},
-        headers={"X-Idempotency-Key": f"refund-{payment_id}-{historico_id}"},
-    )
+        mp_request(
+            "POST",
+            f"https://api.mercadopago.com/v1/payments/{payment_id}/refunds",
+            token.strip(),
+            body={},
+            headers={"X-Idempotency-Key": f"refund-{payment_id}-{historico_id}"},
+        )
     refunded_at = datetime.utcnow()
     historico.refunded_at = refunded_at
     venda = db.query(VendaPagamento).filter(VendaPagamento.historico_id == historico.id).first()

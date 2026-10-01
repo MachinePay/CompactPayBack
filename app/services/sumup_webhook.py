@@ -79,12 +79,18 @@ def processar_callback_sumup(dados: dict):
             print(f"[SumUp webhook] checkout {checkout_id} ainda pendente (status={status_raw})")
             return {"status": "ignorado", "detalhe": f"Checkout ainda nao finalizado ({status_raw})"}
 
+        # O estorno da SumUp usa o transaction_id, nao o checkout_id (ver
+        # create_sumup_refund) - guardamos ele como provider_payment_id pra
+        # deixar o extorno manual/automatico (pagamentos_helpers.py) funcionar
+        # sem precisar consultar a SumUp de novo depois.
+        transaction_id = str(checkout_data.get("transaction_id") or checkout_id)
+
         _acquire_payment_lock(db, f"sumup_checkout_{checkout_id}")
         duplicado = (
             db.query(VendaPagamento)
             .filter(
                 VendaPagamento.provider == "sumup",
-                VendaPagamento.provider_payment_id == checkout_id,
+                VendaPagamento.provider_payment_id == transaction_id,
             )
             .first()
         )
@@ -109,7 +115,7 @@ def processar_callback_sumup(dados: dict):
             descricao=f"Pagamento aprovado via maquininha SumUp (checkout_id={checkout_id}, reader_id={reader_id})",
             valor=amount,
             provider="sumup",
-            provider_payment_id=checkout_id,
+            provider_payment_id=transaction_id,
             payment_type=checkout_data.get("card_type") or checkout_data.get("payment_type"),
             pulse_status="pendente",
             command_id=command_id,
@@ -125,7 +131,7 @@ def processar_callback_sumup(dados: dict):
             transacao_id=transacao.id,
             historico_id=historico.id,
             provider="sumup",
-            provider_payment_id=checkout_id,
+            provider_payment_id=transaction_id,
             tipo_pagamento=historico.payment_type,
             status_pulso="pendente",
             command_id=command_id,

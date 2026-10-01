@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.models import Cliente, HistoricoOperacao, VendaPagamento
 from app.services.mercado_pago import mp_request
+from app.services.sumup import create_sumup_refund
 
 NON_RELEASED_PULSE_STATUSES = {
     "falha_publicacao",
@@ -37,6 +38,11 @@ AMBIGUOUS_PULSE_STATUSES = {
 }
 
 MERCADO_PAGO_REFUND_PROVIDERS = {"", "mercado_pago", "manual"}
+SUMUP_REFUND_PROVIDERS = {"sumup"}
+# Uniao das duas - usado so pra decidir SE existe algum mecanismo de estorno
+# automatico pra esse provider (ver should_allow_refund). Qual API chamar de
+# fato e' decidido depois, por provider, em auto_refund_failed_pulse.
+AUTO_REFUND_PROVIDERS = MERCADO_PAGO_REFUND_PROVIDERS | SUMUP_REFUND_PROVIDERS
 
 
 def calcular_pulsos_por_valor(valor: float) -> int:
@@ -59,7 +65,7 @@ def should_allow_refund(pulse_status: str | None, refunded_at, provider_payment_
     if not provider_payment_id:
         return False
     normalized_provider = str(provider or "").strip().lower()
-    return normalized_provider in MERCADO_PAGO_REFUND_PROVIDERS
+    return normalized_provider in AUTO_REFUND_PROVIDERS
 
 
 def should_use_mercado_pago_refund(historico: HistoricoOperacao | None) -> bool:
@@ -67,6 +73,13 @@ def should_use_mercado_pago_refund(historico: HistoricoOperacao | None) -> bool:
         return False
     normalized_provider = str(historico.provider or "").strip().lower()
     return normalized_provider in MERCADO_PAGO_REFUND_PROVIDERS
+
+
+def should_use_sumup_refund(historico: HistoricoOperacao | None) -> bool:
+    if not historico:
+        return False
+    normalized_provider = str(historico.provider or "").strip().lower()
+    return normalized_provider in SUMUP_REFUND_PROVIDERS
 
 
 def extract_provider_payment_id(historico: HistoricoOperacao | None) -> str | None:
@@ -83,26 +96,32 @@ def auto_refund_failed_pulse(db: Session, historico: HistoricoOperacao | None, m
         return False
     if not should_auto_refund_on_pulse_failure(getattr(historico, "pulse_status", None)):
         return False
-    if not should_use_mercado_pago_refund(historico):
-        return False
 
     payment_id = extract_provider_payment_id(historico)
     if not payment_id:
         return False
 
-    token = ""
-    if maquina is not None:
-        token = (getattr(maquina, "dono", None).mp_access_token if getattr(maquina, "dono", None) else "") or ""
-    if not token:
+    dono = getattr(maquina, "dono", None) if maquina is not None else None
+
+    if should_use_mercado_pago_refund(historico):
+        token = (getattr(dono, "mp_access_token", None) or "") if dono else ""
+        if not token:
+            return False
+        mp_request(
+            "POST",
+            f"https://api.mercadopago.com/v1/payments/{payment_id}/refunds",
+            token.strip(),
+            body={},
+            headers={"X-Idempotency-Key": f"refund-{payment_id}-{historico.id}"},
+        )
+    elif should_use_sumup_refund(historico):
+        token = (getattr(dono, "sumup_api_key", None) or "") if dono else ""
+        if not token:
+            return False
+        create_sumup_refund(token.strip(), payment_id)
+    else:
         return False
 
-    mp_request(
-        "POST",
-        f"https://api.mercadopago.com/v1/payments/{payment_id}/refunds",
-        token.strip(),
-        body={},
-        headers={"X-Idempotency-Key": f"refund-{payment_id}-{historico.id}"},
-    )
     refunded_at = datetime.utcnow()
     historico.refunded_at = refunded_at
     venda = db.query(VendaPagamento).filter(VendaPagamento.historico_id == historico.id).first()
