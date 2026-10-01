@@ -142,13 +142,16 @@ def list_recent_transactions(access_token: str, merchant_code: str, changes_sinc
     # reader correto quando o cliente tem mais de uma maquina, o poller
     # precisa chamar get_transaction_details pra cada transacao nova.
     #
-    # payment_types[]=POS filtra so' pagamento feito com cartao fisico na
-    # maquininha - exclui ECOM/online, CASH, BOLETO etc que nao tem nada a
-    # ver com nosso sistema (o cliente pode usar a mesma conta SumUp pra
-    # outras coisas alem das nossas maquinas).
+    # NAO filtramos por payment_types[] aqui - testado em producao (transacao
+    # real confirmada como concluida no app da SumUp) e o filtro
+    # "payment_types[]=POS" fazia esse endpoint devolver ZERO resultados,
+    # mesmo pra pagamento feito na maquininha fisica. Ou o valor do enum nao e'
+    # exatamente esse pra transacao standalone, ou a API nao aceita esse
+    # parametro do jeito documentado. A seguranca contra transacao de outra
+    # origem (ex.: ecommerce na mesma conta) fica por conta da verificacao de
+    # device/reader no poller, nao desse filtro.
     params = {
         "statuses[]": "SUCCESSFUL",
-        "payment_types[]": "POS",
         "limit": "100",
         "order": "ascending",
     }
