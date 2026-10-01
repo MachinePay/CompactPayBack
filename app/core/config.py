@@ -50,6 +50,10 @@ class Settings(BaseSettings):
     # a propria API key cadastrada (cliente.sumup_api_key), igual o MP_ACCESS_TOKEN.
     SUMUP_API_KEY: str = os.getenv("SUMUP_API_KEY", "")
     SUMUP_MERCHANT_CODE: str = os.getenv("SUMUP_MERCHANT_CODE", "")
+    # Polling periodico (sumup_poller.py) - detecta pagamentos feitos DIRETO na
+    # maquininha (standalone), que nao disparam nenhum webhook da SumUp.
+    START_SUMUP_POLLER_WORKER: bool = os.getenv("START_SUMUP_POLLER_WORKER", "true").lower() == "true"
+    SUMUP_POLLER_INTERVAL_SECONDS: int = int(os.getenv("SUMUP_POLLER_INTERVAL_SECONDS", "20"))
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     CORS_ALLOWED_ORIGINS: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
     MP_DEFAULT_STORE_STREET_NAME: str = os.getenv("MP_DEFAULT_STORE_STREET_NAME", "Rua CompactPay")

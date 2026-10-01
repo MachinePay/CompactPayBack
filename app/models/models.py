@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Integer, ForeignKey, DateTime, Float, Boolean, Enum
+from sqlalchemy import Column, String, Integer, ForeignKey, DateTime, Float, Boolean, Enum, Text
 from sqlalchemy.orm import relationship
 import datetime
 from app.db.base import Base
@@ -53,6 +53,10 @@ class Cliente(Base):
     cliente_sumup = Column(Boolean, nullable=True)
     sumup_api_key = Column(String, nullable=True)
     sumup_merchant_code = Column(String, nullable=True)
+    # Marca d'agua do polling (sumup_poller.py) - ate onde ja consultamos o
+    # historico de transacoes desse cliente, pra so buscar o que mudou desde
+    # a ultima rodada (changes_since) em vez de reprocessar tudo toda vez.
+    sumup_last_sync_at = Column(DateTime, nullable=True)
     maquinas = relationship("Maquina", back_populates="dono")
 
 class Usuario(Base):
@@ -230,6 +234,27 @@ class SumupCheckout(Base):
     valor = Column(Float, nullable=False)
     processado = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class SumupTransacaoPendente(Base):
+    # Pagamento SumUp (detectado pelo polling, feito direto na maquininha)
+    # cujo reader nao bateu com nenhuma maquina com confianca - cliente tem
+    # mais de uma maquina na conta SumUp e nao foi possivel identificar qual
+    # delas recebeu. Fica visivel no painel de alertas (maquinas_relatorio.py)
+    # ate um admin vincular manualmente (ou ignorar) via
+    # /pagamentos/sumup/pendencias/{id}/resolver|ignorar.
+    __tablename__ = "sumup_transacoes_pendentes"
+    id = Column(Integer, primary_key=True)
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), index=True, nullable=False)
+    transaction_id = Column(String, unique=True, index=True, nullable=False)
+    valor = Column(Float, nullable=False)
+    device_identifier = Column(String, nullable=True)
+    raw_payload = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    resolvido = Column(Boolean, default=False, nullable=False)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), nullable=True)
+    resolvido_em = Column(DateTime, nullable=True)
+    resolvido_por = Column(String, nullable=True)
 
 
 class FechamentoMaquina(Base):

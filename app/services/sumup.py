@@ -1,6 +1,7 @@
 import json
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from fastapi import HTTPException
@@ -55,13 +56,29 @@ def list_readers(access_token: str, merchant_code: str) -> list[dict]:
     result = []
     for item in items:
         reader_id = item.get("id") or item.get("reader_id")
-        name = item.get("name") or ((item.get("device") or {}).get("identifier"))
+        device_identifier = (item.get("device") or {}).get("identifier")
+        name = item.get("name") or device_identifier
         result.append({
             "id": reader_id,
             "name": name,
             "label": f"{name} ({reader_id})" if name else reader_id,
+            # Serial fisico do reader - usado pra casar com device_info das
+            # transacoes do historico (ver build_reader_device_map).
+            "device_identifier": device_identifier,
         })
     return result
+
+
+def build_reader_device_map(access_token: str, merchant_code: str) -> dict[str, str]:
+    """device_identifier (serial do reader) -> reader_id, pra casar transacoes
+    do historico (que trazem device_info, nao reader_id) com o reader que
+    processou. So vale a pena chamar quando o cliente tem mais de uma maquina
+    SumUp - com uma so, nao ha ambiguidade a resolver (ver sumup_poller.py)."""
+    mapa: dict[str, str] = {}
+    for reader in list_readers(access_token, merchant_code):
+        if reader.get("device_identifier") and reader.get("id"):
+            mapa[str(reader["device_identifier"])] = str(reader["id"])
+    return mapa
 
 
 def create_reader_checkout(
@@ -109,6 +126,46 @@ def get_reader_checkout(access_token: str, merchant_code: str, reader_id: str, c
         f"{API}/v0.1/merchants/{merchant_code}/readers/{reader_id}/checkout/{checkout_id}",
         access_token,
     )
+    return data.get("data") or data
+
+
+def list_recent_transactions(access_token: str, merchant_code: str, changes_since: str | None = None) -> list[dict]:
+    # Usado pelo polling (sumup_poller.py) pra detectar pagamentos feitos
+    # DIRETO na maquininha (standalone, cliente digita o valor nela mesma) -
+    # esses NUNCA disparam o webhook por checkout (so cobrancas criadas pela
+    # nossa propria API tem isso). changes_since filtra so o que mudou desde
+    # a ultima consulta, pra nao reprocessar o historico inteiro toda vez.
+    #
+    # IMPORTANTE (confirmado na doc oficial): este endpoint de HISTORICO nao
+    # devolve device_info - esse campo so existe no retrieve de uma transacao
+    # especifica (ver get_transaction_details). Pra casar a transacao com o
+    # reader correto quando o cliente tem mais de uma maquina, o poller
+    # precisa chamar get_transaction_details pra cada transacao nova.
+    #
+    # payment_types[]=POS filtra so' pagamento feito com cartao fisico na
+    # maquininha - exclui ECOM/online, CASH, BOLETO etc que nao tem nada a
+    # ver com nosso sistema (o cliente pode usar a mesma conta SumUp pra
+    # outras coisas alem das nossas maquinas).
+    params = {
+        "statuses[]": "SUCCESSFUL",
+        "payment_types[]": "POS",
+        "limit": "100",
+        "order": "ascending",
+    }
+    if changes_since:
+        params["changes_since"] = changes_since
+    query = urllib.parse.urlencode(params)
+    data = su_request("GET", f"{API}/v2.1/merchants/{merchant_code}/transactions/history?{query}", access_token)
+    items = data.get("items") if isinstance(data, dict) else data
+    return items or []
+
+
+def get_transaction_details(access_token: str, merchant_code: str, transaction_id: str) -> dict:
+    # Unico endpoint que devolve device_info - usado pelo poller so quando ha
+    # ambiguidade (cliente com mais de uma maquina) pra descobrir qual reader
+    # fisico processou a transacao (ver list_recent_transactions).
+    query = urllib.parse.urlencode({"id": transaction_id})
+    data = su_request("GET", f"{API}/v2.1/merchants/{merchant_code}/transactions?{query}", access_token)
     return data.get("data") or data
 
 

@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import Cliente, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, SumupCheckout, Transacao, VendaPagamento
+from app.models.models import Cliente, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, SumupCheckout, SumupTransacaoPendente, Transacao, VendaPagamento
 from app.models.produto import Produto
 from app.schemas.pagamento import CreditoDigitalCreate, CreditoDigitalOut, PagamentoCreate, PagamentoOut
 from app.services.auditoria import registrar_auditoria
@@ -19,7 +19,7 @@ from app.services.pagamentos_helpers import calcular_pulsos_por_valor
 from app.services.command_queue import get_command_status
 from app.services.pulse_tracking import update_pulse_status
 from app.services.sumup import create_reader_checkout
-from app.services.sumup_webhook import processar_callback_sumup
+from app.services.sumup_webhook import liberar_pulso_sumup, processar_callback_sumup, registrar_pagamento_sumup
 from app.services.vendas import registrar_venda_pagamento
 
 router = APIRouter()
@@ -422,3 +422,71 @@ def cobrar_na_maquininha_sumup(
         "sumup_checkout_id": checkout["checkout_id"],
         "client_transaction_id": checkout["client_transaction_id"],
     }
+
+
+def _get_pendencia_visivel(db: Session, pendencia_id: int, role: str, cliente_id) -> SumupTransacaoPendente:
+    pendencia = db.query(SumupTransacaoPendente).filter(SumupTransacaoPendente.id == pendencia_id).first()
+    if not pendencia:
+        raise HTTPException(status_code=404, detail="Pendencia nao encontrada")
+    if role != "admin" and pendencia.cliente_id != cliente_id:
+        raise HTTPException(status_code=404, detail="Pendencia nao encontrada")
+    if pendencia.resolvido:
+        raise HTTPException(status_code=422, detail="Pendencia ja foi resolvida")
+    return pendencia
+
+
+@router.post("/pagamentos/sumup/pendencias/{pendencia_id}/resolver")
+def resolver_pendencia_sumup(
+    pendencia_id: int,
+    dados: dict,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Vincula manualmente um pagamento SumUp standalone (detectado pelo
+    poller, mas que nao bateu com nenhuma maquina com confianca - cliente com
+    mais de uma maquina na conta) a maquina certa, e libera o pulso."""
+    _, role, cliente_id = user
+    pendencia = _get_pendencia_visivel(db, pendencia_id, role, cliente_id)
+
+    machine_id = (dados.get("maquina_id") or "").strip()
+    if not machine_id:
+        raise HTTPException(status_code=422, detail="maquina_id e obrigatorio")
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
+    if maquina.cliente_id != pendencia.cliente_id:
+        raise HTTPException(status_code=422, detail="Maquina nao pertence ao cliente desta pendencia")
+
+    command_id = registrar_pagamento_sumup(
+        db,
+        machine_id=machine_id,
+        amount=pendencia.valor,
+        provider_payment_id=pendencia.transaction_id,
+        descricao=f"Pagamento SumUp standalone vinculado manualmente (transaction_id={pendencia.transaction_id})",
+    )
+    pendencia.resolvido = True
+    pendencia.maquina_id = machine_id
+    pendencia.resolvido_em = datetime.utcnow()
+    pendencia.resolvido_por = getattr(user[0], "email", None)
+    db.commit()
+
+    if command_id is None:
+        return {"ok": True, "detalhe": "Pagamento ja tinha sido processado antes (duplicidade)"}
+
+    command_status = liberar_pulso_sumup(machine_id, pendencia.valor, command_id)
+    return {"ok": True, "maquina_id": machine_id, "valor": pendencia.valor, "command_status": command_status}
+
+
+@router.post("/pagamentos/sumup/pendencias/{pendencia_id}/ignorar")
+def ignorar_pendencia_sumup(
+    pendencia_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Descarta uma pendencia sem liberar pulso (ex: pagamento de teste, ou
+    identificado fora do sistema que nao corresponde a nenhuma maquina)."""
+    _, role, cliente_id = user
+    pendencia = _get_pendencia_visivel(db, pendencia_id, role, cliente_id)
+    pendencia.resolvido = True
+    pendencia.resolvido_em = datetime.utcnow()
+    pendencia.resolvido_por = getattr(user[0], "email", None)
+    db.commit()
+    return {"ok": True}

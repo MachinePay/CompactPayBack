@@ -33,6 +33,82 @@ def _acquire_payment_lock(db, key: str) -> None:
     db.execute(text("SELECT pg_advisory_xact_lock(hashtext(:key))"), {"key": key})
 
 
+def registrar_pagamento_sumup(
+    db,
+    *,
+    machine_id: str,
+    amount: float,
+    provider_payment_id: str,
+    descricao: str,
+    payment_type: str | None = None,
+) -> str | None:
+    """Grava Transacao/HistoricoOperacao/VendaPagamento pro pagamento SumUp e
+    devolve o command_id pra liberar o pulso - ou None se ja foi processado
+    antes (duplicidade). Usado tanto pelo webhook (checkout criado por nos)
+    quanto pelo poller (pagamento feito direto na maquininha, standalone)."""
+    _acquire_payment_lock(db, f"sumup_payment_{provider_payment_id}")
+    duplicado = (
+        db.query(VendaPagamento)
+        .filter(
+            VendaPagamento.provider == "sumup",
+            VendaPagamento.provider_payment_id == provider_payment_id,
+        )
+        .first()
+    )
+    if duplicado:
+        return None
+
+    command_id = str(uuid4())
+    transacao = Transacao(
+        maquina_id=machine_id,
+        tipo=EventoTipo.in_flux,
+        metodo=MetodoPagamento.digital,
+        valor=amount,
+        data_hora=datetime.utcnow(),
+    )
+    db.add(transacao)
+    historico = HistoricoOperacao(
+        maquina_id=machine_id,
+        categoria="PAGAMENTO",
+        descricao=descricao,
+        valor=amount,
+        provider="sumup",
+        provider_payment_id=provider_payment_id,
+        payment_type=payment_type,
+        pulse_status="pendente",
+        command_id=command_id,
+        created_at=transacao.data_hora,
+    )
+    db.add(historico)
+    db.flush()
+    registrar_venda_pagamento(
+        db,
+        maquina_id=machine_id,
+        valor=amount,
+        origem="sumup",
+        transacao_id=transacao.id,
+        historico_id=historico.id,
+        provider="sumup",
+        provider_payment_id=provider_payment_id,
+        tipo_pagamento=payment_type,
+        status_pulso="pendente",
+        command_id=command_id,
+        created_at=transacao.data_hora,
+    )
+    db.commit()
+    return command_id
+
+
+def liberar_pulso_sumup(machine_id: str, amount: float, command_id: str) -> str:
+    pulsos = calcular_pulsos_por_valor(amount)
+    try:
+        publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id, amount=amount)
+    except Exception:
+        update_pulse_status(command_id, "falha_publicacao")
+        raise
+    return get_command_status(command_id) or "pendente"
+
+
 def processar_callback_sumup(dados: dict):
     print(f"[SumUp webhook] payload={dados}")
 
@@ -85,70 +161,23 @@ def processar_callback_sumup(dados: dict):
         # sem precisar consultar a SumUp de novo depois.
         transaction_id = str(checkout_data.get("transaction_id") or checkout_id)
 
-        _acquire_payment_lock(db, f"sumup_checkout_{checkout_id}")
-        duplicado = (
-            db.query(VendaPagamento)
-            .filter(
-                VendaPagamento.provider == "sumup",
-                VendaPagamento.provider_payment_id == transaction_id,
-            )
-            .first()
-        )
-        if duplicado:
-            pendente.processado = True
-            db.commit()
-            print(f"[SumUp webhook] pagamento duplicado checkout_id={checkout_id}")
-            return {"status": "ignorado", "detalhe": "Pagamento ja processado"}
-
-        command_id = str(uuid4())
-        transacao = Transacao(
-            maquina_id=machine_id,
-            tipo=EventoTipo.in_flux,
-            metodo=MetodoPagamento.digital,
-            valor=amount,
-            data_hora=datetime.utcnow(),
-        )
-        db.add(transacao)
-        historico = HistoricoOperacao(
-            maquina_id=machine_id,
-            categoria="PAGAMENTO",
-            descricao=f"Pagamento aprovado via maquininha SumUp (checkout_id={checkout_id}, reader_id={reader_id})",
-            valor=amount,
-            provider="sumup",
-            provider_payment_id=transaction_id,
-            payment_type=checkout_data.get("card_type") or checkout_data.get("payment_type"),
-            pulse_status="pendente",
-            command_id=command_id,
-            created_at=transacao.data_hora,
-        )
-        db.add(historico)
-        db.flush()
-        registrar_venda_pagamento(
+        command_id = registrar_pagamento_sumup(
             db,
-            maquina_id=machine_id,
-            valor=amount,
-            origem="sumup",
-            transacao_id=transacao.id,
-            historico_id=historico.id,
-            provider="sumup",
+            machine_id=machine_id,
+            amount=amount,
             provider_payment_id=transaction_id,
-            tipo_pagamento=historico.payment_type,
-            status_pulso="pendente",
-            command_id=command_id,
-            created_at=transacao.data_hora,
+            descricao=f"Pagamento aprovado via maquininha SumUp (checkout_id={checkout_id}, reader_id={reader_id})",
+            payment_type=checkout_data.get("card_type") or checkout_data.get("payment_type"),
         )
         pendente.processado = True
         db.commit()
+        if command_id is None:
+            print(f"[SumUp webhook] pagamento duplicado checkout_id={checkout_id}")
+            return {"status": "ignorado", "detalhe": "Pagamento ja processado"}
     finally:
         db.close()
 
-    pulsos = calcular_pulsos_por_valor(amount)
-    try:
-        publish_machine_credit_pulses(machine_id, pulses=pulsos, action="paid", command_id=command_id, amount=amount)
-    except Exception:
-        update_pulse_status(command_id, "falha_publicacao")
-        raise
-    command_status = get_command_status(command_id) or "pendente"
+    command_status = liberar_pulso_sumup(machine_id, amount, command_id)
     print(
         f"[SumUp webhook] checkout processado checkout_id={checkout_id} reader={reader_id} "
         f"machine={machine_id} amount={amount} pulsos={pulsos} command_status={command_status}"

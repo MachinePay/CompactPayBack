@@ -13,6 +13,7 @@ from app.models.models import (
     HistoricoOperacao,
     Maquina,
     MetodoPagamento,
+    SumupTransacaoPendente,
     Transacao,
     VendaPagamento,
 )
@@ -944,6 +945,64 @@ def build_machine_alerts(machine: dict, now: datetime, noise_count: int, queda_c
     return alerts
 
 
+def build_sumup_pending_alerts(db: Session, machines: list[dict]) -> list[dict]:
+    """Pagamentos SumUp feitos direto na maquininha (standalone) que o poller
+    (sumup_poller.py) nao conseguiu casar com confianca a uma maquina - cliente
+    tem mais de uma maquina na conta e o device_info da transacao nao bateu com
+    nenhum reader conhecido. Fica visivel aqui ate um admin vincular manualmente
+    (ver POST /pagamentos/sumup/pendencias/{id}/resolver)."""
+    cliente_ids = {machine["cliente_id"] for machine in machines if machine.get("cliente_id")}
+    if not cliente_ids:
+        return []
+    pendencias = (
+        db.query(SumupTransacaoPendente)
+        .filter(SumupTransacaoPendente.cliente_id.in_(cliente_ids), SumupTransacaoPendente.resolvido.is_(False))
+        .all()
+    )
+    if not pendencias:
+        return []
+
+    machines_by_cliente: dict[int, list[dict]] = defaultdict(list)
+    for machine in machines:
+        if machine.get("cliente_id"):
+            machines_by_cliente[machine["cliente_id"]].append(machine)
+
+    alerts = []
+    for pendencia in pendencias:
+        candidatas = machines_by_cliente.get(pendencia.cliente_id, [])
+        if not candidatas:
+            continue
+        representante = next((m for m in candidatas if m.get("banco_pagamento") == "sumup"), candidatas[0])
+        alerts.append(
+            {
+                "id": f"sumup_pendente:{pendencia.id}",
+                "tipo": "sumup_pendente",
+                "severidade": "critico",
+                "titulo": "Pagamento SumUp sem maquina identificada",
+                "mensagem": (
+                    f"Pagamento de R${pendencia.valor:.2f} recebido na conta SumUp, mas o cliente tem mais de "
+                    "uma maquina vinculada e nao foi possivel identificar automaticamente qual delas recebeu."
+                ),
+                "detected_at": pendencia.created_at,
+                "maquina": {
+                    "id_hardware": representante["id_hardware"],
+                    "nome": representante["nome"],
+                    "cliente_nome": representante["cliente_nome"],
+                    "localizacao": representante["localizacao"],
+                },
+                "extra": {
+                    "pendencia_id": pendencia.id,
+                    "valor": pendencia.valor,
+                    "transaction_id": pendencia.transaction_id,
+                    "maquinas_candidatas": [
+                        {"id_hardware": m["id_hardware"], "nome": m["nome"]} for m in candidatas
+                    ],
+                },
+            }
+        )
+    return alerts
+
+
 def compute_active_alerts(db: Session, maquinas: list[Maquina], now: datetime | None = None) -> list[dict]:
     """Todos os alertas ativos das maquinas informadas, buscando os dados em lote.
     Usado tanto pelo painel de alertas quanto pelo notificador em background."""
@@ -962,6 +1021,7 @@ def compute_active_alerts(db: Session, maquinas: list[Maquina], now: datetime | 
                 quedas_por_maquina.get(machine["id_hardware"], 0),
             )
         )
+    alerts.extend(build_sumup_pending_alerts(db, machines))
     alerts.sort(key=lambda item: item.get("detected_at") or datetime.min, reverse=True)
     return alerts
 
