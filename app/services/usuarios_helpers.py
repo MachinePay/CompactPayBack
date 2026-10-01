@@ -5,6 +5,21 @@ from sqlalchemy.orm import Session
 
 from app.models.models import Cliente, UserRole, Usuario
 from app.schemas.usuario import UsuarioCreate, UsuarioUpdate
+from app.services.sumup import get_sumup_merchant_code
+
+
+def _resolve_sumup_merchant_code(api_key: str | None, merchant_code: str | None) -> str | None:
+    """So tenta resolver sozinho quando o cliente colou uma API key nova e
+    nao preencheu o merchant_code na mao - uma falha aqui (chave invalida,
+    SumUp fora do ar) nao pode travar o salvamento do cliente/usuario, so
+    fica sem merchant_code ate a proxima tentativa (ex.: editar de novo)."""
+    if merchant_code or not api_key:
+        return merchant_code
+    try:
+        return get_sumup_merchant_code(api_key)
+    except HTTPException as exc:
+        print(f"[SumUp] nao foi possivel resolver merchant_code automaticamente: {exc.detail}")
+        return None
 
 
 def resolve_user_role(role: str) -> UserRole:
@@ -42,6 +57,9 @@ def create_cliente_for_user(db: Session, usuario: UsuarioCreate | UsuarioUpdate)
         mp_pos_category=usuario.mp_pos_category,
         mp_store_id=usuario.mp_store_id,
         mp_store_external_id=usuario.mp_store_external_id,
+        cliente_sumup=bool(usuario.cliente_sumup),
+        sumup_api_key=usuario.sumup_api_key,
+        sumup_merchant_code=_resolve_sumup_merchant_code(usuario.sumup_api_key, usuario.sumup_merchant_code),
     )
     db.add(cliente)
     db.flush()
@@ -69,6 +87,16 @@ def sync_cliente_from_usuario(db: Session, usuario: UsuarioCreate | UsuarioUpdat
     cliente.cliente_pagbank = bool(usuario.cliente_pagbank)
     cliente.cliente_s6pay = bool(usuario.cliente_s6pay)
     cliente.cliente_token_play = bool(usuario.cliente_token_play)
+
+    cliente.cliente_sumup = bool(usuario.cliente_sumup)
+    if not usuario.cliente_sumup:
+        cliente.sumup_api_key = None
+        cliente.sumup_merchant_code = None
+    else:
+        if usuario.sumup_api_key and usuario.sumup_api_key != "********":
+            cliente.sumup_api_key = usuario.sumup_api_key
+        cliente.sumup_merchant_code = _resolve_sumup_merchant_code(cliente.sumup_api_key, usuario.sumup_merchant_code)
+
     if not usuario.cliente_mercado_pago:
         cliente.mp_public_key = None
         cliente.mp_access_token = None
@@ -107,6 +135,16 @@ def sync_db_usuario_fields(db_usuario: Usuario, usuario: UsuarioCreate | Usuario
     db_usuario.cliente_pagbank = bool(usuario.cliente_pagbank)
     db_usuario.cliente_s6pay = bool(usuario.cliente_s6pay)
     db_usuario.cliente_token_play = bool(usuario.cliente_token_play)
+
+    db_usuario.cliente_sumup = bool(usuario.cliente_sumup)
+    if not usuario.cliente_sumup:
+        db_usuario.sumup_api_key = None
+        db_usuario.sumup_merchant_code = None
+    else:
+        if usuario.sumup_api_key and usuario.sumup_api_key != "********":
+            db_usuario.sumup_api_key = usuario.sumup_api_key
+        db_usuario.sumup_merchant_code = _resolve_sumup_merchant_code(db_usuario.sumup_api_key, usuario.sumup_merchant_code)
+
     if not usuario.cliente_mercado_pago:
         db_usuario.mp_public_key = None
         db_usuario.mp_access_token = None
@@ -158,6 +196,9 @@ def serialize_usuario(db_usuario: Usuario) -> dict:
         "mp_store_id": db_usuario.mp_store_id or (cliente.mp_store_id if cliente else None),
         "mp_store_external_id": db_usuario.mp_store_external_id or (cliente.mp_store_external_id if cliente else None),
         "mp_live_mode": db_usuario.mp_live_mode if db_usuario.mp_live_mode is not None else (cliente.mp_live_mode if cliente else None),
+        "cliente_sumup": bool(db_usuario.cliente_sumup or (cliente and cliente.cliente_sumup)),
+        "sumup_api_key": "********" if db_usuario.sumup_api_key or (cliente and cliente.sumup_api_key) else None,
+        "sumup_merchant_code": db_usuario.sumup_merchant_code or (cliente.sumup_merchant_code if cliente else None),
         "mp_scope": db_usuario.mp_scope or (cliente.mp_scope if cliente else None),
         "mp_pos_category": db_usuario.mp_pos_category or (cliente.mp_pos_category if cliente else None),
         "mp_configurado": bool(db_usuario.mp_access_token or (cliente and cliente.mp_access_token)),

@@ -1,12 +1,13 @@
 from typing import List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
 from app.models.models import Cliente
 from app.schemas.cliente import ClienteListOut
+from app.services.sumup import list_readers
 
 router = APIRouter()
 
@@ -60,6 +61,31 @@ def listar_clientes(
             "mp_user_id": cliente.mp_user_id,
             "mp_store_id": cliente.mp_store_id,
             "mp_store_external_id": cliente.mp_store_external_id,
+            "cliente_sumup": bool(cliente.cliente_sumup or (cliente.sumup_api_key and cliente.sumup_merchant_code)),
+            "sumup_configurado": bool(cliente.sumup_api_key and cliente.sumup_merchant_code),
         }
         for cliente in clientes
     ]
+
+
+@router.get("/clientes/{cliente_id}/sumup/readers")
+def listar_sumup_readers(
+    cliente_id: int,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Lista os readers (maquininhas) ja pareados na conta SumUp do cliente,
+    pra escolher qual vincular a uma maquina nova (ver MaquinaCreate.sumup_reader_id).
+    Diferente do Mercado Pago, o SumUp nao cria reader por API - precisa estar
+    pareado antes, pelo app SumUp."""
+    _, role, logged_cliente_id = user
+    if role != "admin" and cliente_id != logged_cliente_id:
+        raise HTTPException(status_code=403, detail="Sem permissao para ver readers deste cliente")
+    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado")
+    access_token = (cliente.sumup_api_key or "").strip()
+    merchant_code = (cliente.sumup_merchant_code or "").strip()
+    if not access_token or not merchant_code:
+        raise HTTPException(status_code=422, detail="Cliente sem SUMUP_API_KEY/SUMUP_MERCHANT_CODE cadastrados")
+    return list_readers(access_token, merchant_code)

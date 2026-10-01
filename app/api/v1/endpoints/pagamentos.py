@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.dependencies import get_current_user
 from app.db.session import SessionLocal
-from app.models.models import Cliente, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao, VendaPagamento
+from app.models.models import Cliente, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, SumupCheckout, Transacao, VendaPagamento
 from app.models.produto import Produto
 from app.schemas.pagamento import CreditoDigitalCreate, CreditoDigitalOut, PagamentoCreate, PagamentoOut
 from app.services.auditoria import registrar_auditoria
@@ -18,6 +18,8 @@ from app.services.mqtt_commands import publish_machine_credit_pulses
 from app.services.pagamentos_helpers import calcular_pulsos_por_valor
 from app.services.command_queue import get_command_status
 from app.services.pulse_tracking import update_pulse_status
+from app.services.sumup import create_reader_checkout
+from app.services.sumup_webhook import processar_callback_sumup
 from app.services.vendas import registrar_venda_pagamento
 
 router = APIRouter()
@@ -49,6 +51,16 @@ def processar_pix(request: Request, dados: dict | None = None):
 
     print(f"[MP webhook] query={payload_query} body={payload_body}")
     return processar_callback_mercado_pago(dados)
+
+
+@router.post("/callback-sumup")
+def processar_callback_sumup_endpoint(request: Request, dados: dict | None = None):
+    payload_query = dict(request.query_params or {})
+    payload_body = dados or {}
+    dados = {**payload_query, **payload_body}
+
+    print(f"[SumUp webhook] query={payload_query} body={payload_body}")
+    return processar_callback_sumup(dados)
 
 
 @router.post("/pagamentos/lancar", response_model=PagamentoOut)
@@ -332,4 +344,81 @@ def cobrar_na_maquininha(
         "mp_order_id": order_data.get("id"),
         "status": order_data.get("status"),
         "external_reference": external_reference,
+    }
+
+
+@router.post("/pagamentos/terminal/cobrar-sumup")
+def cobrar_na_maquininha_sumup(
+    dados: dict,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    _, role, cliente_id = user
+    machine_id = (dados.get("maquina_id") or "").strip()
+    valor = float(dados.get("valor") or 0)
+
+    if not machine_id:
+        raise HTTPException(status_code=422, detail="maquina_id e obrigatorio")
+    if valor <= 0:
+        raise HTTPException(status_code=422, detail="valor deve ser maior que zero")
+    maquina = _get_maquina_visivel(db, machine_id, role, cliente_id)
+
+    reader_id = (dados.get("terminal_id") or maquina.sumup_reader_id or "").strip()
+    if not reader_id:
+        raise HTTPException(status_code=422, detail="Maquina sem reader SumUp vinculado (sumup_reader_id)")
+
+    cliente = maquina.dono
+    access_token = (
+        dados.get("sumup_api_key")
+        or (cliente.sumup_api_key if cliente else "")
+        or settings.SUMUP_API_KEY
+        or ""
+    ).strip()
+    merchant_code = (
+        dados.get("sumup_merchant_code")
+        or (cliente.sumup_merchant_code if cliente else "")
+        or settings.SUMUP_MERCHANT_CODE
+        or ""
+    ).strip()
+    if not access_token or not merchant_code:
+        raise HTTPException(status_code=422, detail="Cliente da maquina sem SUMUP_API_KEY/SUMUP_MERCHANT_CODE cadastrados")
+
+    client_transaction_id = f"{machine_id}-{uuid4().hex}"
+    return_url = f"{settings.BACKEND_PUBLIC_URL}/api/v1/callback-sumup" if settings.BACKEND_PUBLIC_URL else None
+    checkout = create_reader_checkout(
+        access_token,
+        merchant_code,
+        reader_id,
+        amount=valor,
+        client_transaction_id=client_transaction_id,
+        description=f"Pagamento maquina {machine_id}",
+        return_url=return_url,
+    )
+
+    db.add(
+        SumupCheckout(
+            checkout_id=checkout["checkout_id"],
+            maquina_id=machine_id,
+            reader_id=reader_id,
+            valor=valor,
+        )
+    )
+    db.add(
+        HistoricoOperacao(
+            maquina_id=machine_id,
+            categoria="TESTE",
+            descricao=f"Cobranca enviada para maquininha SumUp (checkout_id={checkout['checkout_id']}, reader_id={reader_id})",
+            valor=valor,
+            created_at=datetime.utcnow(),
+        )
+    )
+    db.commit()
+
+    return {
+        "ok": True,
+        "maquina_id": machine_id,
+        "terminal_id": reader_id,
+        "valor": valor,
+        "sumup_checkout_id": checkout["checkout_id"],
+        "client_transaction_id": checkout["client_transaction_id"],
     }

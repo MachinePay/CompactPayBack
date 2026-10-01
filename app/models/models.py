@@ -47,6 +47,12 @@ class Cliente(Base):
     mp_pos_category = Column(Integer, nullable=True)
     mp_store_id = Column(String, nullable=True)
     mp_store_external_id = Column(String, nullable=True)
+    # SumUp usa API key fixa por cliente (preenchida manualmente), sem OAuth e
+    # sem conceito de loja/caixa - so precisa do merchant_code pra montar a URL
+    # dos readers (maquininhas) ja pareadas na conta SumUp desse cliente.
+    cliente_sumup = Column(Boolean, nullable=True)
+    sumup_api_key = Column(String, nullable=True)
+    sumup_merchant_code = Column(String, nullable=True)
     maquinas = relationship("Maquina", back_populates="dono")
 
 class Usuario(Base):
@@ -78,6 +84,9 @@ class Usuario(Base):
     mp_pos_category = Column(Integer, nullable=True)
     mp_store_id = Column(String, nullable=True)
     mp_store_external_id = Column(String, nullable=True)
+    cliente_sumup = Column(Boolean, nullable=True)
+    sumup_api_key = Column(String, nullable=True)
+    sumup_merchant_code = Column(String, nullable=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     role = Column(Enum(UserRole), default=UserRole.cliente)
@@ -99,6 +108,11 @@ class Maquina(Base):
     mp_pos_id = Column(String, nullable=True)
     mp_pos_external_id = Column(String, nullable=True)
     mp_qr_image = Column(String, nullable=True)
+    # Qual reader (maquininha) da conta SumUp do cliente esta vinculado a esta
+    # maquina especifica - ao contrario do MP, o SumUp nao cria loja/caixa
+    # automaticamente; o reader ja precisa estar pareado no app SumUp e so
+    # escolhido aqui (ver listar_sumup_readers em clientes.py).
+    sumup_reader_id = Column(String, nullable=True)
     ultimo_sinal = Column(DateTime, nullable=True)
     wifi_rssi = Column(Integer, nullable=True)
     wifi_quality = Column(Integer, nullable=True)
@@ -200,6 +214,21 @@ class HistoricoOperacao(Base):
     pulse_status = Column(String, nullable=True)
     command_id = Column(String, nullable=True, index=True)
     refunded_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class SumupCheckout(Base):
+    # Mapeia checkout_id -> maquina/valor no momento da criacao da cobranca.
+    # Necessario porque o webhook do SumUp manda SO {event_type, id} (o id do
+    # checkout) - sem machine_id, reader_id nem valor embutidos (diferente do
+    # Mercado Pago, que usa external_reference pra isso). Sem essa tabela nao
+    # teria como saber qual maquina liberar credito quando o webhook chegar.
+    __tablename__ = "sumup_checkouts"
+    checkout_id = Column(String, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    reader_id = Column(String, nullable=False)
+    valor = Column(Float, nullable=False)
+    processado = Column(Boolean, default=False, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 
 

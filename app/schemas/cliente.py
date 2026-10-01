@@ -36,6 +36,8 @@ class ClienteListOut(ClienteBase):
     mp_user_id: Optional[str] = None
     mp_store_id: Optional[str] = None
     mp_store_external_id: Optional[str] = None
+    cliente_sumup: Optional[bool] = None
+    sumup_configurado: bool = False
 
     class Config:
         from_attributes = True

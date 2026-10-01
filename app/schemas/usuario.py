@@ -31,6 +31,9 @@ class UsuarioBase(BaseModel):
     mp_live_mode: Optional[bool] = None
     mp_scope: Optional[str] = None
     mp_pos_category: Optional[int] = None
+    cliente_sumup: Optional[bool] = None
+    sumup_api_key: Optional[str] = None
+    sumup_merchant_code: Optional[str] = None
 
 
 class UsuarioCreate(UsuarioBase):

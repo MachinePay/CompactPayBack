@@ -10,6 +10,9 @@ class MaquinaCreate(BaseModel):
     cliente_id: Optional[int] = None
     localizacao: Optional[str] = None
     banco_pagamento: Optional[str] = "mercado_pago"
+    # Obrigatorio quando banco_pagamento == "sumup" - qual reader (maquininha)
+    # ja pareado na conta SumUp do cliente fica vinculado a esta maquina.
+    sumup_reader_id: Optional[str] = None
 
 
 class MaquinaUpdate(BaseModel):
@@ -17,6 +20,7 @@ class MaquinaUpdate(BaseModel):
     cliente_id: Optional[int] = None
     localizacao: Optional[str] = None
     banco_pagamento: Optional[str] = None
+    sumup_reader_id: Optional[str] = None
 
 
 class MaquinaOut(BaseModel):
@@ -31,6 +35,7 @@ class MaquinaOut(BaseModel):
     mp_pos_id: Optional[str] = None
     mp_pos_external_id: Optional[str] = None
     mp_qr_image: Optional[str] = None
+    sumup_reader_id: Optional[str] = None
     firmware_version: Optional[str] = None
     firmware_target_version: Optional[str] = None
     firmware_updated_at: Optional[datetime] = None

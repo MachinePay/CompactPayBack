@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     MP_APP_ID: str = os.getenv("MP_APP_ID", os.getenv("MP_CLIENT_ID", ""))
     MP_CLIENT_SECRET: str = os.getenv("MP_CLIENT_SECRET", "")
     MP_OAUTH_REDIRECT_URI: str = os.getenv("MP_OAUTH_REDIRECT_URI", "")
+    # Fallback global (conta de testes/padrao) - cada cliente normalmente tem
+    # a propria API key cadastrada (cliente.sumup_api_key), igual o MP_ACCESS_TOKEN.
+    SUMUP_API_KEY: str = os.getenv("SUMUP_API_KEY", "")
+    SUMUP_MERCHANT_CODE: str = os.getenv("SUMUP_MERCHANT_CODE", "")
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     CORS_ALLOWED_ORIGINS: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
     MP_DEFAULT_STORE_STREET_NAME: str = os.getenv("MP_DEFAULT_STORE_STREET_NAME", "Rua CompactPay")

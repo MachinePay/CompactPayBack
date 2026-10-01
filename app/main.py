@@ -144,9 +144,12 @@ def startup_event():
             "mp_pos_category",
             "mp_store_id",
             "mp_store_external_id",
+            "cliente_sumup",
+            "sumup_api_key",
+            "sumup_merchant_code",
         ]:
             if column_name not in cliente_columns:
-                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play"} else "TIMESTAMP" if column_name == "mp_token_expires_at" else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
+                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup"} else "TIMESTAMP" if column_name == "mp_token_expires_at" else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
                 connection.execute(text(f"ALTER TABLE clientes ADD COLUMN {column_name} {column_type}"))
 
         usuario_columns = {column["name"] for column in inspector.get_columns("usuarios")}
@@ -177,9 +180,12 @@ def startup_event():
             "mp_pos_category",
             "mp_store_id",
             "mp_store_external_id",
+            "cliente_sumup",
+            "sumup_api_key",
+            "sumup_merchant_code",
         ]:
             if column_name not in usuario_columns:
-                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play"} else "TIMESTAMP" if column_name == "mp_token_expires_at" else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
+                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup"} else "TIMESTAMP" if column_name == "mp_token_expires_at" else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
                 connection.execute(text(f"ALTER TABLE usuarios ADD COLUMN {column_name} {column_type}"))
 
         maquina_columns = {column["name"] for column in inspector.get_columns("maquinas")}
@@ -196,6 +202,7 @@ def startup_event():
             "mp_pos_id",
             "mp_pos_external_id",
             "mp_qr_image",
+            "sumup_reader_id",
             "firmware_version",
             "firmware_target_version",
             "firmware_update_status",

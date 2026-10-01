@@ -251,7 +251,7 @@ def criar_maquina(
     if not cliente:
         raise HTTPException(status_code=422, detail="Escolha um usuario/cliente valido para criar a maquina")
     banco_pagamento = (maquina.banco_pagamento or "mercado_pago").strip().lower()
-    bancos_validos = {"mercado_pago", "pagbank", "s6pay", "token_play"}
+    bancos_validos = {"mercado_pago", "pagbank", "s6pay", "token_play", "sumup"}
     if banco_pagamento not in bancos_validos:
         raise HTTPException(status_code=422, detail="Banco de pagamento invalido")
     banco_habilitado = {
@@ -259,10 +259,11 @@ def criar_maquina(
         "pagbank": bool(cliente.cliente_pagbank),
         "s6pay": bool(cliente.cliente_s6pay),
         "token_play": bool(cliente.cliente_token_play),
+        "sumup": bool(cliente.cliente_sumup or (cliente.sumup_api_key and cliente.sumup_merchant_code)),
     }[banco_pagamento]
     if not banco_habilitado:
         raise HTTPException(status_code=422, detail="O banco escolhido nao esta habilitado para este cliente")
-    if banco_pagamento not in {"mercado_pago", "token_play"}:
+    if banco_pagamento not in {"mercado_pago", "token_play", "sumup"}:
         raise HTTPException(status_code=501, detail="Integracao deste banco ainda nao foi implementada")
 
     db_maquina = Maquina(
@@ -285,6 +286,19 @@ def criar_maquina(
         db_maquina.mp_pos_id = pos_data["mp_pos_id"]
         db_maquina.mp_pos_external_id = pos_data["mp_pos_external_id"]
         db_maquina.mp_qr_image = pos_data["mp_qr_image"]
+    if banco_pagamento == "sumup":
+        if not (cliente.sumup_api_key and cliente.sumup_merchant_code):
+            raise HTTPException(
+                status_code=422,
+                detail="O usuario escolhido ainda nao tem SUMUP_API_KEY/SUMUP_MERCHANT_CODE cadastrados",
+            )
+        reader_id = (maquina.sumup_reader_id or "").strip()
+        if not reader_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Escolha qual reader (maquininha) SumUp ja pareado fica vinculado a esta maquina",
+            )
+        db_maquina.sumup_reader_id = reader_id
     db.add(db_maquina)
     registrar_auditoria(
         db,
