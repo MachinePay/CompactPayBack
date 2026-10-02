@@ -1882,6 +1882,16 @@ def build_machine_history_payload(
     for venda in vendas:
         venda["fechado"] = bool(ultimo_fechamento_fim and venda["data"] <= ultimo_fechamento_fim)
 
+    # periodo="fechamento" ("desde o ultimo fechamento") precisa mostrar SO o
+    # que ainda nao foi fechado - quem quiser ver o que ja foi fechado escolhe
+    # a data dele manualmente (outros periodos continuam mostrando tudo, com
+    # "fechado" so' marcando visualmente pra referencia/auditoria).
+    if periodo == "fechamento" and ultimo_fechamento_fim:
+        vendas = [venda for venda in vendas if not venda["fechado"]]
+        pagamentos = [item for item in pagamentos if item.data_hora > ultimo_fechamento_fim]
+        saidas = [item for item in saidas if item.data_hora > ultimo_fechamento_fim]
+        testes = [item for item in testes if item.created_at > ultimo_fechamento_fim]
+
     status_online = bool(maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
     terminal_status = get_active_terminal_for_machine(
         getattr(maquina, "dono", None),
@@ -2370,6 +2380,14 @@ def build_all_machines_history_payload(
     vendas.sort(key=lambda item: item["data"], reverse=True)
     for venda in vendas:
         venda["fechado"] = _is_fechado(venda["maquina_id"], venda["data"])
+
+    # Mesma regra da versao por maquina: periodo="fechamento" mostra SO o que
+    # ainda nao foi fechado (ver build_machine_history_payload).
+    if periodo == "fechamento":
+        vendas = [venda for venda in vendas if not venda["fechado"]]
+        pagamentos = [item for item in pagamentos if not _is_fechado(item.maquina_id, item.data_hora)]
+        saidas = [item for item in saidas if not _is_fechado(item.maquina_id, item.data_hora)]
+        testes = [item for item in testes if not _is_fechado(item.maquina_id, item.created_at)]
 
     return {
         "range": {"inicio": start_dt, "fim": end_dt},
