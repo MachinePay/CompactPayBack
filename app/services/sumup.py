@@ -168,9 +168,10 @@ def list_recent_transactions(access_token: str, merchant_code: str, changes_sinc
 
 
 def get_transaction_details(access_token: str, merchant_code: str, transaction_id: str) -> dict:
-    # Unico endpoint que devolve device_info - usado pelo poller so quando ha
-    # ambiguidade (cliente com mais de uma maquina) pra descobrir qual reader
-    # fisico processou a transacao (ver list_recent_transactions).
+    # NOTA: confirmado em producao que o "device_info" listado na doc desse
+    # endpoint vem SEMPRE AUSENTE pra venda standalone na maquininha Solo
+    # (nao e' so vazio - o campo nem aparece). Pra identificar o reader fisico,
+    # usar get_receipt() em vez deste endpoint (ver extract_card_reader_code).
     query = urllib.parse.urlencode({"id": transaction_id})
     data = su_request("GET", f"{API}/v2.1/merchants/{merchant_code}/transactions?{query}", access_token)
     result = data.get("data") or data
@@ -179,6 +180,26 @@ def get_transaction_details(access_token: str, merchant_code: str, transaction_i
         transaction_id, json.dumps(result, default=str)[:2000],
     )
     return result
+
+
+def get_receipt(access_token: str, merchant_code: str, transaction_id: str) -> dict:
+    # Unica fonte confirmada que traz o serial do reader fisico
+    # (transaction_data.card_reader.code) pra venda standalone - o retrieve de
+    # transacao (get_transaction_details) nao traz isso nesse caso, apesar da
+    # doc listar "device_info" no schema dele.
+    query = urllib.parse.urlencode({"mid": merchant_code})
+    data = su_request("GET", f"{API}/v1.1/receipts/{transaction_id}?{query}", access_token)
+    logging.info(
+        "[SumUp] resposta bruta do receipt de %s (ate 2000 chars): %s",
+        transaction_id, json.dumps(data, default=str)[:2000],
+    )
+    return data
+
+
+def extract_card_reader_code(receipt: dict) -> str | None:
+    card_reader = ((receipt or {}).get("transaction_data") or {}).get("card_reader") or {}
+    code = card_reader.get("code")
+    return str(code) if code else None
 
 
 def create_sumup_refund(access_token: str, transaction_id: str) -> None:

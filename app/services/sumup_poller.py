@@ -9,7 +9,7 @@ from fastapi import HTTPException
 from app.core.config import settings
 from app.db.session import SessionLocal
 from app.models.models import Cliente, Maquina, SumupTransacaoPendente, VendaPagamento
-from app.services.sumup import build_reader_device_map, get_transaction_details, list_recent_transactions
+from app.services.sumup import build_reader_device_map, extract_card_reader_code, get_receipt, list_recent_transactions
 from app.services.sumup_webhook import liberar_pulso_sumup, registrar_pagamento_sumup
 
 # Status que a API de historico da SumUp pode mandar - tratamos qualquer
@@ -23,15 +23,6 @@ SUCCESS_STATUSES = {"successful", "success", "paid"}
 # uma janela maior nao credita nada em dobro - _ja_processada ja filtra
 # qualquer transacao que a gente ja viu antes.
 CHANGES_SINCE_SAFETY_MARGIN = timedelta(minutes=5)
-
-
-def _extract_device_identifier(transacao: dict) -> str | None:
-    device_info = transacao.get("device_info") or {}
-    for key in ("uuid", "identifier", "serial", "serial_number"):
-        value = device_info.get(key)
-        if value:
-            return str(value)
-    return None
 
 
 def _resolve_maquina(
@@ -143,19 +134,20 @@ def process_cliente(db, cliente: Cliente) -> None:
             logging.warning("[SumUp poller] transacao %s sem valor legivel, ignorada", transaction_id)
             continue
 
-        # O endpoint de historico (list_recent_transactions) NAO traz
-        # device_info - so' o retrieve de uma transacao especifica traz (ver
-        # get_transaction_details). Buscamos sempre, pra sempre verificar
-        # qual reader real processou antes de creditar.
+        # Nem o historico nem o retrieve de transacao trazem o serial do
+        # reader fisico pra venda standalone - confirmado em producao que
+        # "device_info" vem sempre ausente nesse caso. O unico lugar que traz
+        # e' o recibo (transaction_data.card_reader.code) - buscamos sempre,
+        # pra sempre verificar qual reader real processou antes de creditar.
         try:
-            detalhe = get_transaction_details(access_token, merchant_code, transaction_id)
+            receipt = get_receipt(access_token, merchant_code, transaction_id)
         except HTTPException as exc:
             logging.warning(
-                "[SumUp poller] falha ao buscar detalhe da transacao %s (cliente %s): %s",
+                "[SumUp poller] falha ao buscar recibo da transacao %s (cliente %s): %s",
                 transaction_id, cliente.id, exc.detail,
             )
-            detalhe = {}
-        device_identifier = _extract_device_identifier(detalhe)
+            receipt = {}
+        device_identifier = extract_card_reader_code(receipt)
         maquina, motivo = _resolve_maquina(device_identifier, maquina_by_reader_id, single_machine, reader_device_map)
         logging.info(
             "[SumUp poller] transacao %s resolvida: maquina=%s motivo=%s device=%s",
