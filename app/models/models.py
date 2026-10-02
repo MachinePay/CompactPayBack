@@ -117,6 +117,11 @@ class Maquina(Base):
     # automaticamente; o reader ja precisa estar pareado no app SumUp e so
     # escolhido aqui (ver listar_sumup_readers em clientes.py).
     sumup_reader_id = Column(String, nullable=True)
+    # Serial do reader fisico (transaction_data.card_reader.code no recibo da
+    # SumUp) - usado pra identificar standalone sem precisar que o reader
+    # esteja "Cloud-paired" (sumup_reader_id so existe pra isso). Descoberto
+    # fazendo um pagamento teste na maquininha e lendo o codigo no log.
+    sumup_device_code = Column(String, nullable=True)
     ultimo_sinal = Column(DateTime, nullable=True)
     wifi_rssi = Column(Integer, nullable=True)
     wifi_quality = Column(Integer, nullable=True)

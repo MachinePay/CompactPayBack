@@ -293,12 +293,17 @@ def criar_maquina(
                 detail="O usuario escolhido ainda nao tem SUMUP_API_KEY/SUMUP_MERCHANT_CODE cadastrados",
             )
         reader_id = (maquina.sumup_reader_id or "").strip()
-        if not reader_id:
+        device_code = (maquina.sumup_device_code or "").strip()
+        if not reader_id and not device_code:
             raise HTTPException(
                 status_code=422,
-                detail="Escolha qual reader (maquininha) SumUp ja pareado fica vinculado a esta maquina",
+                detail=(
+                    "Escolha qual reader (maquininha) SumUp ja pareado fica vinculado a esta maquina, "
+                    "ou informe o codigo do reader (descoberto por um pagamento teste)"
+                ),
             )
-        db_maquina.sumup_reader_id = reader_id
+        db_maquina.sumup_reader_id = reader_id or None
+        db_maquina.sumup_device_code = device_code or None
     db.add(db_maquina)
     registrar_auditoria(
         db,
@@ -343,6 +348,10 @@ def atualizar_maquina(
     db_maquina.cliente_id = maquina.cliente_id
     if maquina.banco_pagamento:
         db_maquina.banco_pagamento = maquina.banco_pagamento
+    if maquina.sumup_reader_id is not None:
+        db_maquina.sumup_reader_id = maquina.sumup_reader_id.strip() or None
+    if maquina.sumup_device_code is not None:
+        db_maquina.sumup_device_code = maquina.sumup_device_code.strip() or None
     registrar_auditoria(
         db,
         user,

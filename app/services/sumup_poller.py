@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
+from sqlalchemy import or_
 
 from app.core.config import settings
 from app.db.session import SessionLocal
@@ -27,22 +28,28 @@ CHANGES_SINCE_SAFETY_MARGIN = timedelta(minutes=5)
 
 def _resolve_maquina(
     device_identifier: str | None,
+    maquina_by_device_code: dict[str, Maquina],
     maquina_by_reader_id: dict[str, Maquina],
     single_machine: Maquina | None,
     reader_device_map: dict[str, str],
 ) -> tuple[Maquina | None, str]:
     """SEMPRE verifica contra o reader real antes de creditar - nunca credita
     'no escuro' so porque o cliente tem uma maquina so. Prioridade:
-    1. device_identifier bate com o serial de um reader vinculado a uma
-       maquina conhecida -> credita essa maquina (verificado de verdade).
-    2. device_identifier veio mas NAO bate com nenhum reader vinculado -> e'
-       sinal de reader desconhecido/nao cadastrado na conta - fica pendente
-       mesmo que so' exista uma maquina, pra nao arriscar creditar errado.
-    3. A SumUp nao devolveu device_info nessa transacao (falha/campo ausente)
+    1. device_identifier bate direto com o sumup_device_code cadastrado numa
+       maquina (descoberto manualmente por um pagamento teste, sem precisar
+       que o reader esteja "Cloud-paired") -> credita essa maquina.
+    2. device_identifier bate com o serial de um reader Cloud-paired vinculado
+       a uma maquina conhecida (sumup_reader_id) -> credita essa maquina.
+    3. device_identifier veio mas NAO bate com nada conhecido -> e' sinal de
+       reader fora do CompactPay na mesma conta - ignora (ver process_cliente).
+    4. A SumUp nao devolveu device_info nessa transacao (raro, mas acontece)
        e o cliente so tem UMA maquina -> credita por falta de alternativa,
        mas loga como fallback (nao verificado) pra ficar rastreavel.
     """
     if device_identifier:
+        maquina_direta = maquina_by_device_code.get(device_identifier)
+        if maquina_direta:
+            return maquina_direta, "verificado_por_device_code"
         reader_id = reader_device_map.get(device_identifier)
         if reader_id and reader_id in maquina_by_reader_id:
             return maquina_by_reader_id[reader_id], "verificado_por_device"
@@ -72,13 +79,17 @@ def process_cliente(db, cliente: Cliente) -> None:
 
     maquinas = (
         db.query(Maquina)
-        .filter(Maquina.cliente_id == cliente.id, Maquina.sumup_reader_id.isnot(None))
+        .filter(
+            Maquina.cliente_id == cliente.id,
+            or_(Maquina.sumup_reader_id.isnot(None), Maquina.sumup_device_code.isnot(None)),
+        )
         .all()
     )
     if not maquinas:
         return
 
     maquina_by_reader_id = {m.sumup_reader_id: m for m in maquinas if m.sumup_reader_id}
+    maquina_by_device_code = {m.sumup_device_code: m for m in maquinas if m.sumup_device_code}
     single_machine = maquinas[0] if len(maquinas) == 1 else None
 
     # Formato exato da doc oficial ("2019-08-28T09:00:00Z") - sem isso,
@@ -148,7 +159,9 @@ def process_cliente(db, cliente: Cliente) -> None:
             )
             receipt = {}
         device_identifier = extract_card_reader_code(receipt)
-        maquina, motivo = _resolve_maquina(device_identifier, maquina_by_reader_id, single_machine, reader_device_map)
+        maquina, motivo = _resolve_maquina(
+            device_identifier, maquina_by_device_code, maquina_by_reader_id, single_machine, reader_device_map
+        )
         logging.info(
             "[SumUp poller] transacao %s resolvida: maquina=%s motivo=%s device=%s",
             transaction_id, getattr(maquina, "id_hardware", None), motivo, device_identifier,

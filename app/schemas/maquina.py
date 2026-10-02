@@ -13,6 +13,11 @@ class MaquinaCreate(BaseModel):
     # Obrigatorio quando banco_pagamento == "sumup" - qual reader (maquininha)
     # ja pareado na conta SumUp do cliente fica vinculado a esta maquina.
     sumup_reader_id: Optional[str] = None
+    # Alternativa ao sumup_reader_id - serial do reader fisico
+    # (card_reader.code do recibo), pra identificar standalone sem precisar
+    # que o reader esteja "Cloud-paired" (so' descobre fazendo um pagamento
+    # teste e lendo o codigo no log/recibo).
+    sumup_device_code: Optional[str] = None
 
 
 class MaquinaUpdate(BaseModel):
@@ -21,6 +26,7 @@ class MaquinaUpdate(BaseModel):
     localizacao: Optional[str] = None
     banco_pagamento: Optional[str] = None
     sumup_reader_id: Optional[str] = None
+    sumup_device_code: Optional[str] = None
 
 
 class MaquinaOut(BaseModel):
@@ -36,6 +42,7 @@ class MaquinaOut(BaseModel):
     mp_pos_external_id: Optional[str] = None
     mp_qr_image: Optional[str] = None
     sumup_reader_id: Optional[str] = None
+    sumup_device_code: Optional[str] = None
     firmware_version: Optional[str] = None
     firmware_target_version: Optional[str] = None
     firmware_updated_at: Optional[datetime] = None

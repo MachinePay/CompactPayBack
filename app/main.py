@@ -212,6 +212,7 @@ def startup_event():
             "mp_pos_external_id",
             "mp_qr_image",
             "sumup_reader_id",
+            "sumup_device_code",
             "firmware_version",
             "firmware_target_version",
             "firmware_update_status",
