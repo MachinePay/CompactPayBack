@@ -163,6 +163,17 @@ def process_cliente(db, cliente: Cliente) -> None:
         )
 
         if maquina is None:
+            if motivo == "device_sem_reader_correspondente":
+                # Device identificado com certeza, mas e' de um reader que NAO
+                # esta vinculado a nenhuma maquina nossa - e' uma maquininha
+                # fora do CompactPay na mesma conta SumUp do cliente (ex.: usada
+                # pra outro negocio). Nao e' uma pendencia a resolver, e' so'
+                # uma venda que nao e' nossa - ignora sem gerar alerta/ruido.
+                logging.info(
+                    "[SumUp poller] transacao %s ignorada: device %s nao pertence a nenhuma maquina do CompactPay",
+                    transaction_id, device_identifier,
+                )
+                continue
             db.add(
                 SumupTransacaoPendente(
                     cliente_id=cliente.id,
