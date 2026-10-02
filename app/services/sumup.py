@@ -70,6 +70,27 @@ def list_readers(access_token: str, merchant_code: str) -> list[dict]:
     return result
 
 
+def create_reader(access_token: str, merchant_code: str, pairing_code: str, name: str | None = None) -> dict:
+    # Registra um reader na Cloud API (status inicial "processing", vira
+    # "paired" depois que o aparelho confirma) - so assim ele passa a aparecer
+    # em list_readers. O pairing_code e' gerado NO APARELHO: menu > Connections
+    # > conecta no Wi-Fi > API > Connect - expira em 5 minutos.
+    body = {"pairing_code": pairing_code.strip()}
+    if name:
+        body["name"] = name.strip()
+    data = su_request("POST", f"{API}/v0.1/merchants/{merchant_code}/readers", access_token, body=body)
+    reader_id = data.get("id")
+    if not reader_id:
+        raise HTTPException(status_code=502, detail="SumUp nao retornou id do reader ao parear")
+    device_identifier = (data.get("device") or {}).get("identifier")
+    return {
+        "id": reader_id,
+        "name": data.get("name") or device_identifier,
+        "status": data.get("status"),
+        "device_identifier": device_identifier,
+    }
+
+
 def build_reader_device_map(access_token: str, merchant_code: str) -> dict[str, str]:
     """device_identifier (serial do reader) -> reader_id, pra casar transacoes
     do historico (que trazem device_info, nao reader_id) com o reader que
