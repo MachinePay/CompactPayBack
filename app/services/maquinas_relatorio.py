@@ -1928,7 +1928,14 @@ def build_machine_history_payload(
     )
 
     return {
-        "range": {"inicio": start_dt, "fim": end_dt},
+        # "inicio" e' o inicio bruto do periodo pedido (ex.: ano 2000 inteiro
+        # pra periodo="fechamento", sem limite de calendario - ver
+        # resolve_date_window). "inicio_efetivo" e' o que realmente delimita
+        # os dados mostrados/contados (max(inicio, fim do ultimo fechamento
+        # da maquina)) - quem for GRAVAR um novo fechamento (criar_fechamento_
+        # maquina) tem que usar esse, senao salva periodo_inicio=ano 2000 e
+        # todo fechamento seguinte vira erro 409 (sempre "sobrepõe" o anterior).
+        "range": {"inicio": start_dt, "inicio_efetivo": effective_start_dt, "fim": end_dt},
         "maquina": {
             "id_hardware": maquina.id_hardware,
             "nome": maquina.nome_local,

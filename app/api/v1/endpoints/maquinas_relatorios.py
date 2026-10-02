@@ -59,7 +59,14 @@ def criar_fechamento_maquina(
         data_inicio=data_inicio,
         data_fim=data_fim,
     )
-    start_dt = payload["range"]["inicio"]
+    # "inicio" e' o inicio bruto pedido (ano 2000 inteiro pra periodo=
+    # "fechamento", sem limite de calendario - ver resolve_date_window) -
+    # "inicio_efetivo" e' o que de fato corta pelo ultimo fechamento da
+    # maquina. Usar "inicio" aqui gravava periodo_inicio=ano 2000 no
+    # fechamento, fazendo QUALQUER fechamento seguinte (periodo_fim sempre
+    # >= ano 2000) disparar 409 pra sempre, mesmo pedindo "desde o ultimo
+    # fechamento" corretamente.
+    start_dt = payload["range"].get("inicio_efetivo", payload["range"]["inicio"])
     end_dt = payload["range"]["fim"]
     # O fim do periodo escolhido (ex.: "hoje"/"mes") e' sempre o fim do
     # calendario (23:59:59), nao importa a hora em que o fechamento e' feito.
@@ -69,12 +76,17 @@ def criar_fechamento_maquina(
     # pode valer ate o instante em que ele de fato foi feito.
     fechamento_fim = min(end_dt, datetime.utcnow())
 
+    # Comparacao estrita (< / >) em vez de <=/>= - um fechamento novo que
+    # comeca EXATAMENTE onde o anterior terminou (o caso normal de "desde o
+    # ultimo fechamento") e' adjacente, nao sobreposto. Com <=/>= esse ponto
+    # em comum já contava como sobreposicao e bloqueava todo fechamento
+    # seguinte ao primeiro.
     fechamento_existente = (
         db.query(FechamentoMaquina)
         .filter(
             FechamentoMaquina.maquina_id == machine_id,
-            FechamentoMaquina.periodo_inicio <= end_dt,
-            FechamentoMaquina.periodo_fim >= start_dt,
+            FechamentoMaquina.periodo_inicio < end_dt,
+            FechamentoMaquina.periodo_fim > start_dt,
         )
         .first()
     )
