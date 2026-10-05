@@ -1130,7 +1130,10 @@ def daily_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime
     return totals
 
 
-ONLINE_SIGNAL_WINDOW = timedelta(seconds=90)
+# 150s (2,5x o heartbeat de 60s do firmware) - antes era 90s pro heartbeat
+# antigo de 10s. Precisa ficar bem acima do intervalo de heartbeat, senao
+# variacao normal de rede/latencia faz maquina saudavel "piscar" como offline.
+ONLINE_SIGNAL_WINDOW = timedelta(seconds=150)
 TERMINAL_PAYMENT_ONLINE_WINDOW = timedelta(minutes=5)
 PULSE_CONFIRMED_STATUSES = {
     "pulso_confirmado",
