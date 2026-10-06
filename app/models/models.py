@@ -1,6 +1,6 @@
 import enum
-from sqlalchemy import Column, String, Integer, ForeignKey, DateTime, Float, Boolean, Enum, Text
-from sqlalchemy.orm import relationship
+from sqlalchemy import Column, String, Integer, ForeignKey, DateTime, Float, Boolean, Enum, Text, LargeBinary
+from sqlalchemy.orm import deferred, relationship
 import datetime
 from app.db.base import Base
 
@@ -339,6 +339,13 @@ class FirmwareVersion(Base):
     url_bin = Column(String, nullable=False)
     observacao = Column(String, nullable=True)
     ativo = Column(Boolean, default=True, nullable=False)
+    # O .bin enviado pelo painel fica no proprio banco: o disco do Render e'
+    # temporario (apagado a cada deploy/reinicio) e o arquivo sumia, fazendo a
+    # placa receber 404 no OTA. deferred() evita carregar ~1 MB por linha so
+    # para listar as versoes.
+    arquivo_nome = Column(String, nullable=True, index=True)
+    arquivo_tamanho = Column(Integer, nullable=True)
+    arquivo_bin = deferred(Column(LargeBinary, nullable=True))
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
 

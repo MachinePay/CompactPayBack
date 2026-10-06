@@ -292,6 +292,13 @@ def startup_event():
             for column_name in ["created_at", "updated_at"]:
                 if column_name not in firmware_columns:
                     connection.execute(text(f"ALTER TABLE firmware_versions ADD COLUMN {column_name} TIMESTAMP"))
+            if "arquivo_nome" not in firmware_columns:
+                connection.execute(text("ALTER TABLE firmware_versions ADD COLUMN arquivo_nome VARCHAR"))
+            if "arquivo_tamanho" not in firmware_columns:
+                connection.execute(text("ALTER TABLE firmware_versions ADD COLUMN arquivo_tamanho INTEGER"))
+            if "arquivo_bin" not in firmware_columns:
+                blob_type = "BYTEA" if connection.dialect.name == "postgresql" else "BLOB"
+                connection.execute(text(f"ALTER TABLE firmware_versions ADD COLUMN arquivo_bin {blob_type}"))
         historico_columns = {column["name"] for column in inspector.get_columns("historico_operacoes")}
         for column_name in [
             "provider",

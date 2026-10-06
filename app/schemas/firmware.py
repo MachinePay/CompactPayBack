@@ -28,6 +28,7 @@ class FirmwareVersionOut(BaseModel):
     url_bin: str
     observacao: Optional[str] = None
     ativo: bool
+    arquivo_tamanho: Optional[int] = None
     created_at: datetime
     updated_at: datetime
 

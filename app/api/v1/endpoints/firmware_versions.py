@@ -5,7 +5,7 @@ from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -58,7 +58,22 @@ def _require_admin(user):
 
 
 @router.get("/firmware-files/{filename}", name="download_firmware_file")
-def download_firmware_file(filename: str):
+def download_firmware_file(filename: str, db: Session = Depends(get_db)):
+    safe_name = Path(filename).name
+    firmware = (
+        db.query(FirmwareVersion)
+        .filter(FirmwareVersion.arquivo_nome == safe_name, FirmwareVersion.arquivo_bin.isnot(None))
+        .first()
+    )
+    if firmware:
+        return Response(
+            content=bytes(firmware.arquivo_bin),
+            media_type="application/octet-stream",
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'},
+        )
+
+    # Fallback para versoes antigas enviadas antes do .bin ir para o banco
+    # (so existem enquanto o disco do servidor nao for apagado).
     file_path = _firmware_file_path(filename)
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=404, detail="Arquivo de firmware nao encontrado")
@@ -131,25 +146,21 @@ def criar_firmware_upload(
         raise HTTPException(status_code=422, detail="Envie um arquivo .bin")
 
     safe_name = f"{datetime.utcnow().strftime('%Y%m%d%H%M%S')}-{uuid4().hex[:10]}-{original_name}"
-    file_path = _firmware_file_path(safe_name)
-    bytes_written = 0
+    chunks = []
+    bytes_read = 0
     try:
-        with file_path.open("wb") as output:
-            while True:
-                chunk = file.file.read(1024 * 1024)
-                if not chunk:
-                    break
-                bytes_written += len(chunk)
-                if bytes_written > MAX_FIRMWARE_SIZE_BYTES:
-                    output.close()
-                    file_path.unlink(missing_ok=True)
-                    raise HTTPException(status_code=413, detail="Arquivo muito grande. Limite de 16 MB.")
-                output.write(chunk)
+        while True:
+            chunk = file.file.read(1024 * 1024)
+            if not chunk:
+                break
+            bytes_read += len(chunk)
+            if bytes_read > MAX_FIRMWARE_SIZE_BYTES:
+                raise HTTPException(status_code=413, detail="Arquivo muito grande. Limite de 16 MB.")
+            chunks.append(chunk)
     finally:
         file.file.close()
 
-    if bytes_written == 0:
-        file_path.unlink(missing_ok=True)
+    if bytes_read == 0:
         raise HTTPException(status_code=422, detail="Arquivo vazio")
 
     if settings.BACKEND_PUBLIC_URL:
@@ -162,11 +173,13 @@ def criar_firmware_upload(
         url_bin=file_url,
         observacao=(observacao or "").strip() or None,
         ativo=ativo,
+        arquivo_nome=safe_name,
+        arquivo_tamanho=bytes_read,
+        arquivo_bin=b"".join(chunks),
         created_at=now,
         updated_at=now,
     )
     if not firmware.nome:
-        file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=422, detail="Informe o nome da versao")
 
     db.add(firmware)
@@ -259,8 +272,6 @@ def excluir_firmware_permanentemente(
     firmware = db.query(FirmwareVersion).filter(FirmwareVersion.id == firmware_id).first()
     if not firmware:
         raise HTTPException(status_code=404, detail="Firmware nao encontrado")
-    if firmware.ativo:
-        raise HTTPException(status_code=409, detail="Desative o firmware antes de excluir")
 
     update_in_progress = (
         db.query(Maquina)
@@ -277,6 +288,8 @@ def excluir_firmware_permanentemente(
         )
 
     firmware_name = firmware.nome
+    # O .bin guardado no banco (arquivo_bin) sai junto com a linha no delete.
+    had_db_file = firmware.arquivo_nome is not None
     uploaded_file = _uploaded_firmware_path(firmware.url_bin)
     registrar_auditoria(
         db,
@@ -289,7 +302,7 @@ def excluir_firmware_permanentemente(
     db.delete(firmware)
     db.commit()
 
-    file_removed = False
+    file_removed = had_db_file
     if uploaded_file and uploaded_file.exists() and uploaded_file.is_file():
         uploaded_file.unlink()
         file_removed = True

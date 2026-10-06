@@ -220,3 +220,62 @@ def test_confirmed_online_heartbeat_after_update_sets_last_good_version_and_clea
     assert maquina.firmware_update_error is None
     assert maquina.firmware_last_good_version == "2.0.0"
     assert maquina.firmware_target_version is None
+
+
+def test_heartbeat_with_same_version_after_failed_update_keeps_failed_status():
+    # Caso real (maquina 1017, 06/10/2026): OTA falhou com 404 e o heartbeat
+    # seguinte, ainda na versao antiga, marcava a atualizacao como "updated".
+    machine_id = "CPM-OTA-MESMA-VERSAO"
+    _create_maquina(
+        machine_id,
+        firmware_version="2.5.0",
+        firmware_update_status="failed",
+        firmware_update_error="File Not Found (404)",
+    )
+
+    on_message(
+        None,
+        None,
+        FakeMsg(f"/TEF/{machine_id}/attrs", "STATUS|ONLINE|fw=2.5.0|rssi=-60|wifi=80"),
+    )
+
+    maquina = _get_maquina(machine_id)
+    assert maquina.firmware_update_status == "failed"
+    assert maquina.firmware_update_error == "File Not Found (404)"
+
+
+def test_uploaded_firmware_is_stored_in_database_and_deleted_with_row():
+    client = TestClient(app)
+    token = _create_admin_token(client, "admin-firmware-blob@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+    content = b"\xe9" + b"firmware-bytes" * 1000
+
+    response = client.post(
+        "/api/v1/firmware-versions/upload",
+        data={"nome": "blob-test", "ativo": "true"},
+        files={"file": ("PONTOsalvioIOScerto.ino.bin", content, "application/octet-stream")},
+        headers=headers,
+    )
+    assert response.status_code == 200, response.text
+    firmware = response.json()
+    assert firmware["arquivo_tamanho"] == len(content)
+
+    filename = firmware["url_bin"].rsplit("/firmware-files/", 1)[1]
+    # Nada no disco: o download tem que vir do banco (o disco do Render e' apagado em deploy).
+    from app.api.v1.endpoints.firmware_versions import _firmware_file_path
+    assert not _firmware_file_path(filename).exists()
+
+    download = client.get(f"/api/v1/firmware-files/{filename}")
+    assert download.status_code == 200
+    assert download.content == content
+    assert download.headers["content-length"] == str(len(content))
+
+    # Excluir pelo painel funciona mesmo com a versao ativa e apaga o .bin junto.
+    delete = client.delete(
+        f"/api/v1/firmware-versions/{firmware['id']}/permanent",
+        params={"confirmacao": "EXCLUIR"},
+        headers=headers,
+    )
+    assert delete.status_code == 200, delete.text
+    assert delete.json()["arquivo_removido"] is True
+    assert client.get(f"/api/v1/firmware-files/{filename}").status_code == 404

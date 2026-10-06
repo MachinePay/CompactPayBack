@@ -176,9 +176,14 @@ def on_message(client, userdata, msg):
                     )
                 )
             if firmware_version:
+                previous_firmware_version = maquina.firmware_version
                 maquina.firmware_version = firmware_version
                 maquina.firmware_updated_at = datetime.utcnow()
-                if maquina.firmware_update_status in {"sent", "downloading", "restarting", "failed", "no_update"}:
+                # So considera "atualizado" se a versao realmente mudou. Antes
+                # qualquer heartbeat depois de uma falha (ex.: 404 no .bin)
+                # marcava "updated" com a placa ainda na versao antiga.
+                version_changed = previous_firmware_version != firmware_version
+                if version_changed and maquina.firmware_update_status in {"sent", "downloading", "restarting", "failed", "no_update"}:
                     maquina.firmware_update_status = "updated"
                     maquina.firmware_update_finished_at = datetime.utcnow()
                     maquina.firmware_update_progress = 100
