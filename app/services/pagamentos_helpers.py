@@ -146,6 +146,25 @@ def iter_mp_tokens(db: Session):
             yield value
 
 
+def resolve_mp_token_by_user_id(db: Session, user_id) -> str | None:
+    """Acha direto o token do cliente dono do pagamento, usando o user_id que
+    o proprio webhook do MP ja manda no payload (a conta MP que gerou o
+    evento) - cada cliente tem esse mp_user_id salvo desde o OAuth. Sem isso,
+    mp_request_with_known_tokens teria que tentar o token de CADA cliente
+    cadastrado, um por um, ate acertar - rapido com poucos clientes, mas fica
+    cada vez mais lento (uma chamada real ao MP por tentativa errada)
+    conforme a base de clientes MP cresce. So cai nesse brute-force se isso
+    aqui nao achar nada (user_id ausente ou cliente sem mp_user_id salvo)."""
+    if not user_id:
+        return None
+    cliente = (
+        db.query(Cliente)
+        .filter(Cliente.mp_user_id == str(user_id), Cliente.mp_access_token.isnot(None))
+        .first()
+    )
+    return cliente.mp_access_token if cliente else None
+
+
 def mp_request_with_known_tokens(db: Session, method: str, url: str, preferred_token: str | None = None):
     errors = []
     tokens = []

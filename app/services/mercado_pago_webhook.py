@@ -14,6 +14,7 @@ from app.services.pagamentos_helpers import (
     mp_request_with_known_tokens,
     parse_machine_id_from_external_reference,
     payment_metadata,
+    resolve_mp_token_by_user_id,
 )
 from app.services.pulse_tracking import update_pulse_status
 from app.services.vendas import registrar_venda_pagamento
@@ -166,10 +167,12 @@ def processar_callback_mercado_pago(dados: dict):
     if topic == "order" or action.startswith("order.") or str(order_id).startswith("ORD"):
         db_lookup = SessionLocal()
         try:
+            preferred_token = resolve_mp_token_by_user_id(db_lookup, dados.get("user_id"))
             order_data, _ = mp_request_with_known_tokens(
                 db_lookup,
                 "GET",
                 f"https://api.mercadopago.com/v1/orders/{order_id}",
+                preferred_token=preferred_token,
             )
         finally:
             db_lookup.close()
@@ -265,10 +268,12 @@ def processar_callback_mercado_pago(dados: dict):
             return {"status": "ignorado", "detalhe": "Evento payment sem id"}
         db_lookup = SessionLocal()
         try:
+            preferred_token = resolve_mp_token_by_user_id(db_lookup, dados.get("user_id"))
             payment_data, mp_token = mp_request_with_known_tokens(
                 db_lookup,
                 "GET",
                 f"https://api.mercadopago.com/v1/payments/{payment_id}",
+                preferred_token=preferred_token,
             )
         finally:
             db_lookup.close()
