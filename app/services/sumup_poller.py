@@ -2,6 +2,7 @@ import json
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 
 from fastapi import HTTPException
@@ -221,22 +222,46 @@ def process_cliente(db, cliente: Cliente) -> None:
     db.commit()
 
 
+def _process_cliente_standalone(cliente_id: int) -> None:
+    """Roda em thread propria, com sua propria sessao - sessao do SQLAlchemy
+    nao e' thread-safe pra compartilhar entre threads."""
+    db = SessionLocal()
+    try:
+        cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+        if not cliente:
+            return
+        try:
+            process_cliente(db, cliente)
+        except Exception:
+            db.rollback()
+            logging.exception("[SumUp poller] erro processando cliente %s", cliente_id)
+    finally:
+        db.close()
+
+
 def poll_all_clientes() -> None:
     db = SessionLocal()
     try:
-        clientes = (
-            db.query(Cliente)
+        cliente_ids = [
+            cliente.id
+            for cliente in db.query(Cliente)
             .filter(Cliente.sumup_api_key.isnot(None), Cliente.sumup_merchant_code.isnot(None))
             .all()
-        )
-        for cliente in clientes:
-            try:
-                process_cliente(db, cliente)
-            except Exception:
-                db.rollback()
-                logging.exception("[SumUp poller] erro processando cliente %s", cliente.id)
+        ]
     finally:
         db.close()
+
+    if not cliente_ids:
+        return
+
+    # Processa ate SUMUP_POLLER_MAX_WORKERS clientes em paralelo, em vez de um
+    # por um - sem isso, o tempo de um ciclo cresce proporcional ao numero de
+    # clientes (ver comentario na settings) e o atraso real de deteccao de
+    # pagamento piora conforme a base cresce, mesmo com o intervalo de
+    # polling fixo.
+    max_workers = min(settings.SUMUP_POLLER_MAX_WORKERS, len(cliente_ids))
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        list(executor.map(_process_cliente_standalone, cliente_ids))
 
 
 def run_sumup_poller_worker() -> None:

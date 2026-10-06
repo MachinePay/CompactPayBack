@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     # maquininha (standalone), que nao disparam nenhum webhook da SumUp.
     START_SUMUP_POLLER_WORKER: bool = os.getenv("START_SUMUP_POLLER_WORKER", "true").lower() == "true"
     SUMUP_POLLER_INTERVAL_SECONDS: int = int(os.getenv("SUMUP_POLLER_INTERVAL_SECONDS", "10"))
+    # Quantos clientes o poller processa em paralelo por ciclo - sem isso, o
+    # loop e' sequencial e o tempo de um ciclo cresce proporcional ao numero de
+    # clientes (ex.: 100 clientes x ~0,5s cada = 50s, maior que o proprio
+    # intervalo de polling). Limita a concorrencia em vez de disparar uma
+    # thread por cliente de uma vez so.
+    SUMUP_POLLER_MAX_WORKERS: int = int(os.getenv("SUMUP_POLLER_MAX_WORKERS", "10"))
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     CORS_ALLOWED_ORIGINS: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
     MP_DEFAULT_STORE_STREET_NAME: str = os.getenv("MP_DEFAULT_STORE_STREET_NAME", "Rua CompactPay")
