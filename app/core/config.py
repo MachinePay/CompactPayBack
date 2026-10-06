@@ -53,7 +53,7 @@ class Settings(BaseSettings):
     # Polling periodico (sumup_poller.py) - detecta pagamentos feitos DIRETO na
     # maquininha (standalone), que nao disparam nenhum webhook da SumUp.
     START_SUMUP_POLLER_WORKER: bool = os.getenv("START_SUMUP_POLLER_WORKER", "true").lower() == "true"
-    SUMUP_POLLER_INTERVAL_SECONDS: int = int(os.getenv("SUMUP_POLLER_INTERVAL_SECONDS", "20"))
+    SUMUP_POLLER_INTERVAL_SECONDS: int = int(os.getenv("SUMUP_POLLER_INTERVAL_SECONDS", "10"))
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     CORS_ALLOWED_ORIGINS: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
     MP_DEFAULT_STORE_STREET_NAME: str = os.getenv("MP_DEFAULT_STORE_STREET_NAME", "Rua CompactPay")
