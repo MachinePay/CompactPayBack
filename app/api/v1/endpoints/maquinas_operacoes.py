@@ -472,9 +472,7 @@ def listar_quedas(
         depois_todos = [e for e in eventos if e.created_at > linha.created_at]
         proximo = depois_todos[0] if depois_todos else None
         reconectou_em = proximo.created_at if proximo else None
-        duracao_offline_segundos = (
-            (reconectou_em - linha.created_at).total_seconds() if reconectou_em else None
-        )
+        inicio_estimado = linha.created_at
 
         if is_reinicio:
             tipo = "reinicio_forcado"
@@ -510,7 +508,11 @@ def listar_quedas(
                 vizinhas,
                 reconectou_em,
                 firmware_atual=maquina.firmware_version if maquina else None,
+                # O aviso de queda chega ate 90s depois de a maquina parar de
+                # falar (keepalive): inicio real e tempo offline sao estimados.
+                ultimo_contato=antes[-1].created_at if antes else None,
             )
+            inicio_estimado = diagnostico.inicio_estimado or linha.created_at
 
         resultado.append(
             {
@@ -526,8 +528,12 @@ def listar_quedas(
                 "motivo_tecnico": motivo_tecnico,
                 "wifi_disconnect_reason_code": diagnostico.wifi_reason_code,
                 "wifi_disconnect_count": diagnostico.wifi_disc_count,
+                "inicio_estimado": inicio_estimado,
+                "ligou_em": diagnostico.ligou_em,
                 "reconectou_em": reconectou_em,
-                "duracao_offline_segundos": duracao_offline_segundos,
+                "duracao_offline_segundos": (
+                    (reconectou_em - inicio_estimado).total_seconds() if reconectou_em else None
+                ),
             }
         )
 

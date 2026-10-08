@@ -94,6 +94,13 @@ ID_DUPLICADO_MIN_QUEDAS = 4
 ID_DUPLICADO_JANELA = timedelta(seconds=60)
 ID_DUPLICADO_MAX_OFFLINE_S = 10
 OSCILACAO_MAX_OFFLINE_S = 20
+# O aviso de queda (Last Will) so e' publicado pela AWS quando ela desiste da
+# conexao: 1,5x o keepalive depois do ultimo pacote. Keepalive 60s desde o
+# firmware 2.5.0 (90s de atraso); antes era o padrao da PubSubClient, 15s.
+LWT_ATRASO_S_KEEPALIVE_60 = 90
+LWT_ATRASO_S_KEEPALIVE_15 = 23
+# Placa que acha o roteador em ate isso depois de ligar = roteador estava ligado.
+ROTEADOR_LIGADO_ASSOCIOU_EM_S = 5
 # Folga ao comparar uptime com o tempo offline para decidir se reiniciou.
 REINICIO_FOLGA_S = 180
 EVENTO_ANTES_DA_QUEDA = timedelta(minutes=3)
@@ -161,6 +168,10 @@ class Diagnostico:
     detalhes: list[str] = field(default_factory=list)
     wifi_reason_code: int | None = None
     wifi_disc_count: int | None = None
+    # Quando a placa voltou a ligar (so quando ela reiniciou na queda).
+    ligou_em: datetime | None = None
+    # Quando a maquina provavelmente parou de falar (ver estimar_inicio_queda).
+    inicio_estimado: datetime | None = None
 
     @property
     def categoria_label(self) -> str:
@@ -184,6 +195,25 @@ def _motivo_reinicio(reset_reason: str | None, forced_restart: str | None) -> tu
     return None
 
 
+def _versao(fw: str | None) -> tuple[int, int, int] | None:
+    match = re.search(r"version_(\d+)\.(\d+)\.(\d+)", fw or "")
+    return tuple(int(p) for p in match.groups()) if match else None
+
+
+def estimar_inicio_queda(
+    queda_em: datetime, fw: str | None, ultimo_contato: datetime | None
+) -> datetime:
+    """Momento aproximado em que a maquina parou de falar: o horario do Last
+    Will menos o atraso do keepalive, mas nunca antes do ultimo evento que a
+    placa mandou (ela estava viva nesse instante)."""
+    versao = _versao(fw)
+    atraso = LWT_ATRASO_S_KEEPALIVE_15 if versao and versao < (2, 5, 0) else LWT_ATRASO_S_KEEPALIVE_60
+    inicio = queda_em - timedelta(seconds=atraso)
+    if ultimo_contato and ultimo_contato > inicio:
+        inicio = ultimo_contato
+    return min(inicio, queda_em)
+
+
 def diagnosticar_queda(
     queda: Evento,
     eventos_depois: list[Evento],
@@ -191,13 +221,46 @@ def diagnosticar_queda(
     quedas_vizinhas: int,
     reconectou_em: datetime | None,
     firmware_atual: str | None = None,
+    ultimo_contato: datetime | None = None,
 ) -> Diagnostico:
     """eventos_depois: eventos da mesma maquina depois da queda ate a proxima
     queda. eventos_antes: eventos dos minutos anteriores a queda.
     quedas_vizinhas: quantas quedas da mesma maquina houve perto desta.
     firmware_atual: versao atual da maquina, usada so se nenhum heartbeat
-    em volta da queda disser qual firmware ela rodava."""
-    duracao = (reconectou_em - queda.created_at).total_seconds() if reconectou_em else None
+    em volta da queda disser qual firmware ela rodava.
+    ultimo_contato: ultimo evento que a placa mandou antes da queda."""
+    diag = _diagnosticar(
+        queda, eventos_depois, eventos_antes, quedas_vizinhas, reconectou_em, firmware_atual, ultimo_contato
+    )
+    if diag.inicio_estimado is None:
+        diag.inicio_estimado = estimar_inicio_queda(
+            queda.created_at, _fw_em_volta(eventos_depois, eventos_antes, firmware_atual), ultimo_contato
+        )
+    return diag
+
+
+def _fw_em_volta(eventos_depois, eventos_antes, firmware_atual) -> str:
+    online = next((e for e in eventos_depois if e.status() == "ONLINE"), None)
+    anterior = next((e for e in reversed(eventos_antes) if e.status() == "ONLINE"), None)
+    return (
+        (parse_fields(online.descricao).get("fw") if online else None)
+        or (parse_fields(anterior.descricao).get("fw") if anterior else None)
+        or firmware_atual
+        or ""
+    )
+
+
+def _diagnosticar(
+    queda, eventos_depois, eventos_antes, quedas_vizinhas, reconectou_em, firmware_atual, ultimo_contato
+) -> Diagnostico:
+    # Tempo entre o aviso de queda e a volta: curtissimo quando a placa
+    # reconecta antes de a AWS desistir da sessao antiga (rajada de ID
+    # duplicado). Para o resto, usa o tempo real estimado (aviso - keepalive).
+    duracao_aviso = (reconectou_em - queda.created_at).total_seconds() if reconectou_em else None
+    inicio = estimar_inicio_queda(
+        queda.created_at, _fw_em_volta(eventos_depois, eventos_antes, firmware_atual), ultimo_contato
+    )
+    duracao = (reconectou_em - inicio).total_seconds() if reconectou_em else None
 
     # Rajada vem antes de tudo: a outra placa com o mesmo ID pode estar sendo
     # configurada pelo botao (caso real 1007, 08/10/2026), e isso nao e' a
@@ -205,8 +268,8 @@ def diagnosticar_queda(
     if (
         reconectou_em is not None
         and quedas_vizinhas >= ID_DUPLICADO_MIN_QUEDAS
-        and duracao is not None
-        and duracao <= ID_DUPLICADO_MAX_OFFLINE_S
+        and duracao_aviso is not None
+        and duracao_aviso <= ID_DUPLICADO_MAX_OFFLINE_S
     ):
         return Diagnostico(
             "id_duplicado",
@@ -256,19 +319,23 @@ def diagnosticar_queda(
         reset_reason = RESET_REASON_BY_CODE.get(boots[0].valor) if boots else online_fields.get("reset")
         forced = online_fields.get("forced_restart")
         resultado = _motivo_reinicio(reset_reason, forced)
+        ligou_em = _estimar_boot(online, uptime, diag, diag_eventos)
+        if resultado and resultado[0] == "energia":
+            detalhes.extend(_detalhe_roteador_na_volta(diag_eventos))
         if reinicios_forcados and resultado and resultado[0] in {"energia", "tensao", "travamento"}:
             detalhes.append("Depois disso ainda precisou de reinicios automaticos para reconectar")
         if len(boots) > 1:
             detalhes.append(f"Reiniciou {len(boots) - 1}x sozinha tentando reconectar antes de voltar")
         if resultado:
             categoria, motivo = resultado
-            return Diagnostico(categoria, motivo, detalhes, wifi_reason, wifi_count)
+            return Diagnostico(categoria, motivo, detalhes, wifi_reason, wifi_count, ligou_em)
         return Diagnostico(
             "reinicio",
             "A placa reiniciou durante a queda",
             detalhes + ([f"Motivo do reset: {reset_reason}"] if reset_reason else []),
             wifi_reason,
             wifi_count,
+            ligou_em,
         )
 
     # 2) Sem reinicio: o Wi-Fi caiu?
@@ -294,7 +361,7 @@ def diagnosticar_queda(
             )
         return Diagnostico(
             "internet",
-            "A internet do local caiu: o Wi-Fi continuou conectado, mas sem acesso ao servidor. "
+            "Sem acesso ao servidor com o Wi-Fi conectado: a internet do local caiu ou ficou instavel. "
             "Verifique o provedor ou o chip 4G do roteador.",
             detalhes,
             wifi_reason,
@@ -334,6 +401,49 @@ def diagnosticar_queda(
         wifi_reason,
         wifi_count,
     )
+
+
+def _ultimo_boot(diag_eventos: list[DiagEvent]) -> list[DiagEvent]:
+    boots = [e for e in diag_eventos if e.tipo == "B"]
+    if not boots:
+        return []
+    ultimo = boots[-1].boot
+    return [e for e in diag_eventos if e.boot == ultimo]
+
+
+def _estimar_boot(online, uptime, diag, diag_eventos) -> datetime | None:
+    """Horario em que a placa ligou: heartbeat de reconexao menos o uptime, ou
+    o diario (mandado logo depois de pegar IP) menos o segundo do evento I."""
+    if online is not None and uptime is not None:
+        return online.created_at - timedelta(seconds=uptime)
+    if diag is not None:
+        ip = [e for e in _ultimo_boot(diag_eventos) if e.tipo == "I"]
+        if ip:
+            return diag.created_at - timedelta(seconds=ip[-1].segundos)
+    return None
+
+
+def _detalhe_roteador_na_volta(diag_eventos: list[DiagEvent]) -> list[str]:
+    """Na volta de uma falta de energia: o roteador do local tambem tinha
+    desligado (queda de luz geral) ou so a maquina ficou sem energia?"""
+    eventos = _ultimo_boot(diag_eventos)
+    if not eventos:
+        return []
+    varredura = next((e for e in eventos if e.tipo == "W"), None)
+    associou = next((e for e in eventos if e.tipo == "A"), None)
+    if varredura is not None and varredura.valor == 0:
+        espera = f" (so apareceu {associou.segundos}s depois de a placa ligar)" if associou else ""
+        return [
+            "O Wi-Fi do local tambem estava fora do ar quando a placa ligou"
+            + espera
+            + ": provavel queda de luz geral, o roteador tambem desligou"
+        ]
+    if associou is not None and associou.segundos <= ROTEADOR_LIGADO_ASSOCIOU_EM_S:
+        return [
+            "O roteador continuou ligado (a placa conectou assim que ligou): "
+            "so a maquina ficou sem energia - tomada, disjuntor ou fonte da maquina"
+        ]
+    return []
 
 
 def _firmware_tem_diario(fw: str) -> bool:

@@ -270,7 +270,9 @@ def test_quedas_endpoint_translates_wifi_reason_and_computes_duracao():
     assert "Roteador" not in queda["motivo"]
     assert queda["wifi_disconnect_reason_code"] == 36
     assert queda["wifi_disconnect_count"] == 45
-    assert queda["duracao_offline_segundos"] == 30.0
+    # O aviso de queda chega 90s depois de a placa parar de falar (keepalive
+    # 60s): o tempo offline conta a partir do inicio estimado, nao do aviso.
+    assert queda["duracao_offline_segundos"] == 120.0
 
 
 def test_quedas_endpoint_translates_reinicio_forcado_motivo():
@@ -615,6 +617,37 @@ def test_queda_por_falta_de_energia_pelo_diario_wifi():
     queda = _quedas_da_maquina(machine_id, "admin-queda-energia@test.local")[0]
     assert queda["categoria"] == "energia"
     assert "sem energia" in queda["motivo"]
+    # Conectou 0s depois de ligar: o roteador estava ligado.
+    assert any("roteador continuou ligado" in d for d in queda["detalhes"])
+
+
+def test_queda_de_luz_geral_roteador_tambem_desligou():
+    # Caso real 1011 (08/10/2026): ligou do zero e a rede so apareceu 25s depois.
+    machine_id = "CPM-QUEDA-LUZ-GERAL"
+    _create_maquina(machine_id)
+    t0 = datetime.utcnow() - timedelta(minutes=30)
+    _add_evento_dispositivo(
+        machine_id,
+        f"Evento ESP: status=ONLINE fw={FW_NOVO} uptime=900 reset=poweron wifi_disc_count=0",
+        created_at=t0 - timedelta(seconds=150),
+    )
+    _add_evento_dispositivo(machine_id, LWT, created_at=t0)
+    _add_evento_dispositivo(
+        machine_id,
+        f"Evento ESP: status=ONLINE fw={FW_NOVO} uptime=33 reset=poweron forced_restart=none wifi_disc_count=29",
+        created_at=t0 + timedelta(seconds=20),
+    )
+    _add_evento_dispositivo(
+        machine_id,
+        "Evento ESP: status=WIFI_DIAG boots=1 dropped=0 ev=1.0.B.1,1.0.X.0,1.2.D.201,1.10.N.46,1.10.W.0,1.10.O.0,1.25.A.10,1.26.I.0",
+        created_at=t0 + timedelta(seconds=20),
+    )
+    queda = _quedas_da_maquina(machine_id, "admin-queda-luz@test.local")[0]
+    assert queda["categoria"] == "energia"
+    assert any("queda de luz geral" in d for d in queda["detalhes"])
+    # Parou de falar ~90s antes do aviso; ligou 33s antes do heartbeat de volta.
+    assert queda["duracao_offline_segundos"] == 110.0
+    assert queda["ligou_em"] is not None
 
 
 def test_queda_de_internet_com_wifi_de_pe():
@@ -631,7 +664,7 @@ def test_queda_de_internet_com_wifi_de_pe():
     )
     queda = _quedas_da_maquina(machine_id, "admin-queda-internet@test.local")[0]
     assert queda["categoria"] == "internet"
-    assert "Wi-Fi continuou conectado" in queda["motivo"]
+    assert "com o Wi-Fi conectado" in queda["motivo"]
 
 
 def test_rajada_de_quedas_indica_id_duplicado():
