@@ -7,7 +7,8 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user
 from app.core.security import get_password_hash
 from app.db.session import SessionLocal
-from app.models.models import UserRole, Usuario
+from app.models.models import Maquina, UserRole, Usuario
+from app.api.v1.endpoints.maquinas import excluir_maquina_cascata
 from app.schemas.usuario import UsuarioCreate, UsuarioOut, UsuarioUpdate
 from app.services.auditoria import registrar_auditoria
 from app.services.usuarios_helpers import (
@@ -160,14 +161,29 @@ def deletar_usuario(
     email = db_usuario.email
     role_value = db_usuario.role.value if hasattr(db_usuario.role, "value") else str(db_usuario.role)
     cliente_id = db_usuario.cliente_id
+
+    # Exclui tambem as maquinas do cliente desse usuario - senao elas ficam
+    # "orfas" (cliente_id aponta pra um cliente sem login nenhum, nao aparecem
+    # em nenhum filtro por cliente no painel, mas continuam contando na Saude
+    # das maquinas como se fossem reais).
+    maquinas_excluidas = []
+    if cliente_id is not None:
+        maquinas_do_cliente = db.query(Maquina).filter(Maquina.cliente_id == cliente_id).all()
+        for maquina in maquinas_do_cliente:
+            excluir_maquina_cascata(db, maquina, user)
+            maquinas_excluidas.append(maquina.id_hardware)
+
     registrar_auditoria(
         db,
         user,
         acao="USUARIO_EXCLUIDO",
         entidade_tipo="usuario",
         entidade_id=usuario_id,
-        descricao=f"Usuario excluido email={email} role={role_value} cliente_id={cliente_id}",
+        descricao=(
+            f"Usuario excluido email={email} role={role_value} cliente_id={cliente_id} "
+            f"maquinas_excluidas={','.join(maquinas_excluidas) if maquinas_excluidas else 'nenhuma'}"
+        ),
     )
     db.delete(db_usuario)
     db.commit()
-    return {"ok": True}
+    return {"ok": True, "maquinas_excluidas": maquinas_excluidas}

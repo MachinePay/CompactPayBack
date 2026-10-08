@@ -15,6 +15,8 @@ from app.models.models import (
     FechamentoMaquina,
     HistoricoOperacao,
     Maquina,
+    SumupCheckout,
+    SumupTransacaoPendente,
     Transacao,
     VendaPagamento,
 )
@@ -382,6 +384,55 @@ def gerar_novo_id_maquina(
     return {"id_hardware": _generate_machine_id(db)}
 
 
+def excluir_maquina_cascata(db: Session, db_maquina: Maquina, user) -> dict:
+    """Apaga uma maquina e tudo que referencia ela (FK em maquinas.id_hardware)
+    - usado tanto pelo endpoint de excluir maquina quanto pela exclusao em
+    cascata quando o usuario/cliente dono e' excluido (ver deletar_usuario).
+    Preciso cobrir TODA tabela com ForeignKey("maquinas.id_hardware"), senao
+    o db.delete(db_maquina) la embaixo estoura IntegrityError (nao tratado ->
+    500) pra qualquer maquina que ja tenha comando MQTT, alerta, checkout ou
+    pendencia SumUp registrada, mesmo com as tabelas "principais" (transacoes,
+    vendas etc.) ja limpas."""
+    machine_id = db_maquina.id_hardware
+    contagens = {
+        "produtos": db.query(Produto).filter(Produto.maquina_id == machine_id).count(),
+        "transacoes": db.query(Transacao).filter(Transacao.maquina_id == machine_id).count(),
+        "vendas": db.query(VendaPagamento).filter(VendaPagamento.maquina_id == machine_id).count(),
+        "historicos": db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).count(),
+        "fechamentos": db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).count(),
+        "auditorias_maquina": db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).count(),
+        "escutas_terminal": db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).count(),
+        "comandos": db.query(ComandoMaquina).filter(ComandoMaquina.maquina_id == machine_id).count(),
+        "alertas": db.query(AlertaNotificacao).filter(AlertaNotificacao.maquina_id == machine_id).count(),
+        "sumup_checkouts": db.query(SumupCheckout).filter(SumupCheckout.maquina_id == machine_id).count(),
+        "sumup_pendencias": db.query(SumupTransacaoPendente).filter(SumupTransacaoPendente.maquina_id == machine_id).count(),
+    }
+    registrar_auditoria(
+        db,
+        user,
+        acao="MAQUINA_EXCLUIDA",
+        entidade_tipo="maquina",
+        entidade_id=machine_id,
+        descricao=(
+            f"Maquina excluida nome={db_maquina.nome_local} cliente_id={db_maquina.cliente_id} "
+            + " ".join(f"{chave}={valor}" for chave, valor in contagens.items())
+        ),
+    )
+    db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(VendaPagamento).filter(VendaPagamento.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(Transacao).filter(Transacao.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(Produto).filter(Produto.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(ComandoMaquina).filter(ComandoMaquina.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(AlertaNotificacao).filter(AlertaNotificacao.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(SumupCheckout).filter(SumupCheckout.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(SumupTransacaoPendente).filter(SumupTransacaoPendente.maquina_id == machine_id).delete(synchronize_session=False)
+    db.delete(db_maquina)
+    return contagens
+
+
 @router.delete("/maquinas/{machine_id}")
 def deletar_maquina(
     machine_id: str,
@@ -396,44 +447,6 @@ def deletar_maquina(
     if not db_maquina:
         raise HTTPException(status_code=404, detail="Maquina nao encontrada")
 
-    produtos_removidos = db.query(Produto).filter(Produto.maquina_id == machine_id).count()
-    transacoes_removidas = db.query(Transacao).filter(Transacao.maquina_id == machine_id).count()
-    vendas_removidas = db.query(VendaPagamento).filter(VendaPagamento.maquina_id == machine_id).count()
-    historicos_removidos = db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).count()
-    fechamentos_removidos = db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).count()
-    auditorias_removidas = db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).count()
-    escutas_removidas = db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).count()
-    comandos_removidos = db.query(ComandoMaquina).filter(ComandoMaquina.maquina_id == machine_id).count()
-    alertas_removidos = db.query(AlertaNotificacao).filter(AlertaNotificacao.maquina_id == machine_id).count()
-    registrar_auditoria(
-        db,
-        user,
-        acao="MAQUINA_EXCLUIDA",
-        entidade_tipo="maquina",
-        entidade_id=machine_id,
-        descricao=(
-            f"Maquina excluida nome={db_maquina.nome_local} cliente_id={db_maquina.cliente_id} "
-            f"produtos={produtos_removidos} transacoes={transacoes_removidas} "
-            f"vendas={vendas_removidas} escutas_terminal={escutas_removidas} "
-            f"historicos={historicos_removidos} fechamentos={fechamentos_removidos} "
-            f"auditorias_maquina={auditorias_removidas} comandos={comandos_removidos} "
-            f"alertas={alertas_removidos}"
-        ),
-    )
-    # Precisa cobrir toda tabela com ForeignKey("maquinas.id_hardware"), senao
-    # o db.delete(db_maquina) la embaixo estoura IntegrityError (nao tratado
-    # -> 500) pra qualquer maquina que ja tenha comando MQTT ou alerta
-    # registrado, mesmo com as tabelas "principais" (transacoes, vendas etc.)
-    # ja limpas.
-    db.query(EscutaTerminal).filter(EscutaTerminal.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(VendaPagamento).filter(VendaPagamento.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(AuditoriaOperacao).filter(AuditoriaOperacao.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(FechamentoMaquina).filter(FechamentoMaquina.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(Transacao).filter(Transacao.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(Produto).filter(Produto.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(ComandoMaquina).filter(ComandoMaquina.maquina_id == machine_id).delete(synchronize_session=False)
-    db.query(AlertaNotificacao).filter(AlertaNotificacao.maquina_id == machine_id).delete(synchronize_session=False)
-    db.delete(db_maquina)
+    excluir_maquina_cascata(db, db_maquina, user)
     db.commit()
     return {"ok": True}
