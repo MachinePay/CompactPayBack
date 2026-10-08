@@ -263,7 +263,11 @@ def test_quedas_endpoint_translates_wifi_reason_and_computes_duracao():
     assert data["total"] == 1
     queda = data["quedas"][0]
     assert queda["tipo"] == "queda_conexao"
-    assert "Roteador encerrou a conexao" in queda["motivo"]
+    # Firmware antigo, sem diario e sem heartbeat anterior: nao da pra saber
+    # se foi Wi-Fi ou internet - nao inventa motivo (antes mostrava o ultimo
+    # codigo de Wi-Fi da placa, que podia ser de horas antes).
+    assert queda["categoria"] == "desconhecido"
+    assert "Roteador" not in queda["motivo"]
     assert queda["wifi_disconnect_reason_code"] == 36
     assert queda["wifi_disconnect_count"] == 45
     assert queda["duracao_offline_segundos"] == 30.0
@@ -286,7 +290,8 @@ def test_quedas_endpoint_translates_reinicio_forcado_motivo():
     queda = response.json()["quedas"][0]
     assert queda["tipo"] == "reinicio_forcado"
     assert queda["motivo_tecnico"] == "wifi_offline_5min"
-    assert "Wi-Fi preso" in queda["motivo"]
+    assert queda["categoria"] == "reinicio_forcado"
+    assert "Wi-Fi ficou fora" in queda["motivo"]
 
 
 def test_quedas_endpoint_filters_by_date_range():
@@ -582,3 +587,112 @@ def test_config_dispositivo_endpoint_rejects_unknown_firmware():
         )
 
     assert response.status_code == 409
+
+
+def _quedas_da_maquina(machine_id, email):
+    with TestClient(app) as client:
+        token = _create_admin_token(client, email)
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get(f"/api/v1/maquinas/quedas?maquina_id={machine_id}", headers=headers)
+    assert response.status_code == 200
+    return response.json()["quedas"]
+
+
+LWT = "Maquina caiu (MQTT last will - queda de energia, crash ou rede sem desconexao limpa)"
+FW_NOVO = "version_2.7.5-ap-toggle-fix-2026-10-07"
+
+
+def test_queda_por_falta_de_energia_pelo_diario_wifi():
+    machine_id = "CPM-QUEDA-ENERGIA"
+    _create_maquina(machine_id)
+    t0 = datetime.utcnow() - timedelta(minutes=30)
+    _add_evento_dispositivo(machine_id, LWT, created_at=t0)
+    _add_evento_dispositivo(
+        machine_id,
+        "Evento ESP: status=WIFI_DIAG boots=1 dropped=0 ev=1.0.B.1,1.0.X.0,1.0.A.10,1.2.I.0",
+        created_at=t0 + timedelta(seconds=40),
+    )
+    queda = _quedas_da_maquina(machine_id, "admin-queda-energia@test.local")[0]
+    assert queda["categoria"] == "energia"
+    assert "sem energia" in queda["motivo"]
+
+
+def test_queda_de_internet_com_wifi_de_pe():
+    # Caso real 1008 (08/10/2026): MQTT caiu ~3 min, Wi-Fi nao caiu, sem reboot.
+    machine_id = "CPM-QUEDA-INTERNET"
+    _create_maquina(machine_id)
+    t0 = datetime.utcnow() - timedelta(minutes=30)
+    _add_evento_dispositivo(machine_id, LWT, created_at=t0)
+    _add_evento_dispositivo(
+        machine_id,
+        f"Evento ESP: status=ONLINE fw={FW_NOVO} rssi=-44 wifi=100 uptime=6881 heap=199532 reset=poweron "
+        "forced_restart=none wifi_rc=0 mqtt_port=8883 wifi_disc_reason=36 wifi_disc_count=3 mqtt_rc=1",
+        created_at=t0 + timedelta(seconds=174),
+    )
+    queda = _quedas_da_maquina(machine_id, "admin-queda-internet@test.local")[0]
+    assert queda["categoria"] == "internet"
+    assert "Wi-Fi continuou conectado" in queda["motivo"]
+
+
+def test_rajada_de_quedas_indica_id_duplicado():
+    # Caso real 1007 (08/10/2026): conecta, cai 1,4s depois, reconecta...
+    machine_id = "CPM-QUEDA-ID-DUP"
+    _create_maquina(machine_id)
+    t0 = datetime.utcnow() - timedelta(minutes=30)
+    for i in range(6):
+        base = t0 + timedelta(seconds=i * 1.6)
+        _add_evento_dispositivo(machine_id, LWT, created_at=base)
+        _add_evento_dispositivo(
+            machine_id,
+            "Evento ESP: status=COIN_PINS reason=mqtt_connect in_pin=6 in=1",
+            created_at=base + timedelta(seconds=0.3),
+        )
+    quedas = _quedas_da_maquina(machine_id, "admin-queda-iddup@test.local")
+    assert len(quedas) == 6
+    assert all(q["categoria"] == "id_duplicado" for q in quedas)
+    assert "mesmo ID" in quedas[0]["motivo"]
+
+
+def test_queda_logo_apos_atualizacao_de_firmware():
+    machine_id = "CPM-QUEDA-OTA"
+    _create_maquina(machine_id)
+    t0 = datetime.utcnow() - timedelta(minutes=30)
+    _add_evento_dispositivo(machine_id, "Evento ESP: status=UPDATE_OK cmd=abc", created_at=t0 - timedelta(seconds=6))
+    _add_evento_dispositivo(machine_id, LWT, created_at=t0)
+    _add_evento_dispositivo(
+        machine_id,
+        "Evento ESP: status=WIFI_DIAG boots=1 dropped=0 ev=1.0.B.3,1.0.X.0,1.1.A.8,1.3.I.0",
+        created_at=t0 + timedelta(seconds=1),
+    )
+    queda = _quedas_da_maquina(machine_id, "admin-queda-ota@test.local")[0]
+    assert queda["categoria"] == "atualizacao"
+
+
+def test_queda_do_wifi_pelo_diario_sem_reboot():
+    machine_id = "CPM-QUEDA-WIFI-DIARIO"
+    _create_maquina(machine_id)
+    t0 = datetime.utcnow() - timedelta(minutes=30)
+    _add_evento_dispositivo(machine_id, LWT, created_at=t0)
+    _add_evento_dispositivo(
+        machine_id,
+        "Evento ESP: status=WIFI_DIAG boots=1 dropped=0 ev=1.500.D.200,1.502.D.201,1.502.D.36,1.505.N.20,1.505.W.0,1.560.A.11,1.561.I.0",
+        created_at=t0 + timedelta(seconds=70),
+    )
+    queda = _quedas_da_maquina(machine_id, "admin-queda-wifi-diario@test.local")[0]
+    assert queda["categoria"] == "wifi"
+    assert queda["wifi_disconnect_reason_code"] == 200
+    assert "Sinal do roteador sumiu" in queda["motivo"]
+
+
+def test_queda_por_travamento_da_placa():
+    machine_id = "CPM-QUEDA-PANIC"
+    _create_maquina(machine_id)
+    t0 = datetime.utcnow() - timedelta(minutes=30)
+    _add_evento_dispositivo(machine_id, LWT, created_at=t0)
+    _add_evento_dispositivo(
+        machine_id,
+        "Evento ESP: status=WIFI_DIAG boots=1 dropped=0 ev=1.0.B.4,1.0.X.0,1.0.A.2,1.1.I.0",
+        created_at=t0 + timedelta(seconds=5),
+    )
+    queda = _quedas_da_maquina(machine_id, "admin-queda-panic@test.local")[0]
+    assert queda["categoria"] == "travamento"
