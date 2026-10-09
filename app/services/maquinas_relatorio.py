@@ -1895,6 +1895,22 @@ def build_machine_history_payload(
         saidas = [item for item in saidas if item.data_hora > ultimo_fechamento_fim]
         testes = [item for item in testes if item.created_at > ultimo_fechamento_fim]
 
+    # Casa cada venda com a saida fisica (pelucia entregue) mais proxima DEPOIS
+    # dela - em ordem cronologica, "consumindo" cada saida uma unica vez, pra
+    # nao atribuir a mesma entrega pra duas vendas diferentes. Nao tenta achar
+    # a saida "certa" por algum ID (a placa nao manda isso), so' por ordem -
+    # funciona bem porque credito e entrega acontecem em sequencia natural.
+    saidas_ordenadas = sorted(saidas, key=lambda item: item.data_hora)
+    idx_saida = 0
+    for venda in sorted(vendas, key=lambda item: item["data"]):
+        while idx_saida < len(saidas_ordenadas) and saidas_ordenadas[idx_saida].data_hora < venda["data"]:
+            idx_saida += 1
+        if idx_saida < len(saidas_ordenadas):
+            venda["pelucia_saiu_em"] = saidas_ordenadas[idx_saida].data_hora
+            idx_saida += 1
+        else:
+            venda["pelucia_saiu_em"] = None
+
     status_online = bool(maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
     terminal_status = get_active_terminal_for_machine(
         getattr(maquina, "dono", None),
@@ -2391,6 +2407,26 @@ def build_all_machines_history_payload(
         pagamentos = [item for item in pagamentos if not _is_fechado(item.maquina_id, item.data_hora)]
         saidas = [item for item in saidas if not _is_fechado(item.maquina_id, item.data_hora)]
         testes = [item for item in testes if not _is_fechado(item.maquina_id, item.created_at)]
+
+    # Mesmo casamento venda->saida fisica do build_machine_history_payload,
+    # so' que agrupado por maquina (aqui tem varias misturadas).
+    saidas_por_maquina: dict[str, list] = {}
+    for item in saidas:
+        saidas_por_maquina.setdefault(item.maquina_id, []).append(item)
+    for lista in saidas_por_maquina.values():
+        lista.sort(key=lambda item: item.data_hora)
+    idx_por_maquina: dict[str, int] = {}
+    for venda in sorted(vendas, key=lambda item: item["data"]):
+        saidas_maquina = saidas_por_maquina.get(venda["maquina_id"], [])
+        idx = idx_por_maquina.get(venda["maquina_id"], 0)
+        while idx < len(saidas_maquina) and saidas_maquina[idx].data_hora < venda["data"]:
+            idx += 1
+        if idx < len(saidas_maquina):
+            venda["pelucia_saiu_em"] = saidas_maquina[idx].data_hora
+            idx += 1
+        else:
+            venda["pelucia_saiu_em"] = None
+        idx_por_maquina[venda["maquina_id"]] = idx
 
     return {
         "range": {"inicio": start_dt, "fim": end_dt},
