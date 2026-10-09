@@ -189,7 +189,16 @@ def on_message(client, userdata, msg):
                     maquina.firmware_update_progress = 100
                     maquina.firmware_update_error = None
                     maquina.firmware_last_good_version = firmware_version
-                if maquina.firmware_target_version and maquina.firmware_target_version == firmware_version:
+                    # O alvo e' cadastrado com o nome descritivo da versao no
+                    # painel (ex.: "Reconect rapido Versao final"), nao com a
+                    # string tecnica que a placa reporta (ex.: version_2.7.5-...).
+                    # Comparar os dois nunca bate, e o alvo ficava preso pra
+                    # sempre mesmo apos a atualizacao funcionar - a maquina
+                    # nunca saia de "Atencao". A transicao pra "updated" ja' e'
+                    # o sinal real de que a atualizacao concluiu, entao o alvo
+                    # e' limpo aqui independente do nome.
+                    maquina.firmware_target_version = None
+                elif maquina.firmware_target_version and maquina.firmware_target_version == firmware_version:
                     maquina.firmware_target_version = None
             if status == "UPDATE_INICIADO":
                 maquina.firmware_update_status = "downloading"
