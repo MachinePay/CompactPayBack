@@ -232,6 +232,7 @@ def listar_alertas_maquinas(
         "firmware": sum(1 for item in alerts if item["tipo"] == "firmware"),
         "ruido_contador": sum(1 for item in alerts if item["tipo"] == "ruido_contador"),
         "quedas_frequentes": sum(1 for item in alerts if item["tipo"] == "quedas_frequentes"),
+        "id_duplicado": sum(1 for item in alerts if item["tipo"] == "id_duplicado"),
         "filtrados": len(filtered),
     }
     return {"resumo": resumo, "alertas": filtered}

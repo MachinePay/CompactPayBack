@@ -725,12 +725,65 @@ def quedas_counts_by_machine(db: Session, machine_ids: list[str], since: datetim
     return dict(rows)
 
 
+def rajadas_id_duplicado_by_machine(db: Session, machine_ids: list[str], since: datetime) -> dict[str, dict]:
+    """Rajadas de quedas de segundos = duas placas com o mesmo ID se derrubando
+    na AWS IoT (ela so aceita uma conexao por client id). Mesma regra que o
+    Historico de quedas usa pra classificar a queda como "ID duplicado"
+    (quedas_diagnostico.py): queda que voltou em ate ID_DUPLICADO_MAX_OFFLINE_S
+    com pelo menos ID_DUPLICADO_MIN_QUEDAS quedas na janela de
+    ID_DUPLICADO_JANELA em volta. Caso real: 1007 em 08/10/2026."""
+    from app.services.quedas_diagnostico import (
+        ID_DUPLICADO_JANELA,
+        ID_DUPLICADO_MAX_OFFLINE_S,
+        ID_DUPLICADO_MIN_QUEDAS,
+    )
+
+    if not machine_ids:
+        return {}
+    eventos_por_maquina: dict[str, list[tuple[datetime, bool]]] = defaultdict(list)
+    for maquina_id, created_at, descricao in (
+        db.query(HistoricoOperacao.maquina_id, HistoricoOperacao.created_at, HistoricoOperacao.descricao)
+        .filter(
+            HistoricoOperacao.maquina_id.in_(machine_ids),
+            HistoricoOperacao.categoria == "DISPOSITIVO",
+            HistoricoOperacao.created_at >= since,
+        )
+        .order_by(HistoricoOperacao.created_at.asc())
+        .all()
+    ):
+        eventos_por_maquina[maquina_id].append((created_at, (descricao or "").startswith("Maquina caiu")))
+
+    janela_s = ID_DUPLICADO_JANELA.total_seconds()
+    resultado: dict[str, dict] = {}
+    for maquina_id, eventos in eventos_por_maquina.items():
+        quedas = [i for i, (_, is_queda) in enumerate(eventos) if is_queda]
+        if len(quedas) < ID_DUPLICADO_MIN_QUEDAS:
+            continue
+        horarios_quedas = [eventos[i][0] for i in quedas]
+        membros: list[datetime] = []
+        for i in quedas:
+            queda_em = eventos[i][0]
+            if i + 1 >= len(eventos):
+                continue
+            if (eventos[i + 1][0] - queda_em).total_seconds() > ID_DUPLICADO_MAX_OFFLINE_S:
+                continue
+            vizinhas = sum(1 for h in horarios_quedas if abs((h - queda_em).total_seconds()) <= janela_s)
+            if vizinhas >= ID_DUPLICADO_MIN_QUEDAS:
+                membros.append(queda_em)
+        if membros:
+            resultado[maquina_id] = {"quedas": len(membros), "inicio": membros[0], "fim": membros[-1]}
+    return resultado
+
+
 OFFLINE_ALERT_AFTER = timedelta(minutes=5)
 NO_PAYMENT_ALERT_AFTER = timedelta(days=7)
 NOISE_ALERT_WINDOW = timedelta(hours=24)
 NOISE_ALERT_THRESHOLD = 10
 QUEDA_ALERT_WINDOW = timedelta(hours=2)
 QUEDA_ALERT_THRESHOLD = 3
+# Alerta de ID duplicado fica ativo durante a rajada e mais este tempo depois
+# da ultima queda dela, pra quem abrir a tela logo depois ainda ver.
+ID_DUPLICADO_ALERT_ATIVO_POR = timedelta(minutes=30)
 
 
 def latest_payment_map(db: Session, machine_ids: list[str]) -> dict[str, dict]:
@@ -836,7 +889,13 @@ def make_alert(machine: dict, tipo: str, severidade: str, titulo: str, mensagem:
     }
 
 
-def build_machine_alerts(machine: dict, now: datetime, noise_count: int, queda_count: int = 0) -> list[dict]:
+def build_machine_alerts(
+    machine: dict,
+    now: datetime,
+    noise_count: int,
+    queda_count: int = 0,
+    id_duplicado: dict | None = None,
+) -> list[dict]:
     alerts = []
     last_signal = machine.get("ultimo_sinal")
     if not machine["status_online"] and last_signal and now - last_signal >= OFFLINE_ALERT_AFTER:
@@ -928,6 +987,31 @@ def build_machine_alerts(machine: dict, now: datetime, noise_count: int, queda_c
             )
         )
 
+    if id_duplicado and now - id_duplicado["fim"] <= ID_DUPLICADO_ALERT_ATIVO_POR:
+        machine_id = machine["id_hardware"]
+        minutos = max(0, int((now - id_duplicado["fim"]).total_seconds() // 60))
+        quando = "agora" if minutos == 0 else f"ha {minutos} min"
+        alerts.append(
+            make_alert(
+                machine,
+                "id_duplicado",
+                "critico",
+                f"ID duplicado: outra placa usando o ID {machine_id}",
+                f"As duas placas se derrubam no servidor a cada poucos segundos ({id_duplicado['quedas']} quedas "
+                f"em rajada, a ultima {quando}). Enquanto isso, mensagens desta maquina podem se perder. "
+                f"Procure uma placa ligada configurada com o ID {machine_id} e troque o ID dela pelo portal.",
+                id_duplicado["fim"],
+                {
+                    "quedas": id_duplicado["quedas"],
+                    "inicio": id_duplicado["inicio"],
+                    "fim": id_duplicado["fim"],
+                },
+            )
+        )
+    # Quedas da rajada de ID duplicado nao sao problema de roteador: sem isso,
+    # o "Quedas frequentes" mandava olhar a rede do local (caso 1007).
+    if id_duplicado:
+        queda_count = max(0, queda_count - id_duplicado["quedas"])
     if queda_count >= QUEDA_ALERT_THRESHOLD:
         horas = int(QUEDA_ALERT_WINDOW.total_seconds() // 3600)
         alerts.append(
@@ -1011,6 +1095,9 @@ def compute_active_alerts(db: Session, maquinas: list[Maquina], now: datetime | 
     machines = compute_all_machines_health(db, maquinas, now)
     ruido_por_maquina = noise_counts_by_machine(db, machine_ids, now - NOISE_ALERT_WINDOW)
     quedas_por_maquina = quedas_counts_by_machine(db, machine_ids, now - QUEDA_ALERT_WINDOW)
+    # Mesma janela do "Quedas frequentes" (2h): cobre os 30 min do alerta de ID
+    # duplicado e permite descontar as quedas da rajada daquele contador.
+    id_duplicado_por_maquina = rajadas_id_duplicado_by_machine(db, machine_ids, now - QUEDA_ALERT_WINDOW)
     alerts = []
     for machine in machines:
         alerts.extend(
@@ -1019,6 +1106,7 @@ def compute_active_alerts(db: Session, maquinas: list[Maquina], now: datetime | 
                 now,
                 ruido_por_maquina.get(machine["id_hardware"], 0),
                 quedas_por_maquina.get(machine["id_hardware"], 0),
+                id_duplicado_por_maquina.get(machine["id_hardware"]),
             )
         )
     alerts.extend(build_sumup_pending_alerts(db, machines))

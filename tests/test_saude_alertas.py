@@ -365,3 +365,73 @@ def test_alertas_endpoint_does_not_alert_for_isolated_queda():
         alert["tipo"] for alert in data["alertas"] if alert["maquina"]["id_hardware"] == machine_id
     }
     assert "quedas_frequentes" not in alert_types
+
+
+LWT_QUEDA = "Maquina caiu (MQTT last will - queda de energia, crash ou rede sem desconexao limpa)"
+
+
+def _add_rajada_id_duplicado(machine_id, minutos_atras, quedas=6):
+    # Caso real 1007 (08/10/2026): conecta, cai 1,4s depois, reconecta 0,3s depois...
+    base = datetime.utcnow() - timedelta(minutes=minutos_atras)
+    for i in range(quedas):
+        queda_em = base + timedelta(seconds=i * 1.6)
+        _add_historico(machine_id, descricao=LWT_QUEDA, created_at=queda_em)
+        _add_historico(
+            machine_id,
+            descricao="Evento ESP: status=COIN_PINS reason=mqtt_connect in_pin=6 in=1",
+            created_at=queda_em + timedelta(seconds=0.3),
+        )
+
+
+def _alertas_da_maquina(machine_id, email):
+    with TestClient(app) as client:
+        token = _create_admin_token(client, email)
+        headers = {"Authorization": f"Bearer {token}"}
+        response = client.get("/api/v1/maquinas/alertas", headers=headers)
+    assert response.status_code == 200
+    data = response.json()
+    return data, [a for a in data["alertas"] if a["maquina"]["id_hardware"] == machine_id]
+
+
+def test_alerta_id_duplicado_em_rajada_recente_e_sem_quedas_frequentes():
+    machine_id = "CPM-ALERTA-ID-DUP"
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), wifi_quality=90)
+    _add_rajada_id_duplicado(machine_id, minutos_atras=5)
+
+    data, alertas = _alertas_da_maquina(machine_id, "admin-alerta-iddup@test.local")
+    tipos = {a["tipo"] for a in alertas}
+    assert "id_duplicado" in tipos
+    # As quedas da rajada nao podem virar "problema de roteador".
+    assert "quedas_frequentes" not in tipos
+    alerta = next(a for a in alertas if a["tipo"] == "id_duplicado")
+    assert alerta["severidade"] == "critico"
+    assert alerta["extra"]["quedas"] == 6
+    assert machine_id in alerta["titulo"]
+    assert data["resumo"]["id_duplicado"] >= 1
+
+
+def test_alerta_id_duplicado_some_30_min_depois_da_rajada():
+    machine_id = "CPM-ALERTA-ID-DUP-VELHO"
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), wifi_quality=90)
+    _add_rajada_id_duplicado(machine_id, minutos_atras=45)
+
+    _, alertas = _alertas_da_maquina(machine_id, "admin-alerta-iddup-velho@test.local")
+    tipos = {a["tipo"] for a in alertas}
+    assert "id_duplicado" not in tipos
+    assert "quedas_frequentes" not in tipos
+
+
+def test_quedas_espacadas_nao_viram_id_duplicado():
+    machine_id = "CPM-ALERTA-NAO-DUP"
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), wifi_quality=90)
+    # 4 quedas no mesmo minuto, mas cada uma ficou 2 min fora: e' rede, nao ID.
+    base = datetime.utcnow() - timedelta(minutes=20)
+    for i in range(4):
+        queda_em = base + timedelta(seconds=i * 15)
+        _add_historico(machine_id, descricao=LWT_QUEDA, created_at=queda_em)
+    _add_historico(machine_id, descricao="Evento ESP: status=ONLINE", created_at=base + timedelta(minutes=3))
+
+    _, alertas = _alertas_da_maquina(machine_id, "admin-alerta-nao-dup@test.local")
+    tipos = {a["tipo"] for a in alertas}
+    assert "id_duplicado" not in tipos
+    assert "quedas_frequentes" in tipos
