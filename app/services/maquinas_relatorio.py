@@ -1887,13 +1887,28 @@ def build_machine_history_payload(
     # data com o resto) em vez de ficar escondida dentro da linha do pagamento.
     # Sempre mostra, independente do filtro de forma/origem (isso e' sobre
     # metodo de pagamento, nao tem nada a ver com a saida fisica).
-    for saida in saidas:
+    #
+    # Agrupa saidas muito proximas (mesma janela usada pra agrupar pulsos de
+    # pagamento fisico) numa linha so' - uma maquina com varios pulsos de
+    # credito pode acionar o sensor OUT varias vezes em poucos segundos
+    # (entrega real pulso a pulso, ou ruido eletrico do driver quando o filtro
+    # ignorar_saida_pos_credito nao pegou por algum motivo) - mostrar 10
+    # linhas quase identicas nao ajuda ninguem a entender o que aconteceu.
+    grupos_saida = []
+    grupo_atual = None
+    for saida in sorted(saidas, key=lambda item: item.data_hora):
+        if grupo_atual is None or saida.data_hora - grupo_atual["ultima_em"] > PHYSICAL_PAYMENT_GROUP_WINDOW:
+            grupo_atual = {"primeira_em": saida.data_hora, "ultima_em": saida.data_hora, "count": 0}
+            grupos_saida.append(grupo_atual)
+        grupo_atual["ultima_em"] = saida.data_hora
+        grupo_atual["count"] += 1
+    for idx, grupo in enumerate(grupos_saida):
         vendas.append(
             {
-                "id": f"saida-{saida.id}",
+                "id": f"saida-{machine_id}-{idx}-{grupo['primeira_em'].isoformat()}",
                 "kind": "saida_pelucia",
                 "is_test": False,
-                "data": saida.data_hora,
+                "data": grupo["primeira_em"],
                 "valor": 0.0,
                 "taxa": None,
                 "total": 0.0,
@@ -1909,7 +1924,12 @@ def build_machine_history_payload(
                 "situacao": "Pelucia saiu",
                 "refunded_at": None,
                 "can_refund": False,
-                "descricao": "Pelucia entregue pela maquina (sensor de saida)",
+                "pulse_count": grupo["count"],
+                "descricao": (
+                    f"Pelucia entregue pela maquina (sensor de saida, {grupo['count']} acionamentos)"
+                    if grupo["count"] > 1
+                    else "Pelucia entregue pela maquina (sensor de saida)"
+                ),
             }
         )
 
@@ -2414,34 +2434,51 @@ def build_all_machines_history_payload(
         )
     # Cada saida fisica vira uma linha propria na lista de vendas, igual a
     # versao por maquina (ver build_machine_history_payload) - so que aqui com
-    # varias maquinas misturadas, entao guarda o maquina_id pra identificar.
-    # Sempre mostra, independente do filtro de forma/origem (isso e' sobre
-    # metodo de pagamento, nao tem nada a ver com a saida fisica).
-    for saida in saidas:
-        vendas.append(
-            {
-                "id": f"saida-{saida.id}",
-                "kind": "saida_pelucia",
-                "is_test": False,
-                "data": saida.data_hora,
-                "valor": 0.0,
-                "taxa": None,
-                "total": 0.0,
-                "ponto": nomes.get(saida.maquina_id, saida.maquina_id),
-                "maquina_id": saida.maquina_id,
-                "provider": "saida_fisica",
-                "payment_type": "SAIDA",
-                "card_brand": None,
-                "bank_name": None,
-                "provider_payment_id": None,
-                "pulse_status": None,
-                "command_id": None,
-                "situacao": "Pelucia saiu",
-                "refunded_at": None,
-                "can_refund": False,
-                "descricao": "Pelucia entregue pela maquina (sensor de saida)",
-            }
-        )
+    # varias maquinas misturadas, entao agrupa por maquina antes de agrupar
+    # por proximidade de tempo (mesma janela da grupagem de pagamento fisico).
+    # Sempre mostra, independente do filtro de forma/origem.
+    saidas_por_maquina_grupo: dict[str, list] = {}
+    for item in saidas:
+        saidas_por_maquina_grupo.setdefault(item.maquina_id, []).append(item)
+    for maquina_id_saida, itens in saidas_por_maquina_grupo.items():
+        grupos_saida = []
+        grupo_atual = None
+        for saida in sorted(itens, key=lambda item: item.data_hora):
+            if grupo_atual is None or saida.data_hora - grupo_atual["ultima_em"] > PHYSICAL_PAYMENT_GROUP_WINDOW:
+                grupo_atual = {"primeira_em": saida.data_hora, "ultima_em": saida.data_hora, "count": 0}
+                grupos_saida.append(grupo_atual)
+            grupo_atual["ultima_em"] = saida.data_hora
+            grupo_atual["count"] += 1
+        for idx, grupo in enumerate(grupos_saida):
+            vendas.append(
+                {
+                    "id": f"saida-{maquina_id_saida}-{idx}-{grupo['primeira_em'].isoformat()}",
+                    "kind": "saida_pelucia",
+                    "is_test": False,
+                    "data": grupo["primeira_em"],
+                    "valor": 0.0,
+                    "taxa": None,
+                    "total": 0.0,
+                    "ponto": nomes.get(maquina_id_saida, maquina_id_saida),
+                    "maquina_id": maquina_id_saida,
+                    "provider": "saida_fisica",
+                    "payment_type": "SAIDA",
+                    "card_brand": None,
+                    "bank_name": None,
+                    "provider_payment_id": None,
+                    "pulse_status": None,
+                    "command_id": None,
+                    "situacao": "Pelucia saiu",
+                    "refunded_at": None,
+                    "can_refund": False,
+                    "pulse_count": grupo["count"],
+                    "descricao": (
+                        f"Pelucia entregue pela maquina (sensor de saida, {grupo['count']} acionamentos)"
+                        if grupo["count"] > 1
+                        else "Pelucia entregue pela maquina (sensor de saida)"
+                    ),
+                }
+            )
 
     vendas.sort(key=lambda item: item["data"], reverse=True)
     for venda in vendas:
