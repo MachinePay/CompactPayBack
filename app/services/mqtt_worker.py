@@ -275,6 +275,12 @@ def on_message(client, userdata, msg):
                 status_pulso="fisico",
                 created_at=nova_transacao.data_hora,
             )
+            # Mesmo marcador que PULSO_INICIADO (credito via MQTT) usa pro
+            # filtro ignorar_saida_pos_credito funcionar - sem isso, esse
+            # filtro NUNCA suprimia ruido do sensor OUT apos pagamento FISICO
+            # (so cobria credito digital), porque moeda/nota nunca passa pelo
+            # fluxo de "PULSO_INICIADO" (so' libera o rele direto no hardware).
+            maquina.credito_liberado_em = datetime.utcnow()
             db.commit()
             print(f"Transação FISICO IN registrada para máquina {id_extraido}")
         elif payload == "PELUCIA ENTREGUE (OUT)":
