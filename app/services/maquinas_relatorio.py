@@ -1881,6 +1881,38 @@ def build_machine_history_payload(
                 "descricao": item.descricao,
             }
         )
+    # Cada saida fisica (sensor OUT, pelucia entregue) vira uma linha propria
+    # na lista de vendas, igual um pagamento - so que representando a entrega,
+    # nao a cobranca. Aparece no lugar certo da linha do tempo (ordenado por
+    # data com o resto) em vez de ficar escondida dentro da linha do pagamento.
+    # Sempre mostra, independente do filtro de forma/origem (isso e' sobre
+    # metodo de pagamento, nao tem nada a ver com a saida fisica).
+    for saida in saidas:
+        vendas.append(
+            {
+                "id": f"saida-{saida.id}",
+                "kind": "saida_pelucia",
+                "is_test": False,
+                "data": saida.data_hora,
+                "valor": 0.0,
+                "taxa": None,
+                "total": 0.0,
+                "ponto": maquina.nome_local,
+                "provider": "saida_fisica",
+                "payment_type": "SAIDA",
+                "card_brand": None,
+                "card_last_four": None,
+                "bank_name": None,
+                "provider_payment_id": None,
+                "pulse_status": None,
+                "command_id": None,
+                "situacao": "Pelucia saiu",
+                "refunded_at": None,
+                "can_refund": False,
+                "descricao": "Pelucia entregue pela maquina (sensor de saida)",
+            }
+        )
+
     vendas.sort(key=lambda item: item["data"], reverse=True)
     for venda in vendas:
         venda["fechado"] = bool(ultimo_fechamento_fim and venda["data"] <= ultimo_fechamento_fim)
@@ -1894,22 +1926,6 @@ def build_machine_history_payload(
         pagamentos = [item for item in pagamentos if item.data_hora > ultimo_fechamento_fim]
         saidas = [item for item in saidas if item.data_hora > ultimo_fechamento_fim]
         testes = [item for item in testes if item.created_at > ultimo_fechamento_fim]
-
-    # Casa cada venda com a saida fisica (pelucia entregue) mais proxima DEPOIS
-    # dela - em ordem cronologica, "consumindo" cada saida uma unica vez, pra
-    # nao atribuir a mesma entrega pra duas vendas diferentes. Nao tenta achar
-    # a saida "certa" por algum ID (a placa nao manda isso), so' por ordem -
-    # funciona bem porque credito e entrega acontecem em sequencia natural.
-    saidas_ordenadas = sorted(saidas, key=lambda item: item.data_hora)
-    idx_saida = 0
-    for venda in sorted(vendas, key=lambda item: item["data"]):
-        while idx_saida < len(saidas_ordenadas) and saidas_ordenadas[idx_saida].data_hora < venda["data"]:
-            idx_saida += 1
-        if idx_saida < len(saidas_ordenadas):
-            venda["pelucia_saiu_em"] = saidas_ordenadas[idx_saida].data_hora
-            idx_saida += 1
-        else:
-            venda["pelucia_saiu_em"] = None
 
     status_online = bool(maquina.ultimo_sinal and (datetime.utcnow() - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
     terminal_status = get_active_terminal_for_machine(
@@ -2396,6 +2412,37 @@ def build_all_machines_history_payload(
                 "descricao": item.descricao,
             }
         )
+    # Cada saida fisica vira uma linha propria na lista de vendas, igual a
+    # versao por maquina (ver build_machine_history_payload) - so que aqui com
+    # varias maquinas misturadas, entao guarda o maquina_id pra identificar.
+    # Sempre mostra, independente do filtro de forma/origem (isso e' sobre
+    # metodo de pagamento, nao tem nada a ver com a saida fisica).
+    for saida in saidas:
+        vendas.append(
+            {
+                "id": f"saida-{saida.id}",
+                "kind": "saida_pelucia",
+                "is_test": False,
+                "data": saida.data_hora,
+                "valor": 0.0,
+                "taxa": None,
+                "total": 0.0,
+                "ponto": nomes.get(saida.maquina_id, saida.maquina_id),
+                "maquina_id": saida.maquina_id,
+                "provider": "saida_fisica",
+                "payment_type": "SAIDA",
+                "card_brand": None,
+                "bank_name": None,
+                "provider_payment_id": None,
+                "pulse_status": None,
+                "command_id": None,
+                "situacao": "Pelucia saiu",
+                "refunded_at": None,
+                "can_refund": False,
+                "descricao": "Pelucia entregue pela maquina (sensor de saida)",
+            }
+        )
+
     vendas.sort(key=lambda item: item["data"], reverse=True)
     for venda in vendas:
         venda["fechado"] = _is_fechado(venda["maquina_id"], venda["data"])
@@ -2407,26 +2454,6 @@ def build_all_machines_history_payload(
         pagamentos = [item for item in pagamentos if not _is_fechado(item.maquina_id, item.data_hora)]
         saidas = [item for item in saidas if not _is_fechado(item.maquina_id, item.data_hora)]
         testes = [item for item in testes if not _is_fechado(item.maquina_id, item.created_at)]
-
-    # Mesmo casamento venda->saida fisica do build_machine_history_payload,
-    # so' que agrupado por maquina (aqui tem varias misturadas).
-    saidas_por_maquina: dict[str, list] = {}
-    for item in saidas:
-        saidas_por_maquina.setdefault(item.maquina_id, []).append(item)
-    for lista in saidas_por_maquina.values():
-        lista.sort(key=lambda item: item.data_hora)
-    idx_por_maquina: dict[str, int] = {}
-    for venda in sorted(vendas, key=lambda item: item["data"]):
-        saidas_maquina = saidas_por_maquina.get(venda["maquina_id"], [])
-        idx = idx_por_maquina.get(venda["maquina_id"], 0)
-        while idx < len(saidas_maquina) and saidas_maquina[idx].data_hora < venda["data"]:
-            idx += 1
-        if idx < len(saidas_maquina):
-            venda["pelucia_saiu_em"] = saidas_maquina[idx].data_hora
-            idx += 1
-        else:
-            venda["pelucia_saiu_em"] = None
-        idx_por_maquina[venda["maquina_id"]] = idx
 
     return {
         "range": {"inicio": start_dt, "fim": end_dt},
