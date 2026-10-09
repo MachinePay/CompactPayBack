@@ -1,3 +1,6 @@
+import logging
+import time
+
 import paho.mqtt.client as mqtt
 import json
 from app.core.config import mqtt_tls_kwargs, settings
@@ -19,6 +22,20 @@ NOISY_STATUSES_NOT_LOGGED = {"UPDATE_PROGRESSO"}
 # driver de credito no sensor OUT, e nao uma entrega real - so quando o
 # filtro maquina.ignorar_saida_pos_credito estiver ativo para a maquina.
 OUT_POS_CREDITO_IGNORE_WINDOW = timedelta(seconds=5)
+# Espera entre tentativas de (re)conectar o worker quando a conexao falha ou o
+# laco de escuta para: 2s, 4s, 8s... ate 60s, sem nunca desistir.
+MQTT_RETRY_MIN_S = 2
+MQTT_RETRY_MAX_S = 60
+
+# Estado do worker exposto em /api/v1/health - sem isso, se o worker parasse
+# a API continuaria "ok" e ninguem saberia que as placas nao estao sendo ouvidas.
+MQTT_WORKER_STATE = {
+    "connected": False,
+    "connected_since": None,
+    "last_message_at": None,
+    "last_error": None,
+    "connect_attempts": 0,
+}
 
 
 def _parse_status_payload(payload: str) -> tuple[str | None, dict[str, str]]:
@@ -65,9 +82,26 @@ def _parse_int_field(fields: dict[str, str], key: str) -> int | None:
 
 def on_connect(client, userdata, flags, rc):
     print(f"MQTT conectado com código {rc}")
+    if rc == 0:
+        MQTT_WORKER_STATE["connected"] = True
+        MQTT_WORKER_STATE["connected_since"] = datetime.utcnow()
+        MQTT_WORKER_STATE["last_error"] = None
+    else:
+        MQTT_WORKER_STATE["connected"] = False
+        MQTT_WORKER_STATE["last_error"] = f"connect rc={rc}"
+    # Inscreve de novo a cada (re)conexao: a sessao no broker e' limpa.
     client.subscribe(TOPIC)
 
+
+def on_disconnect(client, userdata, rc):
+    MQTT_WORKER_STATE["connected"] = False
+    if rc != 0:
+        MQTT_WORKER_STATE["last_error"] = f"desconectado rc={rc}"
+        logging.warning("MQTT worker desconectado (rc=%s); a biblioteca vai reconectar sozinha", rc)
+
+
 def on_message(client, userdata, msg):
+    MQTT_WORKER_STATE["last_message_at"] = datetime.utcnow()
     try:
         payload = msg.payload.decode()
         topic_parts = msg.topic.split('/')
@@ -334,7 +368,7 @@ def on_message(client, userdata, msg):
         db.commit()
         db.close()
 
-def start_mqtt_worker():
+def _build_mqtt_client():
     client = mqtt.Client(client_id=settings.MQTT_CLIENT_ID)
     if getattr(settings, "MQTT_USERNAME", None):
         client.username_pw_set(settings.MQTT_USERNAME, settings.MQTT_PASSWORD)
@@ -342,6 +376,34 @@ def start_mqtt_worker():
     if tls_kwargs:
         client.tls_set(**tls_kwargs)
     client.on_connect = on_connect
+    client.on_disconnect = on_disconnect
     client.on_message = on_message
-    client.connect(settings.MQTT_BROKER_URL, int(settings.MQTT_BROKER_PORT), 60)
-    client.loop_forever()
+    # Quedas depois de conectado: a propria paho reconecta dentro do
+    # loop_forever, com espera de 1s a 60s.
+    client.reconnect_delay_set(min_delay=1, max_delay=MQTT_RETRY_MAX_S)
+    return client
+
+
+def start_mqtt_worker():
+    """Escuta as placas para sempre. Antes, se o connect() inicial falhasse
+    (AWS sem responder no momento em que o backend subia), a excecao matava a
+    thread e nenhuma mensagem das placas era processada ate o proximo deploy -
+    sem nenhum aviso alem de um traceback no log. Agora tenta de novo com
+    espera crescente, e tambem se o laco de escuta parar por qualquer erro."""
+    client = _build_mqtt_client()
+    espera = MQTT_RETRY_MIN_S
+    while True:
+        MQTT_WORKER_STATE["connect_attempts"] += 1
+        try:
+            client.connect(settings.MQTT_BROKER_URL, int(settings.MQTT_BROKER_PORT), 60)
+            espera = MQTT_RETRY_MIN_S
+            client.loop_forever()
+            logging.warning("MQTT worker: loop_forever terminou; reconectando")
+        except Exception as exc:
+            MQTT_WORKER_STATE["last_error"] = f"{type(exc).__name__}: {exc}"[:300]
+            logging.exception(
+                "MQTT worker sem conexao com o broker; nova tentativa em %ss", espera
+            )
+        MQTT_WORKER_STATE["connected"] = False
+        time.sleep(espera)
+        espera = min(espera * 2, MQTT_RETRY_MAX_S)

@@ -80,3 +80,45 @@ def test_login_with_invalid_credentials_returns_401():
         )
 
     assert response.status_code == 401
+
+
+def test_health_reports_mqtt_worker_status():
+    from app.services import mqtt_worker
+
+    mqtt_worker.MQTT_WORKER_STATE["connected"] = False
+    with TestClient(app) as client:
+        data = client.get("/api/v1/health").json()
+    # Nos testes o worker vem desligado (START_MQTT_WORKER=false).
+    assert data["mqtt"]["status"] in {"disabled", "disconnected"}
+
+
+def test_mqtt_worker_retries_when_first_connect_fails(monkeypatch):
+    """Antes, uma falha no connect() inicial matava a thread do worker."""
+    from app.services import mqtt_worker
+
+    class Parar(BaseException):
+        pass
+
+    tentativas = {"connect": 0}
+
+    class FakeClient:
+        def connect(self, *args, **kwargs):
+            tentativas["connect"] += 1
+            if tentativas["connect"] < 3:
+                raise OSError("AWS IoT nao respondeu")
+
+        def loop_forever(self):
+            raise Parar()
+
+    esperas = []
+    monkeypatch.setattr(mqtt_worker, "_build_mqtt_client", lambda: FakeClient())
+    monkeypatch.setattr(mqtt_worker.time, "sleep", lambda s: esperas.append(s))
+
+    try:
+        mqtt_worker.start_mqtt_worker()
+    except Parar:
+        pass
+
+    assert tentativas["connect"] == 3
+    assert esperas == [2, 4]
+    assert "AWS IoT nao respondeu" in mqtt_worker.MQTT_WORKER_STATE["last_error"]

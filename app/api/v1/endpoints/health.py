@@ -36,7 +36,29 @@ def health_check():
         "version": settings.APP_VERSION,
         "revision": settings.APP_REVISION,
         "database": "ok",
+        "mqtt": _mqtt_worker_status(),
         "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+def _mqtt_worker_status() -> dict:
+    """Se o worker MQTT esta ouvindo as placas. Responde sempre 200 (para nao
+    fazer o health check do Render reiniciar o servico por causa da AWS), mas
+    com "status": "connected"/"disconnected" - da pra monitorar com um
+    servico externo que procure a palavra "connected"."""
+    if not settings.START_MQTT_WORKER:
+        return {"status": "disabled"}
+    from app.services.mqtt_worker import MQTT_WORKER_STATE
+
+    def _iso(value):
+        return value.isoformat() if value else None
+
+    return {
+        "status": "connected" if MQTT_WORKER_STATE["connected"] else "disconnected",
+        "connected_since": _iso(MQTT_WORKER_STATE["connected_since"]),
+        "last_message_at": _iso(MQTT_WORKER_STATE["last_message_at"]),
+        "last_error": MQTT_WORKER_STATE["last_error"],
+        "connect_attempts": MQTT_WORKER_STATE["connect_attempts"],
     }
 
 
