@@ -314,17 +314,6 @@ def startup_event():
                 connection.execute(text(f"ALTER TABLE historico_operacoes ADD COLUMN {column_name} VARCHAR"))
         if "refunded_at" not in historico_columns:
             connection.execute(text("ALTER TABLE historico_operacoes ADD COLUMN refunded_at TIMESTAMP"))
-        # Historico, quedas e relatorios filtram por maquina/categoria E periodo;
-        # sem estes indices cada consulta varre a tabela inteira, que cresce
-        # ~100 eventos por maquina por dia. IF NOT EXISTS: roda em todo boot.
-        connection.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_historico_operacoes_maquina_created "
-            "ON historico_operacoes (maquina_id, created_at)"
-        ))
-        connection.execute(text(
-            "CREATE INDEX IF NOT EXISTS ix_historico_operacoes_categoria_created "
-            "ON historico_operacoes (categoria, created_at)"
-        ))
         vendas_columns = {column["name"] for column in inspector.get_columns("vendas_pagamentos")}
         if "command_id" not in vendas_columns:
             connection.execute(text("ALTER TABLE vendas_pagamentos ADD COLUMN command_id VARCHAR"))
