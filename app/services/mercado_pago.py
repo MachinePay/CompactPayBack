@@ -60,7 +60,14 @@ def _mp_error_message(status_code: int, error_body: str) -> str:
     return f"Mercado Pago retornou erro {status_code}: {detail}"
 
 
-def mp_request(method: str, url: str, token: str, body: dict | None = None, headers: dict | None = None):
+def mp_request(
+    method: str,
+    url: str,
+    token: str,
+    body: dict | None = None,
+    headers: dict | None = None,
+    timeout: float = 30,
+):
     req_headers = {
         "Content-Type": "application/json",
     }
@@ -71,7 +78,7 @@ def mp_request(method: str, url: str, token: str, body: dict | None = None, head
     data = json.dumps(body).encode("utf-8") if body is not None else None
     request = urllib.request.Request(url, data=data, method=method, headers=req_headers)
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
             raw = response.read().decode("utf-8")
             return json.loads(raw) if raw else {}
     except urllib.error.HTTPError as exc:

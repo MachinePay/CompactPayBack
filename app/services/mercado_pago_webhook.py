@@ -14,6 +14,7 @@ from app.services.pagamentos_helpers import (
     mp_request_with_known_tokens,
     parse_machine_id_from_external_reference,
     payment_metadata,
+    preencher_nome_banco_em_segundo_plano,
     resolve_mp_token_by_user_id,
 )
 from app.services.pulse_tracking import update_pulse_status
@@ -351,7 +352,11 @@ def processar_callback_mercado_pago(dados: dict):
                 descricao=f"Pagamento maquininha aprovado (payment_id={payment_id}, terminal_id={terminal_id or 'n/a'})",
                 valor=amount,
                 created_at=transacao.data_hora,
-                **payment_metadata(payment_data, mp_token),
+                # Sem consultas externas aqui: o nome do banco (so serve para o
+                # relatorio) era buscado no catalogo do MP/binlist.net ANTES de
+                # liberar o credito e com a trava segurada - ate ~40s de espera
+                # do cliente na maquina. Agora e' preenchido depois do credito.
+                **payment_metadata(payment_data, mp_token, resolve_bank=False),
                 command_id=command_id,
             )
             db.add(historico)
@@ -375,6 +380,7 @@ def processar_callback_mercado_pago(dados: dict):
             db.commit()
             db.refresh(historico)
             historico_id = historico.id
+            nome_banco_pendente = not historico.bank_name
         finally:
             db.close()
 
@@ -384,6 +390,9 @@ def processar_callback_mercado_pago(dados: dict):
         except Exception:
             update_pulse_status(command_id, "falha_publicacao")
             raise
+        finally:
+            if nome_banco_pendente:
+                preencher_nome_banco_em_segundo_plano(historico_id, payment_data, mp_token)
         # Responde na hora - ver nota equivalente no caminho "order" acima.
         command_status = get_command_status(command_id) or "pendente"
         print(

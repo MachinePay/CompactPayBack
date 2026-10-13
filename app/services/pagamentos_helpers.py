@@ -1,5 +1,7 @@
 import json
+import logging
 import re
+import threading
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone
@@ -9,6 +11,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.db.session import SessionLocal
 from app.models.models import Cliente, HistoricoOperacao, VendaPagamento
 from app.services.mercado_pago import mp_request
 from app.services.sumup import create_sumup_refund
@@ -259,6 +262,11 @@ def extract_mp_location_ids(payload: dict) -> dict[str, set[str]]:
 # transacao do mesmo banco/bandeira. Reseta a cada deploy/restart, sem
 # problema - so reenche sozinho na proxima vez que aparecer.
 _CARD_ISSUER_NAME_CACHE: dict[tuple[str, str], str] = {}
+# Espera maxima das consultas de nome do banco (catalogo do Mercado Pago e
+# binlist.net). Elas rodam em segundo plano, depois que o credito ja foi
+# enviado (ver preencher_nome_banco_em_segundo_plano) - mas nao ha motivo
+# para segurar uma thread 30s por um dado que so aparece no relatorio.
+BANK_LOOKUP_TIMEOUT_S = 4
 
 
 def resolve_card_issuer_name(payment_method_id: str | None, issuer_id, token: str | None) -> str | None:
@@ -285,6 +293,7 @@ def resolve_card_issuer_name(payment_method_id: str | None, issuer_id, token: st
             "GET",
             f"https://api.mercadopago.com/v1/payment_methods/card_issuers?payment_method_id={lookup_payment_method_id}",
             token,
+            timeout=BANK_LOOKUP_TIMEOUT_S,
         )
     except Exception:
         return None
@@ -322,7 +331,7 @@ def resolve_bank_name_from_bin(bin_number) -> str | None:
             f"https://lookup.binlist.net/{bin_str}",
             headers={"Accept-Version": "3"},
         )
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with urllib.request.urlopen(request, timeout=BANK_LOOKUP_TIMEOUT_S) as response:
             data = json.loads(response.read().decode("utf-8"))
     except Exception:
         return None
@@ -332,7 +341,28 @@ def resolve_bank_name_from_bin(bin_number) -> str | None:
     return name or None
 
 
-def payment_metadata(payment_data: dict, token: str | None = None) -> dict:
+def _bank_name_sem_rede(payment_data: dict) -> str | None:
+    """Nome do banco so com o que ja esta em maos: o proprio pagamento e os
+    caches em memoria. Nunca faz chamada externa."""
+    issuer = payment_data.get("issuer") or {}
+    card = payment_data.get("card") or {}
+    bank_name = issuer.get("name")
+    if not bank_name:
+        payment_method_id = payment_data.get("payment_method_id") or ""
+        lookup_id = payment_method_id[len("deb"):] if payment_method_id.startswith("deb") else payment_method_id
+        issuer_id = payment_data.get("issuer_id") or issuer.get("id")
+        if lookup_id and issuer_id is not None:
+            bank_name = _CARD_ISSUER_NAME_CACHE.get((lookup_id, str(issuer_id)))
+    if not bank_name or bank_name.strip().lower() in _UNHELPFUL_BANK_NAMES:
+        bin_number = card.get("first_six_digits") or card.get("bin")
+        if bin_number:
+            bank_name = _BIN_BANK_NAME_CACHE.get(str(bin_number)[:8]) or bank_name
+    return bank_name
+
+
+def resolve_payment_bank_name(payment_data: dict, token: str | None = None) -> str | None:
+    """Nome do banco do cartao, consultando o catalogo do Mercado Pago e o
+    binlist.net se o pagamento nao trouxer. Pode demorar ate alguns segundos."""
     issuer = payment_data.get("issuer") or {}
     card = payment_data.get("card") or {}
     bank_name = issuer.get("name")
@@ -341,6 +371,18 @@ def payment_metadata(payment_data: dict, token: str | None = None) -> dict:
         bank_name = resolve_card_issuer_name(payment_data.get("payment_method_id"), issuer_id, token)
     if not bank_name or bank_name.strip().lower() in _UNHELPFUL_BANK_NAMES:
         bank_name = resolve_bank_name_from_bin(card.get("first_six_digits") or card.get("bin")) or bank_name
+    return bank_name
+
+
+def payment_metadata(payment_data: dict, token: str | None = None, resolve_bank: bool = True) -> dict:
+    """resolve_bank=False: nao faz nenhuma chamada externa para descobrir o nome
+    do banco (usa so o pagamento e os caches). O webhook usa assim para gravar
+    a venda e liberar o credito na hora, e completa o nome depois com
+    preencher_nome_banco_em_segundo_plano."""
+    card = payment_data.get("card") or {}
+    bank_name = (
+        resolve_payment_bank_name(payment_data, token) if resolve_bank else _bank_name_sem_rede(payment_data)
+    )
     return {
         "provider": "mercado_pago",
         "provider_payment_id": str(payment_data.get("id") or "").strip() or None,
@@ -349,3 +391,44 @@ def payment_metadata(payment_data: dict, token: str | None = None) -> dict:
         "card_last_four": card.get("last_four_digits") or None,
         "bank_name": bank_name,
     }
+
+
+def preencher_nome_banco(historico_id: int, payment_data: dict, token: str | None) -> str | None:
+    """Descobre o nome do banco e grava no historico e na venda do pagamento.
+    So preenche se ainda estiver vazio (ou com um nome generico tipo "Outro")."""
+    try:
+        bank_name = resolve_payment_bank_name(payment_data, token)
+    except Exception:
+        logging.exception("Falha ao descobrir o nome do banco do pagamento historico_id=%s", historico_id)
+        return None
+    if not bank_name:
+        return None
+    db = SessionLocal()
+    try:
+        historico = db.query(HistoricoOperacao).filter(HistoricoOperacao.id == historico_id).first()
+        if historico and (
+            not historico.bank_name or historico.bank_name.strip().lower() in _UNHELPFUL_BANK_NAMES
+        ):
+            historico.bank_name = bank_name
+        venda = db.query(VendaPagamento).filter(VendaPagamento.historico_id == historico_id).first()
+        if venda and (not venda.banco or venda.banco.strip().lower() in _UNHELPFUL_BANK_NAMES):
+            venda.banco = bank_name
+        db.commit()
+    except Exception:
+        db.rollback()
+        logging.exception("Falha ao gravar o nome do banco do pagamento historico_id=%s", historico_id)
+        return None
+    finally:
+        db.close()
+    return bank_name
+
+
+def preencher_nome_banco_em_segundo_plano(historico_id: int, payment_data: dict, token: str | None) -> None:
+    """Roda preencher_nome_banco numa thread, para o webhook nao esperar as
+    consultas externas (ate ~8s somadas) antes de liberar o credito."""
+    threading.Thread(
+        target=preencher_nome_banco,
+        args=(historico_id, payment_data, token),
+        daemon=True,
+        name=f"nome-banco-{historico_id}",
+    ).start()
