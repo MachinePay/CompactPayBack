@@ -452,3 +452,123 @@ def test_late_per_pulse_event_does_not_downgrade_already_final_pulse_status():
         assert venda.status_pulso == "pulso_confirmado"
     finally:
         db.close()
+
+
+def _criar_credito(command_id, machine_id, status, idade_s, pulse_status, tipo="paid", com_venda=True):
+    db = SessionLocal()
+    try:
+        if not db.query(Maquina).filter(Maquina.id_hardware == machine_id).first():
+            db.add(Maquina(id_hardware=machine_id, nome_local=machine_id))
+            db.flush()
+        if com_venda:
+            db.add(
+                HistoricoOperacao(
+                    maquina_id=machine_id,
+                    categoria="PAGAMENTO",
+                    descricao="Pagamento de teste",
+                    valor=2.0,
+                    pulse_status=pulse_status,
+                    command_id=command_id,
+                )
+            )
+        momento = datetime.utcnow() - timedelta(seconds=idade_s)
+        db.add(
+            ComandoMaquina(
+                command_id=command_id,
+                maquina_id=machine_id,
+                tipo=tipo,
+                topic=f"/TEF/{machine_id}/cmd",
+                payload=f"{machine_id}@{tipo}|cmd={command_id}|",
+                status=status,
+                detalhe_status=pulse_status,
+                tentativas=0 if status == "na_fila" else 2,
+                max_tentativas=MAX_ATTEMPTS,
+                ack_at=None if status == "na_fila" else momento,
+                next_retry_at=None,
+                created_at=momento,
+                updated_at=momento,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+
+def _pulse_status(command_id):
+    db = SessionLocal()
+    try:
+        return db.query(HistoricoOperacao).filter(HistoricoOperacao.command_id == command_id).first().pulse_status
+    finally:
+        db.close()
+
+
+def test_credito_preso_em_recebido_por_cmd_duplicado_libera_a_fila():
+    # Caso real 1011 (08/10/2026): reenvio chegou no meio da liberacao, placa
+    # respondeu CMD_DUPLICADO e o comando ficou "recebido" para sempre,
+    # segurando os creditos seguintes "na_fila" por 3 dias.
+    from app.services.command_queue import process_queued_commands
+
+    _criar_credito("cmd-dup-preso", "CPM-QUEUE-DUP", "recebido", idade_s=50, pulse_status="cmd_duplicado")
+    _criar_credito("cmd-dup-proximo", "CPM-QUEUE-DUP", "na_fila", idade_s=30, pulse_status="pendente")
+
+    with patch("app.services.mqtt_commands.publish_raw_mqtt_command") as publish_mock, patch(
+        "app.services.pagamentos_helpers.mp_request"
+    ) as mp_request_mock:
+        process_due_command_retries()
+        process_queued_commands()
+
+    preso = _get_comando("cmd-dup-preso")
+    assert preso.status == "falhou"
+    assert preso.detalhe_status == "falha_sem_confirmacao"
+    # A placa recebeu: nao da pra ter certeza que nao liberou - revisao manual, sem estorno.
+    assert _pulse_status("cmd-dup-preso") == "falha_sem_confirmacao"
+    mp_request_mock.assert_not_called()
+    # O proximo credito da fila sai normalmente.
+    assert _get_comando("cmd-dup-proximo").status == "enviado"
+    publish_mock.assert_called_once()
+
+
+def test_credito_recebido_recente_ainda_segura_a_fila():
+    from app.services.command_queue import process_queued_commands
+
+    _criar_credito("cmd-rec-recente", "CPM-QUEUE-REC", "recebido", idade_s=5, pulse_status="cmd_recebido")
+    _criar_credito("cmd-rec-espera", "CPM-QUEUE-REC", "na_fila", idade_s=3, pulse_status="pendente")
+
+    with patch("app.services.mqtt_commands.publish_raw_mqtt_command") as publish_mock:
+        process_due_command_retries()
+        process_queued_commands()
+
+    assert _get_comando("cmd-rec-recente").status == "recebido"
+    assert _get_comando("cmd-rec-espera").status == "na_fila"
+    publish_mock.assert_not_called()
+
+
+def test_ping_em_recebido_nao_e_marcado_como_travado():
+    # Ping nunca passa de "recebido" (PONG) e nao segura fila de credito.
+    _criar_credito("cmd-ping-velho", "CPM-QUEUE-PING", "recebido", idade_s=600, pulse_status="PONG",
+                   tipo="ping", com_venda=False)
+
+    with patch("app.services.mqtt_commands.publish_raw_mqtt_command"):
+        process_due_command_retries()
+
+    assert _get_comando("cmd-ping-velho").status == "recebido"
+
+
+def test_credito_esquecido_na_fila_expira_e_nunca_e_enviado():
+    # Liberar um pagamento minutos/dias depois daria as jogadas para quem
+    # estiver na maquina naquela hora, nao para quem pagou.
+    from app.services.command_queue import process_queued_commands
+
+    _criar_credito("cmd-fila-velho", "CPM-QUEUE-EXPIRA", "na_fila", idade_s=600, pulse_status="pendente")
+
+    with patch("app.services.mqtt_commands.publish_raw_mqtt_command") as publish_mock, patch(
+        "app.services.pagamentos_helpers.mp_request"
+    ) as mp_request_mock:
+        process_queued_commands()
+
+    comando = _get_comando("cmd-fila-velho")
+    assert comando.status == "falhou"
+    assert comando.detalhe_status == "falha_fila_expirada"
+    assert _pulse_status("cmd-fila-velho") == "falha_fila_expirada"
+    publish_mock.assert_not_called()
+    mp_request_mock.assert_not_called()  # sem estorno automatico

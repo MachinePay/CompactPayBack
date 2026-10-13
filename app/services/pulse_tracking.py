@@ -17,6 +17,9 @@ FINAL_PULSE_STATUSES = {
     "falha_sem_confirmacao",
     "falha_dispositivo_offline",
     "saldo_pendente",
+    # Credito ficou na fila da maquina tempo demais e nao foi enviado
+    # (command_queue.QUEUE_EXPIRY_SECONDS). Sem estorno automatico.
+    "falha_fila_expirada",
 }
 
 

@@ -3,7 +3,7 @@ import threading
 import time
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_
+from sqlalchemy import and_, or_
 
 from app.core.config import settings
 from app.db.session import SessionLocal
@@ -21,6 +21,19 @@ MAX_ATTEMPTS = 3
 # isso aqui o comando ficava "executando" pra sempre - travando inclusive
 # qualquer credito novo pra mesma maquina (_machine_has_in_flight_credit_command).
 STUCK_EXECUTANDO_TIMEOUT_SECONDS = 45
+# Credito parado em "recebido" (a placa respondeu CMD_RECEBIDO/CMD_DUPLICADO
+# mas nunca mandou mais nada) tambem e' travado - mesmo tempo e mesmo
+# tratamento do "executando". Caso real (1011, 08/10/2026): o reenvio chegou
+# enquanto a placa ainda liberava o primeiro, ela respondeu CMD_DUPLICADO e
+# apagou o ID do comando em andamento; o PULSOS_CONCLUIDOS saiu sem cmd= e o
+# comando ficou "recebido" para sempre, segurando 18 creditos na fila por 3 dias.
+# So' credito: ping/config nunca passam de "recebido" e nao seguram fila.
+STUCK_RECEBIDO_CREDIT_STATUSES = {"recebido"}
+# Credito esperando na fila por mais que isso nao e' mais enviado: liberar um
+# pagamento minutos (ou dias) depois daria as jogadas para quem estiver na
+# maquina naquela hora, nao para quem pagou.
+QUEUE_EXPIRY_SECONDS = 120
+QUEUE_EXPIRED_PULSE_STATUS = "falha_fila_expirada"
 
 FINAL_COMMAND_STATUSES = {"executado", "falhou", "cancelado"}
 RETRYABLE_STATUSES = {"pendente", "enviado", "aguardando_retry", "falha_publicacao"}
@@ -75,6 +88,7 @@ def _status_from_pulse_status(status: str) -> tuple[str | None, bool]:
         "falha_sem_confirmacao",
         "pulso_sem_retorno",
         "update_falhou",
+        QUEUE_EXPIRED_PULSE_STATUS,
     }:
         return "falhou", True
     return None, False
@@ -200,7 +214,26 @@ def process_queued_commands() -> int:
     terminar o pagamento anterior. Roda junto com o retry loop existente."""
     db = SessionLocal()
     processed = 0
+    expirados: list[str] = []
     try:
+        expiry_cutoff = _now() - timedelta(seconds=QUEUE_EXPIRY_SECONDS)
+        for comando in (
+            db.query(ComandoMaquina)
+            .filter(ComandoMaquina.status == QUEUED_STATUS, ComandoMaquina.created_at <= expiry_cutoff)
+            .all()
+        ):
+            comando.status = "falhou"
+            comando.detalhe_status = QUEUE_EXPIRED_PULSE_STATUS
+            comando.finished_at = _now()
+            comando.updated_at = _now()
+            comando.next_retry_at = None
+            expirados.append(comando.command_id)
+        if expirados:
+            db.commit()
+            logging.warning(
+                "Creditos expirados na fila (nao enviados): %s", ", ".join(expirados)
+            )
+
         queued = (
             db.query(ComandoMaquina)
             .filter(ComandoMaquina.status == QUEUED_STATUS)
@@ -228,6 +261,12 @@ def process_queued_commands() -> int:
                 )
     finally:
         db.close()
+
+    if expirados:
+        from app.services.pulse_tracking import update_pulse_status
+
+        for command_id in expirados:
+            update_pulse_status(command_id, QUEUE_EXPIRED_PULSE_STATUS)
     return processed
 
 
@@ -360,7 +399,13 @@ def process_due_command_retries() -> int:
         stuck = (
             db.query(ComandoMaquina)
             .filter(
-                ComandoMaquina.status == "executando",
+                or_(
+                    ComandoMaquina.status == "executando",
+                    and_(
+                        ComandoMaquina.status.in_(STUCK_RECEBIDO_CREDIT_STATUSES),
+                        ComandoMaquina.tipo == CREDIT_COMMAND_TIPO,
+                    ),
+                ),
                 ComandoMaquina.updated_at <= stuck_cutoff,
             )
             .all()
