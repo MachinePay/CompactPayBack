@@ -75,7 +75,14 @@ def _status_from_pulse_status(status: str) -> tuple[str | None, bool]:
         return "enviado", False
     if status in {"cmd_recebido", "cmd_duplicado"}:
         return "recebido", False
-    if status in {"pulso_iniciado", "pulso_enviado", "pulso_unitario", "update_iniciado"}:
+    # pulso_sem_retorno = PULSO_NAO_CONFIRMADO, evento de UM pulso da sequencia
+    # (maquina sem o fio do contador manda um por pulso) - nao e' o resultado
+    # do comando, igual ao tratamento em _status_from_device_status. Como
+    # falha final ele sobrescrevia o "executado": o evento do ultimo pulso
+    # chega logo DEPOIS do PULSOS_ENVIADOS_SEM_RETORNO e o painel mostrava
+    # "Falha no pulso" com o pulso entregue (1006, 13/10/2026). Se o status
+    # final nunca vier, o detector de travados resolve em 45s.
+    if status in {"pulso_iniciado", "pulso_enviado", "pulso_unitario", "pulso_sem_retorno", "update_iniciado"}:
         return "executando", False
     if status in {"pulso_confirmado", "saldo_pendente", "update_ok", "update_sem_novidade"}:
         return "executado", True
@@ -86,7 +93,6 @@ def _status_from_pulse_status(status: str) -> tuple[str | None, bool]:
         "falha_cmd_ignorado",
         "falha_bloqueado",
         "falha_sem_confirmacao",
-        "pulso_sem_retorno",
         "update_falhou",
         QUEUE_EXPIRED_PULSE_STATUS,
     }:

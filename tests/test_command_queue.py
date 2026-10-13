@@ -572,3 +572,35 @@ def test_credito_esquecido_na_fila_expira_e_nunca_e_enviado():
     assert _pulse_status("cmd-fila-velho") == "falha_fila_expirada"
     publish_mock.assert_not_called()
     mp_request_mock.assert_not_called()  # sem estorno automatico
+
+
+def test_evento_de_pulso_que_chega_depois_do_final_nao_vira_falha():
+    # Caso real 1006 (13/10/2026), maquina sem o fio do contador: o worker MQTT
+    # manda cada evento por dois caminhos (status do dispositivo + status do
+    # pulso). O PULSO_NAO_CONFIRMADO do ultimo pulso chegou DEPOIS do
+    # PULSOS_ENVIADOS_SEM_RETORNO e, pelo caminho do pulso
+    # ("pulso_sem_retorno"), sobrescrevia o "executado" com "falhou" - o
+    # painel mostrava "Falha no pulso" com o pulso entregue.
+    with patch("app.services.mqtt_commands.publish_raw_mqtt_command"):
+        track_and_publish_command(
+            machine_id="CPM-QUEUE-1006",
+            command_id="cmd-1006-tarde",
+            tipo="paid",
+            topic="/TEF/CPM-QUEUE-1006/cmd",
+            payload="CPM-QUEUE-1006@paid|cmd=cmd-1006-tarde|",
+        )
+
+    def evento(device_status, pulse_status):
+        update_command_from_device_status("cmd-1006-tarde", device_status)
+        update_command_from_pulse_status("cmd-1006-tarde", pulse_status)
+
+    evento("CMD_RECEBIDO", "cmd_recebido")
+    evento("PULSO_INICIADO", "pulso_iniciado")
+    evento("PULSO_NAO_CONFIRMADO", "pulso_sem_retorno")
+    assert _get_comando("cmd-1006-tarde").status == "executando"
+
+    evento("PULSOS_ENVIADOS_SEM_RETORNO", "pulso_confirmado")
+    evento("PULSO_NAO_CONFIRMADO", "pulso_sem_retorno")  # chega atrasado
+
+    comando = _get_comando("cmd-1006-tarde")
+    assert comando.status == "executado"
