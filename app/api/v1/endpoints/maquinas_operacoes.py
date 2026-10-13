@@ -204,8 +204,9 @@ DEVICE_CONFIG_TEXT_FIELDS = [
     "pulse_value",
     "pulse_quantity",
     "coin_debounce_us",
-    "coin_release_ms",
 ]
+# "coin_release_ms" (Liberacao IN) saiu na 2.7.6: o firmware nunca usava o valor.
+# Se chegar no payload (frontend antigo), e' ignorado.
 DEVICE_CONFIG_TEXT_FIELD_MAX_LEN = 11
 
 # A mensagem MQTT "@config|" so existe a partir desta versao do firmware -
@@ -213,6 +214,11 @@ DEVICE_CONFIG_TEXT_FIELD_MAX_LEN = 11
 # entao o admin acharia que configurou algo que na real nunca chegou a
 # aplicar. Bloqueamos aqui em vez de deixar enviar e falhar silenciosamente.
 MIN_FIRMWARE_VERSION_FOR_DEVICE_CONFIG = (2, 1, 0)
+# Intervalo entre pulsos de credito (ms): mesmos limites que o firmware aplica
+# (parseBoundedUnsignedLong em liberarCredito). Placa anterior a 2.7.6 ignora
+# o campo e continua com 250 fixo.
+PULSE_GAP_MS_MIN = 20
+PULSE_GAP_MS_MAX = 5000
 _FIRMWARE_VERSION_RE = re.compile(r"version_(\d+)\.(\d+)\.(\d+)")
 
 
@@ -279,6 +285,21 @@ def configurar_dispositivo_remotamente(
     if "wifi_full_restart_ms" in payload:
         maquina.wifi_full_restart_ms = _valida_tempo_reconexao("wifi_full_restart_ms")
 
+    gap_alterado = False
+    gap_texto = str(payload.get("pulse_gap_ms") or "").strip()
+    if gap_texto:
+        try:
+            gap = int(gap_texto)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Intervalo entre pulsos deve ser um numero inteiro (ms)") from None
+        if gap < PULSE_GAP_MS_MIN or gap > PULSE_GAP_MS_MAX:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Intervalo entre pulsos deve estar entre {PULSE_GAP_MS_MIN} e {PULSE_GAP_MS_MAX} ms",
+            )
+        maquina.pulse_gap_ms = str(gap)
+        gap_alterado = True
+
     campos_alterados = []
     for campo in DEVICE_CONFIG_TEXT_FIELDS:
         if campo not in payload:
@@ -298,7 +319,7 @@ def configurar_dispositivo_remotamente(
         entidade_tipo="maquina",
         entidade_id=machine_id,
         descricao=(
-            f"Configuracao remota da placa ajustada - campos: {', '.join(campos_alterados) or '(nenhum campo de texto)'}; "
+            f"Configuracao remota da placa ajustada - campos: {', '.join(campos_alterados + (['pulse_gap_ms'] if gap_alterado else [])) or '(nenhum campo de texto)'}; "
             f"wifi_hard_reset_ms={maquina.wifi_hard_reset_ms} wifi_full_restart_ms={maquina.wifi_full_restart_ms}"
         ),
     )
@@ -319,8 +340,8 @@ def configurar_dispositivo_remotamente(
             pulse_credit=maquina.pulse_credit,
             pulse_value=maquina.pulse_value,
             pulse_quantity=maquina.pulse_quantity,
+            pulse_gap_ms=maquina.pulse_gap_ms,
             coin_debounce_us=maquina.coin_debounce_us,
-            coin_release_ms=maquina.coin_release_ms,
             wifi_hard_reset_ms=maquina.wifi_hard_reset_ms,
             wifi_full_restart_ms=maquina.wifi_full_restart_ms,
         )
@@ -337,8 +358,8 @@ def configurar_dispositivo_remotamente(
         "pulse_credit": maquina.pulse_credit,
         "pulse_value": maquina.pulse_value,
         "pulse_quantity": maquina.pulse_quantity,
+        "pulse_gap_ms": maquina.pulse_gap_ms,
         "coin_debounce_us": maquina.coin_debounce_us,
-        "coin_release_ms": maquina.coin_release_ms,
         "command_id": command_id,
         "enviado": enviado,
     }

@@ -110,8 +110,8 @@ def publish_machine_device_config(
     pulse_credit: str | None = None,
     pulse_value: str | None = None,
     pulse_quantity: str | None = None,
+    pulse_gap_ms: str | None = None,
     coin_debounce_us: str | None = None,
-    coin_release_ms: str | None = None,
     wifi_hard_reset_ms: int | None = None,
     wifi_full_restart_ms: int | None = None,
 ) -> str:
@@ -132,10 +132,10 @@ def publish_machine_device_config(
         payload += f"pulse_value={pulse_value}|"
     if pulse_quantity is not None:
         payload += f"pulse_quantity={pulse_quantity}|"
+    if pulse_gap_ms is not None:
+        payload += f"pulse_gap_ms={pulse_gap_ms}|"
     if coin_debounce_us is not None:
         payload += f"coin_debounce_us={coin_debounce_us}|"
-    if coin_release_ms is not None:
-        payload += f"coin_release_ms={coin_release_ms}|"
     if wifi_hard_reset_ms is not None:
         payload += f"wifi_hard_reset_ms={int(wifi_hard_reset_ms)}|"
     if wifi_full_restart_ms is not None:

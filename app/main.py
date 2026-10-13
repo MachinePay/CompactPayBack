@@ -264,6 +264,7 @@ def startup_event():
             "pulse_credit",
             "pulse_value",
             "pulse_quantity",
+            "pulse_gap_ms",
             "coin_debounce_us",
             "coin_release_ms",
         ]:

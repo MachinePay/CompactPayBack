@@ -166,7 +166,11 @@ class Maquina(Base):
     pulse_credit = Column(String, nullable=True)
     pulse_value = Column(String, nullable=True)
     pulse_quantity = Column(String, nullable=True)
+    # Intervalo entre pulsos de credito (ms) - firmware 2.7.6+; antes fixo em 250.
+    pulse_gap_ms = Column(String, nullable=True)
     coin_debounce_us = Column(String, nullable=True)
+    # Sem uso desde 2026-10-13 (a "Liberacao IN" nunca teve efeito no firmware).
+    # Coluna mantida so para nao precisar apagar dados do banco.
     coin_release_ms = Column(String, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")

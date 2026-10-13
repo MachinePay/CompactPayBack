@@ -522,24 +522,27 @@ def test_config_dispositivo_endpoint_updates_pulse_and_coin_fields():
         with patch("app.services.mqtt_commands.publish_raw_mqtt_command") as publish_mock:
             response = client.post(
                 f"/api/v1/maquinas/{machine_id}/config-dispositivo",
-                json={"pulse_credit": "150", "coin_release_ms": "50"},
+                json={"pulse_credit": "150", "coin_debounce_us": "12000", "coin_release_ms": "50"},
                 headers=headers,
             )
 
     assert response.status_code == 200
     data = response.json()
     assert data["pulse_credit"] == "150"
-    assert data["coin_release_ms"] == "50"
+    assert data["coin_debounce_us"] == "12000"
+    assert "coin_release_ms" not in data
     assert data["pulse_coin"] is None
 
     published_payload = publish_mock.call_args[0][1]
     assert "pulse_credit=150" in published_payload
-    assert "coin_release_ms=50" in published_payload
+    assert "coin_debounce_us=12000" in published_payload
+    # Liberacao IN saiu: nao vai mais para a placa nem e' salva.
+    assert "coin_release_ms" not in published_payload
     assert "pulse_coin=" not in published_payload
 
     maquina = _get_maquina(machine_id)
     assert maquina.pulse_credit == "150"
-    assert maquina.coin_release_ms == "50"
+    assert maquina.coin_release_ms is None
 
 
 def test_config_dispositivo_endpoint_rejects_text_field_too_long():
@@ -729,3 +732,44 @@ def test_queda_por_travamento_da_placa():
     )
     queda = _quedas_da_maquina(machine_id, "admin-queda-panic@test.local")[0]
     assert queda["categoria"] == "travamento"
+
+
+def test_config_dispositivo_salva_e_envia_intervalo_entre_pulsos():
+    machine_id = "CPM-LIST-PULSE-GAP"
+    _create_maquina(machine_id, firmware_version=SUPPORTED_DEVICE_CONFIG_FW)
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-pulse-gap@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.services.mqtt_commands.publish_raw_mqtt_command") as publish_mock:
+            response = client.post(
+                f"/api/v1/maquinas/{machine_id}/config-dispositivo",
+                json={"pulse_gap_ms": "400", "pulse_credit": "120"},
+                headers=headers,
+            )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["pulse_gap_ms"] == "400"
+    published_payload = publish_mock.call_args[0][1]
+    assert "pulse_gap_ms=400|" in published_payload
+    assert "pulse_credit=120|" in published_payload
+    assert _get_maquina(machine_id).pulse_gap_ms == "400"
+
+
+def test_config_dispositivo_rejeita_intervalo_entre_pulsos_fora_do_limite():
+    machine_id = "CPM-LIST-PULSE-GAP-2"
+    _create_maquina(machine_id, firmware_version=SUPPORTED_DEVICE_CONFIG_FW)
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-pulse-gap-2@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        for invalido in ("10", "6000", "abc"):
+            response = client.post(
+                f"/api/v1/maquinas/{machine_id}/config-dispositivo",
+                json={"pulse_gap_ms": invalido},
+                headers=headers,
+            )
+            assert response.status_code == 422, invalido
+
+    assert _get_maquina(machine_id).pulse_gap_ms is None

@@ -1626,8 +1626,8 @@ def serialize_machine_summary(
         "pulse_credit": maquina.pulse_credit,
         "pulse_value": maquina.pulse_value,
         "pulse_quantity": maquina.pulse_quantity,
+        "pulse_gap_ms": maquina.pulse_gap_ms,
         "coin_debounce_us": maquina.coin_debounce_us,
-        "coin_release_ms": maquina.coin_release_ms,
     }
 
 
@@ -1741,8 +1741,8 @@ def serialize_machines_summary_batch(
                 "pulse_credit": maquina.pulse_credit,
                 "pulse_value": maquina.pulse_value,
                 "pulse_quantity": maquina.pulse_quantity,
+                "pulse_gap_ms": maquina.pulse_gap_ms,
                 "coin_debounce_us": maquina.coin_debounce_us,
-                "coin_release_ms": maquina.coin_release_ms,
             }
         )
 
