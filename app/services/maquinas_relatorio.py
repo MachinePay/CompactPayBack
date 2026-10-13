@@ -725,6 +725,47 @@ def quedas_counts_by_machine(db: Session, machine_ids: list[str], since: datetim
     return dict(rows)
 
 
+def pagamentos_sem_credito_by_machine(db: Session, machine_ids: list[str], now: datetime) -> dict[str, dict]:
+    """Pagamentos digitais (nao teste, nao estornados) que passaram de
+    PAGAMENTO_SEM_CREDITO_APOS sem confirmacao nem falha da maquina, nos
+    ultimos PAGAMENTO_SEM_CREDITO_JANELA - todos, nao so o ultimo."""
+    if not machine_ids:
+        return {}
+    rows = (
+        db.query(
+            VendaPagamento.maquina_id,
+            func.count(VendaPagamento.id),
+            func.coalesce(func.sum(VendaPagamento.valor_bruto), 0.0),
+            func.min(VendaPagamento.created_at),
+            func.max(VendaPagamento.created_at),
+        )
+        .filter(
+            VendaPagamento.maquina_id.in_(machine_ids),
+            VendaPagamento.origem != "fisico",
+            VendaPagamento.is_teste.is_(False),
+            VendaPagamento.refunded_at.is_(None),
+            VendaPagamento.status_pulso.in_(PAYMENT_PENDING_PULSE_STATUSES),
+            VendaPagamento.created_at >= now - PAGAMENTO_SEM_CREDITO_JANELA,
+            VendaPagamento.created_at <= now - PAGAMENTO_SEM_CREDITO_APOS,
+        )
+        .group_by(VendaPagamento.maquina_id)
+        .all()
+    )
+    return {
+        maquina_id: {"quantidade": qtd, "valor_total": float(total or 0), "mais_antigo": mais_antigo, "mais_recente": mais_recente}
+        for maquina_id, qtd, total, mais_antigo, mais_recente in rows
+    }
+
+
+def _tempo_desde(now: datetime, momento: datetime) -> str:
+    segundos = max(0, int((now - momento).total_seconds()))
+    if segundos < 3600:
+        return f"{max(1, segundos // 60)} min"
+    if segundos < 86400:
+        return f"{segundos // 3600} h"
+    return f"{segundos // 86400} dia(s)"
+
+
 def rajadas_id_duplicado_by_machine(db: Session, machine_ids: list[str], since: datetime) -> dict[str, dict]:
     """Rajadas de quedas de segundos = duas placas com o mesmo ID se derrubando
     na AWS IoT (ela so aceita uma conexao por client id). Mesma regra que o
@@ -895,8 +936,31 @@ def build_machine_alerts(
     noise_count: int,
     queda_count: int = 0,
     id_duplicado: dict | None = None,
+    sem_credito: dict | None = None,
 ) -> list[dict]:
     alerts = []
+    if sem_credito:
+        qtd = sem_credito["quantidade"]
+        valor = f"R$ {sem_credito['valor_total']:.2f}".replace(".", ",")
+        alerts.append(
+            make_alert(
+                machine,
+                "pagamento_sem_credito",
+                "critico",
+                "Pagamento sem credito confirmado",
+                f"{qtd} pagamento(s) ({valor}) sem confirmacao nem falha da maquina ha mais de "
+                f"{int(PAGAMENTO_SEM_CREDITO_APOS.total_seconds() // 60)} min - o mais antigo ha "
+                f"{_tempo_desde(now, sem_credito['mais_antigo'])}. O cliente pagou e o credito pode nao ter "
+                "chegado na maquina: confira o historico da maquina e a fila de comandos.",
+                sem_credito["mais_antigo"],
+                {
+                    "quantidade": qtd,
+                    "valor_total": sem_credito["valor_total"],
+                    "mais_antigo": sem_credito["mais_antigo"],
+                    "mais_recente": sem_credito["mais_recente"],
+                },
+            )
+        )
     last_signal = machine.get("ultimo_sinal")
     if not machine["status_online"] and last_signal and now - last_signal >= OFFLINE_ALERT_AFTER:
         minutes = int((now - last_signal).total_seconds() // 60)
@@ -1098,6 +1162,7 @@ def compute_active_alerts(db: Session, maquinas: list[Maquina], now: datetime | 
     # Mesma janela do "Quedas frequentes" (2h): cobre os 30 min do alerta de ID
     # duplicado e permite descontar as quedas da rajada daquele contador.
     id_duplicado_por_maquina = rajadas_id_duplicado_by_machine(db, machine_ids, now - QUEDA_ALERT_WINDOW)
+    sem_credito_por_maquina = pagamentos_sem_credito_by_machine(db, machine_ids, now)
     alerts = []
     for machine in machines:
         alerts.extend(
@@ -1107,6 +1172,7 @@ def compute_active_alerts(db: Session, maquinas: list[Maquina], now: datetime | 
                 ruido_por_maquina.get(machine["id_hardware"], 0),
                 quedas_por_maquina.get(machine["id_hardware"], 0),
                 id_duplicado_por_maquina.get(machine["id_hardware"]),
+                sem_credito_por_maquina.get(machine["id_hardware"]),
             )
         )
     alerts.extend(build_sumup_pending_alerts(db, machines))
@@ -1240,7 +1306,22 @@ PULSE_ABSENT_STATUSES = {
     "falha_bloqueado",
     "falha_dispositivo_offline",
     "pulso_sem_retorno",
+    "falha_fila_expirada",
 }
+# Pagamento que ainda nao teve nem confirmacao nem falha da maquina. Depois de
+# PAGAMENTO_SEM_CREDITO_APOS nesse estado, algo deu errado no caminho (fila
+# travada, placa sem resposta final) - caso real 1011 (08-10/10/2026): 18
+# pagamentos ficaram "pendente" por 3 dias sem nenhum alerta, porque o
+# "pulso ausente" so olha falhas e so do ultimo pagamento de cada maquina.
+PAYMENT_PENDING_PULSE_STATUSES = {
+    "pendente",
+    "comando_enviado",
+    "cmd_recebido",
+    "cmd_duplicado",
+    "pulso_iniciado",
+}
+PAGAMENTO_SEM_CREDITO_APOS = timedelta(minutes=2)
+PAGAMENTO_SEM_CREDITO_JANELA = timedelta(days=7)
 
 
 def _normalize_filter(value: str | None, default: str = "todos") -> str:

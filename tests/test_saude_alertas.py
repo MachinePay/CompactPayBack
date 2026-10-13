@@ -435,3 +435,49 @@ def test_quedas_espacadas_nao_viram_id_duplicado():
     tipos = {a["tipo"] for a in alertas}
     assert "id_duplicado" not in tipos
     assert "quedas_frequentes" in tipos
+
+
+def test_alerta_pagamento_sem_credito_quando_fica_pendente():
+    # Caso real 1011 (08-10/10/2026): pagamentos "pendente" por dias sem alerta.
+    machine_id = "CPM-ALERTA-SEM-CREDITO"
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), wifi_quality=90)
+    agora = datetime.utcnow()
+    _add_venda(machine_id, status_pulso="pendente", valor_bruto=2.0, created_at=agora - timedelta(days=3))
+    _add_venda(machine_id, status_pulso="cmd_duplicado", valor_bruto=5.0, created_at=agora - timedelta(minutes=10))
+    # Depois deles, um pagamento que deu certo - antes isso escondia os problemas.
+    _add_venda(machine_id, status_pulso="pulso_confirmado", valor_bruto=2.0, created_at=agora - timedelta(minutes=5))
+
+    _, alertas = _alertas_da_maquina(machine_id, "admin-alerta-sem-credito@test.local")
+    alerta = next(a for a in alertas if a["tipo"] == "pagamento_sem_credito")
+    assert alerta["severidade"] == "critico"
+    assert alerta["extra"]["quantidade"] == 2
+    assert alerta["extra"]["valor_total"] == 7.0
+    assert "R$ 7,00" in alerta["mensagem"]
+
+
+def test_pagamento_pendente_recente_ainda_nao_alerta():
+    # Credito costuma confirmar em segundos: so alerta depois de 2 min.
+    machine_id = "CPM-ALERTA-SEM-CREDITO-RECENTE"
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), wifi_quality=90)
+    _add_venda(machine_id, status_pulso="pendente", valor_bruto=2.0, created_at=datetime.utcnow() - timedelta(seconds=30))
+
+    _, alertas = _alertas_da_maquina(machine_id, "admin-alerta-sem-credito-recente@test.local")
+    assert "pagamento_sem_credito" not in {a["tipo"] for a in alertas}
+
+
+def test_pagamento_sem_credito_ignora_confirmados_falhas_testes_estornados_e_fisico():
+    # Confirmado e falha seguem como hoje (falha continua no "pulso ausente");
+    # teste, estornado e moeda fisica nunca entram neste alerta.
+    machine_id = "CPM-ALERTA-SEM-CREDITO-IGNORA"
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), wifi_quality=90)
+    antigo = datetime.utcnow() - timedelta(hours=1)
+    _add_venda(machine_id, status_pulso="pulso_confirmado", valor_bruto=2.0, created_at=antigo)
+    _add_venda(machine_id, status_pulso="falha_dispositivo_offline", valor_bruto=2.0, created_at=antigo)
+    _add_venda(machine_id, status_pulso="pendente", valor_bruto=2.0, created_at=antigo, is_teste=True)
+    _add_venda(machine_id, status_pulso="pendente", valor_bruto=2.0, created_at=antigo, refunded_at=antigo)
+    _add_venda(machine_id, status_pulso="pendente", origem="fisico", valor_bruto=1.0, created_at=antigo)
+    # E nada mais velho que 7 dias.
+    _add_venda(machine_id, status_pulso="pendente", valor_bruto=2.0, created_at=datetime.utcnow() - timedelta(days=8))
+
+    _, alertas = _alertas_da_maquina(machine_id, "admin-alerta-sem-credito-ignora@test.local")
+    assert "pagamento_sem_credito" not in {a["tipo"] for a in alertas}
