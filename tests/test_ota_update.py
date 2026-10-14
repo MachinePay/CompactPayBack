@@ -244,6 +244,30 @@ def test_heartbeat_with_same_version_after_failed_update_keeps_failed_status():
     assert maquina.firmware_update_error == "File Not Found (404)"
 
 
+def test_heartbeat_after_update_ok_with_same_version_marks_updated():
+    # Caso real (1006, 13/10/2026): regravou um .bin com o mesmo nome de
+    # versao; a placa mandou UPDATE_OK, voltou online e o painel ficou preso
+    # em "Reiniciando" porque so' a troca de versao fechava a atualizacao.
+    machine_id = "CPM-OTA-REGRAVOU"
+    _create_maquina(
+        machine_id,
+        firmware_version="2.7.7",
+        firmware_update_status="restarting",
+        firmware_target_version="debug android",
+    )
+
+    on_message(
+        None,
+        None,
+        FakeMsg(f"/TEF/{machine_id}/attrs", "STATUS|ONLINE|fw=2.7.7|rssi=-60|wifi=80"),
+    )
+
+    maquina = _get_maquina(machine_id)
+    assert maquina.firmware_update_status == "updated"
+    assert maquina.firmware_target_version is None
+    assert maquina.firmware_last_good_version == "2.7.7"
+
+
 def test_uploaded_firmware_is_stored_in_database_and_deleted_with_row():
     client = TestClient(app)
     token = _create_admin_token(client, "admin-firmware-blob@example.com")

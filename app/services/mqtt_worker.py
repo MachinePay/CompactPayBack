@@ -183,7 +183,12 @@ def on_message(client, userdata, msg):
                 # qualquer heartbeat depois de uma falha (ex.: 404 no .bin)
                 # marcava "updated" com a placa ainda na versao antiga.
                 version_changed = previous_firmware_version != firmware_version
-                if version_changed and maquina.firmware_update_status in {"sent", "downloading", "restarting", "failed", "no_update"}:
+                # "restarting" so' existe depois de UPDATE_OK (a placa gravou o
+                # .bin com sucesso). Se ela voltou a falar, a atualizacao
+                # terminou - mesmo regravando um .bin com o mesmo nome de versao
+                # (1006, 13/10/2026: ficou preso em "Reiniciando" no painel).
+                reiniciou_apos_update_ok = maquina.firmware_update_status == "restarting"
+                if (version_changed or reiniciou_apos_update_ok) and maquina.firmware_update_status in {"sent", "downloading", "restarting", "failed", "no_update"}:
                     maquina.firmware_update_status = "updated"
                     maquina.firmware_update_finished_at = datetime.utcnow()
                     maquina.firmware_update_progress = 100
