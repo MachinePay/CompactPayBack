@@ -1,4 +1,5 @@
 import paho.mqtt.client as mqtt
+import ipaddress
 import json
 from app.core.config import mqtt_tls_kwargs, settings
 from app.db.session import SessionLocal
@@ -63,6 +64,16 @@ def _parse_int_field(fields: dict[str, str], key: str) -> int | None:
     except (TypeError, ValueError):
         return None
 
+
+def _parse_ipv4_field(fields: dict[str, str], key: str) -> str | None:
+    """IPv4 valido e diferente de 0.0.0.0 (placa sem IP); senao None."""
+    value = (fields.get(key) or "").strip()
+    try:
+        ip = ipaddress.IPv4Address(value)
+    except ValueError:
+        return None
+    return None if ip.is_unspecified else str(ip)
+
 def on_connect(client, userdata, flags, rc):
     print(f"MQTT conectado com código {rc}")
     client.subscribe(TOPIC)
@@ -126,6 +137,9 @@ def on_message(client, userdata, msg):
                 maquina.wifi_rssi = wifi_rssi
             if wifi_quality is not None:
                 maquina.wifi_quality = max(0, min(100, wifi_quality))
+            ip_local = _parse_ipv4_field(status_fields, "ip")
+            if ip_local:
+                maquina.ip_local = ip_local
             uptime_seconds = _parse_int_field(status_fields, "uptime")
             free_heap_bytes = _parse_int_field(status_fields, "heap")
             wifi_reconnect_count = _parse_int_field(status_fields, "wifi_rc")

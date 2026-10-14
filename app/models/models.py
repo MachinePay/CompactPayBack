@@ -125,6 +125,9 @@ class Maquina(Base):
     ultimo_sinal = Column(DateTime, nullable=True)
     wifi_rssi = Column(Integer, nullable=True)
     wifi_quality = Column(Integer, nullable=True)
+    # IP que a placa recebeu do roteador do local (heartbeat "ip=", firmware
+    # 2.7.8+). So' para suporte - a placa nao tem pagina web nesse IP.
+    ip_local = Column(String, nullable=True)
     firmware_version = Column(String, nullable=True)
     firmware_target_version = Column(String, nullable=True)
     firmware_updated_at = Column(DateTime, nullable=True)

@@ -268,6 +268,19 @@ def test_heartbeat_after_update_ok_with_same_version_marks_updated():
     assert maquina.firmware_last_good_version == "2.7.7"
 
 
+def test_heartbeat_stores_local_ip_and_ignores_invalid():
+    machine_id = "CPM-IP-LOCAL"
+    _create_maquina(machine_id)
+
+    on_message(None, None, FakeMsg(f"/TEF/{machine_id}/attrs", "STATUS|ONLINE|fw=2.7.8|rssi=-60|wifi=80|ip=192.168.1.42"))
+    assert _get_maquina(machine_id).ip_local == "192.168.1.42"
+
+    # Placa sem IP (0.0.0.0) ou campo estranho nao apagam o ultimo IP bom.
+    on_message(None, None, FakeMsg(f"/TEF/{machine_id}/attrs", "STATUS|ONLINE|fw=2.7.8|rssi=-60|wifi=80|ip=0.0.0.0"))
+    on_message(None, None, FakeMsg(f"/TEF/{machine_id}/attrs", "STATUS|ONLINE|fw=2.7.8|rssi=-60|wifi=80|ip=<script>"))
+    assert _get_maquina(machine_id).ip_local == "192.168.1.42"
+
+
 def test_uploaded_firmware_is_stored_in_database_and_deleted_with_row():
     client = TestClient(app)
     token = _create_admin_token(client, "admin-firmware-blob@example.com")

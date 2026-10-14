@@ -205,6 +205,8 @@ def startup_event():
         for column_name in ["wifi_rssi", "wifi_quality"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} INTEGER"))
+        if "ip_local" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN ip_local VARCHAR"))
         for column_name in [
             "mp_store_id",
             "mp_store_external_id",
