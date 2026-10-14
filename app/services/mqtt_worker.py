@@ -74,6 +74,21 @@ def _parse_ipv4_field(fields: dict[str, str], key: str) -> str | None:
         return None
     return None if ip.is_unspecified else str(ip)
 
+UNKNOWN_ID_WARNING_INTERVAL = timedelta(minutes=10)
+_ultimo_aviso_id_nao_cadastrado: dict[str, datetime] = {}
+
+
+def _avisar_id_nao_cadastrado(machine_id: str) -> None:
+    """Loga no maximo uma vez a cada 10 min por ID (a placa manda varias
+    mensagens por minuto)."""
+    agora = datetime.utcnow()
+    ultimo = _ultimo_aviso_id_nao_cadastrado.get(machine_id)
+    if ultimo and agora - ultimo < UNKNOWN_ID_WARNING_INTERVAL:
+        return
+    _ultimo_aviso_id_nao_cadastrado[machine_id] = agora
+    print(f"Mensagem MQTT ignorada: maquina {machine_id!r} nao esta cadastrada no painel")
+
+
 def on_connect(client, userdata, flags, rc):
     print(f"MQTT conectado com código {rc}")
     client.subscribe(TOPIC)
@@ -90,10 +105,14 @@ def on_message(client, userdata, msg):
         db: Session = SessionLocal()
         maquina = db.query(Maquina).filter(Maquina.id_hardware == id_extraido).first()
         if not maquina:
-            maquina = Maquina(id_hardware=id_extraido, nome_local="Desconhecido")
-            db.add(maquina)
-            db.commit()
-            db.refresh(maquina)
+            # Placa com ID que nao foi cadastrado no painel: ignora. Antes ela
+            # era criada sozinha como "Desconhecido" (1008, 14/10/2026), o que
+            # depois bloqueava o cadastro real desse ID ("Maquina ja
+            # cadastrada") e um ID digitado errado empurrava o proximo ID
+            # automatico. Para usar a placa, cadastre o ID no painel primeiro.
+            _avisar_id_nao_cadastrado(id_extraido)
+            db.close()
+            return
 
         status, status_fields = _parse_status_payload(payload)
 

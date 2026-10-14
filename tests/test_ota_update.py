@@ -281,6 +281,16 @@ def test_heartbeat_stores_local_ip_and_ignores_invalid():
     assert _get_maquina(machine_id).ip_local == "192.168.1.42"
 
 
+def test_message_from_unregistered_machine_id_does_not_create_machine():
+    # Caso real (1008, 14/10/2026): placa com ID nao cadastrado era criada
+    # sozinha como "Desconhecido" e bloqueava o cadastro real desse ID.
+    machine_id = "CPM-NAO-CADASTRADA"
+
+    on_message(None, None, FakeMsg(f"/TEF/{machine_id}/attrs", "STATUS|ONLINE|fw=2.7.9|rssi=-60|wifi=80|ip=10.0.0.61"))
+
+    assert _get_maquina(machine_id) is None
+
+
 def test_uploaded_firmware_is_stored_in_database_and_deleted_with_row():
     client = TestClient(app)
     token = _create_admin_token(client, "admin-firmware-blob@example.com")
