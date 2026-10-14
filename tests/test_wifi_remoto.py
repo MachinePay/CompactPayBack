@@ -170,3 +170,20 @@ def test_wifi_command_never_stores_password_in_command_table(monkeypatch):
     finally:
         db.close()
     assert _hex("segredo-123") in publicados[0]
+
+
+def test_wifi_scan_result_is_stored_and_listed():
+    machine_id = "CPM-WIFI-SCAN"
+    _create_maquina(machine_id, firmware_version=FW_OK, ultimo_sinal=datetime.utcnow())
+    redes = f"{_hex('Loja 5G')},-48,3;{_hex('Visitantes')},-71,0;lixo"
+    on_message(None, None, FakeMsg(f"/TEF/{machine_id}/attrs", f"STATUS|WIFI_REDES|cmd=scan-1|total=2|enviadas=2|redes={redes}"))
+
+    with TestClient(app) as client:
+        headers = _admin_headers(client, "admin-wifi-scan@test.local")
+        data = client.get(f"/api/v1/maquinas/{machine_id}/wifi/redes", headers=headers).json()
+
+    assert data["atualizado_em"] is not None
+    assert data["redes"] == [
+        {"ssid": "Loja 5G", "rssi": -48, "aberta": False, "wep": False},
+        {"ssid": "Visitantes", "rssi": -71, "aberta": True, "wep": False},
+    ]

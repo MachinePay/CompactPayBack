@@ -210,6 +210,10 @@ def startup_event():
         for column_name in ["wifi_ssid", "wifi_credencial_hash"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
+        if "wifi_redes_json" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN wifi_redes_json TEXT"))
+        if "wifi_redes_em" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN wifi_redes_em TIMESTAMP"))
         for column_name in [
             "mp_store_id",
             "mp_store_external_id",

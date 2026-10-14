@@ -3,6 +3,7 @@
 Tudo aqui e' so para admin: mostra senhas de Wi-Fi dos locais dos clientes.
 Ver senhas e trocar Wi-Fi ficam registrados na auditoria.
 """
+import json
 from datetime import datetime
 from uuid import uuid4
 
@@ -14,7 +15,11 @@ from app.db.session import SessionLocal
 from app.models.models import ComandoMaquina, Maquina, MaquinaWifiCredencial, MaquinaWifiTentativa
 from app.services.auditoria import registrar_auditoria
 from app.services.maquinas_relatorio import ONLINE_SIGNAL_WINDOW
-from app.services.mqtt_commands import publish_machine_wifi, publish_machine_wifi_info_request
+from app.services.mqtt_commands import (
+    publish_machine_wifi,
+    publish_machine_wifi_info_request,
+    publish_machine_wifi_scan,
+)
 from app.services.wifi_credenciais import (
     criptografar_senha,
     descriptografar_senha,
@@ -160,6 +165,33 @@ def solicitar_wifi_atual(machine_id: str, db: Session = Depends(get_db), user=De
     command_id = str(uuid4())
     publish_machine_wifi_info_request(machine_id, command_id)
     return {"command_id": command_id}
+
+
+@router.post("/maquinas/{machine_id}/wifi/procurar")
+def procurar_redes(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Pede para a placa listar as redes Wi-Fi perto dela (sem desconectar).
+    O resultado chega em GET /maquinas/{id}/wifi/redes."""
+    _exigir_admin(user)
+    _maquina_pronta_para_wifi(db, machine_id)
+    command_id = str(uuid4())
+    publish_machine_wifi_scan(machine_id, command_id)
+    return {"command_id": command_id, "pedido_em": datetime.utcnow()}
+
+
+@router.get("/maquinas/{machine_id}/wifi/redes")
+def redes_proximas(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _exigir_admin(user)
+    maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
+    if not maquina:
+        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
+    dados = json.loads(maquina.wifi_redes_json) if maquina.wifi_redes_json else {}
+    return {
+        "atualizado_em": maquina.wifi_redes_em,
+        "redes": dados.get("redes", []),
+        "total": dados.get("total"),
+        "erro": dados.get("erro"),
+        "rede_atual": maquina.wifi_ssid,
+    }
 
 
 @router.get("/wifi/historico")

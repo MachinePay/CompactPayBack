@@ -107,6 +107,24 @@ def registrar_wifi_info(db, maquina: Maquina, ssid: str, senha: str) -> MaquinaW
     return registro
 
 
+def interpretar_redes(texto: str | None) -> list[dict]:
+    """Lista que a placa manda em WIFI_REDES: "ssid_hex,rssi,seguranca;..."."""
+    redes = []
+    for item in (texto or "").split(";"):
+        partes = item.split(",")
+        if len(partes) != 3:
+            continue
+        ssid = decodificar_hex(partes[0], SSID_MAX)
+        try:
+            rssi = int(partes[1])
+            seguranca = int(partes[2])
+        except ValueError:
+            continue
+        if ssid:
+            redes.append({"ssid": ssid, "rssi": rssi, "aberta": seguranca == 0, "wep": seguranca == 1})
+    return redes
+
+
 RESULTADO_POR_STATUS = {
     "WIFI_TROCADO": "trocado",
     "WIFI_TROCA_FALHOU": "falhou",

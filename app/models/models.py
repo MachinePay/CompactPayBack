@@ -132,6 +132,10 @@ class Maquina(Base):
     # quando muda). Senha e historico em MaquinaWifiCredencial.
     wifi_ssid = Column(String, nullable=True)
     wifi_credencial_hash = Column(String, nullable=True)
+    # Ultima varredura de redes perto da maquina (STATUS|WIFI_REDES, pedida
+    # pelo botao "Procurar redes"): JSON [{ssid, rssi, seguranca}].
+    wifi_redes_json = Column(Text, nullable=True)
+    wifi_redes_em = Column(DateTime, nullable=True)
     firmware_version = Column(String, nullable=True)
     firmware_target_version = Column(String, nullable=True)
     firmware_updated_at = Column(DateTime, nullable=True)

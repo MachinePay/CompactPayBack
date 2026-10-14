@@ -177,6 +177,19 @@ def publish_machine_wifi(machine_id: str, command_id: str, ssid: str, senha: str
     logging.info("MQTT troca de Wi-Fi publicada machine_id=%s command_id=%s rede=%r", machine_id, command_id, ssid)
 
 
+def publish_machine_wifi_scan(machine_id: str, command_id: str) -> None:
+    """Pede a lista de redes Wi-Fi perto da maquina (STATUS|WIFI_REDES)."""
+    from app.services.command_queue import track_and_publish_command
+
+    track_and_publish_command(
+        machine_id=machine_id,
+        command_id=command_id,
+        tipo="wifi_scan",
+        topic=f"/TEF/{machine_id}/cmd",
+        payload=f"{machine_id}@wifi_scan|cmd={command_id}|",
+    )
+
+
 def publish_machine_wifi_info_request(machine_id: str, command_id: str) -> None:
     """Pede para a placa reenviar a rede/senha atuais (STATUS|WIFI_INFO)."""
     topic = f"/TEF/{machine_id}/cmd"

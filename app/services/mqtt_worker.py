@@ -183,6 +183,21 @@ def on_message(client, userdata, msg):
             _processar_wifi_info(db, maquina, id_extraido, status_fields)
             db.close()
             return
+        if status == "WIFI_REDES":
+            from app.services.wifi_credenciais import interpretar_redes
+
+            maquina.wifi_redes_json = json.dumps(
+                {
+                    "redes": interpretar_redes(status_fields.get("redes")),
+                    "total": _parse_int_field(status_fields, "total"),
+                    "erro": status_fields.get("erro"),
+                }
+            )
+            maquina.wifi_redes_em = datetime.utcnow()
+            db.commit()
+            db.close()
+            update_command_from_device_status(status_fields.get("cmd"), "WIFI_REDES")
+            return
         if status:
             command_id = status_fields.get("cmd")
             firmware_version = status_fields.get("fw")
