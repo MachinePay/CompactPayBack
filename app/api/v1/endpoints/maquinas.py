@@ -239,6 +239,18 @@ def listar_alertas_maquinas(
     return {"resumo": resumo, "alertas": filtered}
 
 
+def _coordenadas_ou_422(texto: str) -> tuple[float, float]:
+    from app.api.v1.endpoints.mapa import extrair_coordenadas
+
+    coordenadas = extrair_coordenadas(texto)
+    if not coordenadas:
+        raise HTTPException(
+            status_code=422,
+            detail="Nao achei a localizacao no mapa. Cole o link do Google Maps do ponto ou as coordenadas (ex.: -23.5505, -46.6333), ou deixe em branco.",
+        )
+    return coordenadas
+
+
 @router.post("/maquinas", response_model=MaquinaOut)
 def criar_maquina(
     maquina: MaquinaCreate,
@@ -308,6 +320,8 @@ def criar_maquina(
             )
         db_maquina.sumup_reader_id = reader_id or None
         db_maquina.sumup_device_code = device_code or None
+    if (maquina.localizacao_mapa or "").strip():
+        db_maquina.latitude, db_maquina.longitude = _coordenadas_ou_422(maquina.localizacao_mapa)
     db.add(db_maquina)
     registrar_auditoria(
         db,
@@ -349,6 +363,12 @@ def atualizar_maquina(
     banco_anterior = db_maquina.banco_pagamento
     db_maquina.nome_local = maquina.nome
     db_maquina.localizacao = maquina.localizacao
+    if maquina.localizacao_mapa is not None:
+        if maquina.localizacao_mapa.strip():
+            db_maquina.latitude, db_maquina.longitude = _coordenadas_ou_422(maquina.localizacao_mapa)
+        else:
+            db_maquina.latitude = None
+            db_maquina.longitude = None
     db_maquina.cliente_id = maquina.cliente_id
     if maquina.banco_pagamento:
         db_maquina.banco_pagamento = maquina.banco_pagamento

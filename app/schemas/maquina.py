@@ -18,6 +18,8 @@ class MaquinaCreate(BaseModel):
     # que o reader esteja "Cloud-paired" (so' descobre fazendo um pagamento
     # teste e lendo o codigo no log/recibo).
     sumup_device_code: Optional[str] = None
+    # Opcional: link do Google Maps ou "lat, lng" para aparecer no Mapa.
+    localizacao_mapa: Optional[str] = None
 
 
 class MaquinaUpdate(BaseModel):
@@ -27,6 +29,8 @@ class MaquinaUpdate(BaseModel):
     banco_pagamento: Optional[str] = None
     sumup_reader_id: Optional[str] = None
     sumup_device_code: Optional[str] = None
+    # None = nao mexe; "" = tira do mapa; texto = link do Google Maps ou "lat, lng".
+    localizacao_mapa: Optional[str] = None
 
 
 class MaquinaOut(BaseModel):
@@ -56,6 +60,8 @@ class MaquinaOut(BaseModel):
     wifi_rssi: Optional[int] = None
     wifi_quality: Optional[int] = None
     ip_local: Optional[str] = None
+    latitude: Optional[float] = None
+    longitude: Optional[float] = None
     wifi_ssid: Optional[str] = None
     ultimo_pagamento_em: Optional[datetime] = None
     ultimo_teste_em: Optional[datetime] = None

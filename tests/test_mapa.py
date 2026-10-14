@@ -72,3 +72,24 @@ def test_mapa_so_mostra_maquina_com_local_real_e_cliente_precisa_ser_liberado():
         liberado = client.get("/api/v1/mapa/maquinas", headers=dono).json()
         assert [m["maquina_id"] for m in liberado["maquinas"]] == ["MP-COM"]
         assert liberado["sem_localizacao"] == []
+
+
+def test_editar_maquina_com_localizacao_no_mapa_opcional():
+    db = SessionLocal()
+    try:
+        db.add(Maquina(id_hardware="MP-EDIT", nome_local="Editar local"))
+        db.commit()
+    finally:
+        db.close()
+
+    with TestClient(app) as client:
+        admin = _login(client, "admin-mapa-edit@test.local", UserRole.admin)
+        base = {"nome": "Editar local"}
+        assert client.put("/api/v1/maquinas/MP-EDIT", json=base, headers=admin).status_code == 200
+        com_local = client.put("/api/v1/maquinas/MP-EDIT", json={**base, "localizacao_mapa": "-23.5, -46.6"}, headers=admin)
+        assert com_local.status_code == 200, com_local.text
+        assert com_local.json()["latitude"] == -23.5
+        assert client.put("/api/v1/maquinas/MP-EDIT", json={**base, "localizacao_mapa": "texto qualquer"}, headers=admin).status_code == 422
+        # Sem o campo, nao mexe; vazio, tira do mapa.
+        assert client.put("/api/v1/maquinas/MP-EDIT", json=base, headers=admin).json()["latitude"] == -23.5
+        assert client.put("/api/v1/maquinas/MP-EDIT", json={**base, "localizacao_mapa": ""}, headers=admin).json()["latitude"] is None
