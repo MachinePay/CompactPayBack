@@ -184,7 +184,7 @@ def _create_admin_token(client, email):
 
 def test_listar_maquinas_endpoint_returns_batched_summary():
     machine_id = "CPM-LIST-ENDPOINT"
-    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow())
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow(), ip_local="192.168.1.42")
     _add_venda(machine_id, valor_liquido=42.0)
 
     with TestClient(app) as client:
@@ -197,6 +197,8 @@ def test_listar_maquinas_endpoint_returns_batched_summary():
     item = next(m for m in data if m["id_hardware"] == machine_id)
     assert item["faturamento"] == 42.0
     assert item["status_online"] is True
+    # Campo precisa estar no schema de resposta, senao o FastAPI descarta.
+    assert item["ip_local"] == "192.168.1.42"
 
 
 def _create_cliente_com_maquina(machine_id, nome_empresa):
