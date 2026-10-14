@@ -127,6 +127,15 @@ def test_trocar_wifi_records_attempt_and_failure_reason(monkeypatch):
         assert historico["tentativas"][0]["senha"] == "errada123"
         assert historico["tentativas"][0]["resultado"] == "falhou"
 
+        # Sem cliente nem maquina nao lista nada (evita puxar tudo de uma vez).
+        assert client.get("/api/v1/wifi/historico", headers=headers).status_code == 422
+        assert client.get("/api/v1/wifi/historico?todas=true", headers=headers).status_code == 200
+        # Periodo depois da tentativa: some da lista.
+        futuro = client.get(
+            f"/api/v1/wifi/historico?machine_id={machine_id}&data_inicio=2999-01-01T00:00:00", headers=headers
+        ).json()
+        assert futuro["tentativas"] == []
+
 
 def test_trocar_wifi_validates_before_sending(monkeypatch):
     machine_id = "CPM-WIFI-VALIDA"

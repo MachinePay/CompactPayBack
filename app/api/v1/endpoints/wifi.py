@@ -165,19 +165,38 @@ def solicitar_wifi_atual(machine_id: str, db: Session = Depends(get_db), user=De
 @router.get("/wifi/historico")
 def historico_wifi(
     machine_id: str | None = Query(default=None),
+    cliente_id: int | None = Query(default=None),
+    data_inicio: datetime | None = Query(default=None),
+    data_fim: datetime | None = Query(default=None),
+    todas: bool = Query(default=False),
     db: Session = Depends(get_db),
     user=Depends(get_current_user),
 ):
     """Redes/senhas que cada placa ja usou (sem repetir) e as trocas pedidas
-    pelo painel, inclusive as que falharam."""
+    pelo painel, inclusive as que falharam. Exige cliente ou maquina para nao
+    puxar o historico de todas as maquinas sem querer - "todas=true" e' a
+    escolha explicita de "Todas as maquinas" no painel."""
     _exigir_admin(user)
-    maquinas = {m.id_hardware: m for m in db.query(Maquina).all()}
+    if not machine_id and cliente_id is None and not todas:
+        raise HTTPException(status_code=422, detail="Escolha um cliente ou uma maquina")
 
-    credenciais_q = db.query(MaquinaWifiCredencial)
-    tentativas_q = db.query(MaquinaWifiTentativa)
+    maquinas_q = db.query(Maquina)
     if machine_id:
-        credenciais_q = credenciais_q.filter(MaquinaWifiCredencial.maquina_id == machine_id)
-        tentativas_q = tentativas_q.filter(MaquinaWifiTentativa.maquina_id == machine_id)
+        maquinas_q = maquinas_q.filter(Maquina.id_hardware == machine_id)
+    if cliente_id is not None:
+        maquinas_q = maquinas_q.filter(Maquina.cliente_id == cliente_id)
+    maquinas = {m.id_hardware: m for m in maquinas_q.all()}
+    ids = list(maquinas)
+
+    credenciais_q = db.query(MaquinaWifiCredencial).filter(MaquinaWifiCredencial.maquina_id.in_(ids))
+    tentativas_q = db.query(MaquinaWifiTentativa).filter(MaquinaWifiTentativa.maquina_id.in_(ids))
+    # Rede entra se esteve em uso dentro do periodo; tentativa, pela data do pedido.
+    if data_inicio:
+        credenciais_q = credenciais_q.filter(MaquinaWifiCredencial.ultimo_visto_em >= data_inicio)
+        tentativas_q = tentativas_q.filter(MaquinaWifiTentativa.created_at >= data_inicio)
+    if data_fim:
+        credenciais_q = credenciais_q.filter(MaquinaWifiCredencial.primeiro_visto_em <= data_fim)
+        tentativas_q = tentativas_q.filter(MaquinaWifiTentativa.created_at <= data_fim)
 
     redes = []
     for c in credenciais_q.order_by(MaquinaWifiCredencial.ultimo_visto_em.desc()).all():
@@ -220,7 +239,7 @@ def historico_wifi(
         "ver_senhas_wifi",
         "maquina",
         machine_id,
-        f"Abriu o historico de Wi-Fi{' da maquina ' + machine_id if machine_id else ' de todas as maquinas'}",
+        f"Abriu o historico de Wi-Fi ({'maquina ' + machine_id if machine_id else f'cliente {cliente_id}' if cliente_id is not None else 'todas as maquinas'})",
     )
     db.commit()
     return {"redes": redes, "tentativas": tentativas}
