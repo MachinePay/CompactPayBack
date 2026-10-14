@@ -1,5 +1,5 @@
 import enum
-from sqlalchemy import Column, String, Integer, ForeignKey, DateTime, Float, Boolean, Enum, Text, LargeBinary
+from sqlalchemy import Column, String, Integer, ForeignKey, DateTime, Float, Boolean, Enum, Text, LargeBinary, UniqueConstraint
 from sqlalchemy.orm import deferred, relationship
 import datetime
 from app.db.base import Base
@@ -128,6 +128,10 @@ class Maquina(Base):
     # IP que a placa recebeu do roteador do local (heartbeat "ip=", firmware
     # 2.7.8+). So' para suporte - a placa nao tem pagina web nesse IP.
     ip_local = Column(String, nullable=True)
+    # Rede Wi-Fi atual da placa (STATUS|WIFI_INFO, firmware 2.8.0+, enviado so
+    # quando muda). Senha e historico em MaquinaWifiCredencial.
+    wifi_ssid = Column(String, nullable=True)
+    wifi_credencial_hash = Column(String, nullable=True)
     firmware_version = Column(String, nullable=True)
     firmware_target_version = Column(String, nullable=True)
     firmware_updated_at = Column(DateTime, nullable=True)
@@ -304,6 +308,38 @@ class AuditoriaSistema(Base):
     descricao = Column(String, nullable=False)
     executado_por_email = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class MaquinaWifiCredencial(Base):
+    """Historico de redes Wi-Fi de cada maquina: uma linha por combinacao
+    rede+senha (credencial_hash), sem repetir. Senha criptografada
+    (services/wifi_credenciais.py)."""
+    __tablename__ = "maquinas_wifi_credenciais"
+    __table_args__ = (UniqueConstraint("maquina_id", "credencial_hash", name="uq_maquina_wifi_credencial"),)
+    id = Column(Integer, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    ssid = Column(String, nullable=False)
+    senha_cript = Column(String, nullable=False, default="")
+    credencial_hash = Column(String, nullable=False)
+    primeiro_visto_em = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    ultimo_visto_em = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class MaquinaWifiTentativa(Base):
+    """Cada troca de Wi-Fi pedida pelo painel, inclusive as que falharam
+    (senha errada, rede nao encontrada...). Senha criptografada."""
+    __tablename__ = "maquinas_wifi_tentativas"
+    id = Column(Integer, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    command_id = Column(String, unique=True, index=True, nullable=False)
+    ssid = Column(String, nullable=False)
+    senha_cript = Column(String, nullable=False, default="")
+    # testando | trocado | falhou | recusado
+    resultado = Column(String, nullable=False, default="testando")
+    motivo = Column(String, nullable=True)
+    solicitado_por = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False, index=True)
+    finished_at = Column(DateTime, nullable=True)
 
 
 class ComandoMaquina(Base):

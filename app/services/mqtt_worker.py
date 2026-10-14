@@ -89,6 +89,38 @@ def _avisar_id_nao_cadastrado(machine_id: str) -> None:
     print(f"Mensagem MQTT ignorada: maquina {machine_id!r} nao esta cadastrada no painel")
 
 
+def _processar_wifi_info(db, maquina, machine_id: str, fields: dict[str, str]) -> None:
+    """STATUS|WIFI_INFO: rede/senha atuais da placa (so quando mudam, ou a
+    pedido do painel). A senha vai criptografada para o historico de redes e
+    NUNCA para historico_operacoes nem para os logs."""
+    from app.services.wifi_credenciais import decodificar_hex, registrar_wifi_info
+
+    ssid = decodificar_hex(fields.get("ssid_hex"), 32)
+    senha = decodificar_hex(fields.get("pass_hex"), 64)
+    command_id = fields.get("cmd")
+    if not ssid or senha is None:
+        print(f"WIFI_INFO invalido ignorado para maquina {machine_id}")
+    else:
+        hash_anterior = maquina.wifi_credencial_hash
+        registrar_wifi_info(db, maquina, ssid, senha)
+        if maquina.wifi_credencial_hash != hash_anterior:
+            db.add(
+                HistoricoOperacao(
+                    maquina_id=machine_id,
+                    categoria="DISPOSITIVO",
+                    descricao=f"Rede Wi-Fi da placa: {ssid}",
+                    valor=None,
+                    command_id=command_id,
+                    pulse_status=None,
+                    created_at=datetime.utcnow(),
+                )
+            )
+        db.commit()
+        print(f"WIFI_INFO registrado para maquina {machine_id}: rede={ssid!r}")
+    if command_id:
+        update_command_from_device_status(command_id, "WIFI_INFO")
+
+
 def on_connect(client, userdata, flags, rc):
     print(f"MQTT conectado com código {rc}")
     client.subscribe(TOPIC)
@@ -147,6 +179,10 @@ def on_message(client, userdata, msg):
         sinal_anterior = maquina.ultimo_sinal
         maquina.ultimo_sinal = agora
         db.commit()
+        if status == "WIFI_INFO":
+            _processar_wifi_info(db, maquina, id_extraido, status_fields)
+            db.close()
+            return
         if status:
             command_id = status_fields.get("cmd")
             firmware_version = status_fields.get("fw")
@@ -270,6 +306,10 @@ def on_message(client, userdata, msg):
                 # ativado (ver processamento de pulso mais abaixo).
                 maquina.credito_liberado_em = datetime.utcnow()
             pulse_status = _status_to_pulse_status(status)
+            if status.startswith("WIFI_TROCA") or status == "WIFI_TROCADO":
+                from app.services.wifi_credenciais import atualizar_tentativa
+
+                atualizar_tentativa(db, command_id, status, status_fields)
             if command_id:
                 update_command_from_device_status(command_id, status)
             if command_id and pulse_status:

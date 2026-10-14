@@ -63,10 +63,13 @@ def _status_from_device_status(status: str) -> tuple[str | None, bool]:
     # comando terminava executado normalmente um instante depois.
     if status in {"PULSO_INICIADO", "LIBERADO", "PULSO_CONFIRMADO", "PULSO_NAO_CONFIRMADO", "UPDATE_INICIADO"}:
         return "executando", False
-    if status in {"PULSOS_CONCLUIDOS", "PULSOS_ENVIADOS_SEM_RETORNO", "SALDO_PENDENTE", "UPDATE_OK", "UPDATE_SEM_NOVIDADE", "CONFIG_APLICADA"}:
+    if status in {"PULSOS_CONCLUIDOS", "PULSOS_ENVIADOS_SEM_RETORNO", "SALDO_PENDENTE", "UPDATE_OK", "UPDATE_SEM_NOVIDADE", "CONFIG_APLICADA", "WIFI_TROCADO", "WIFI_INFO"}:
         return "executado", True
-    if status in {"CMD_IGNORADO", "PULSO_BLOQUEADO_SEGURANCA", "UPDATE_FALHOU"}:
+    if status in {"CMD_IGNORADO", "PULSO_BLOQUEADO_SEGURANCA", "UPDATE_FALHOU", "WIFI_TROCA_FALHOU", "WIFI_TROCA_RECUSADA"}:
         return "falhou", True
+    # WIFI_TROCA_TESTANDO de proposito fica fora: o comando segue "recebido"
+    # enquanto a placa testa a rede nova (fica offline ate ~2 min). Se virasse
+    # "executando", o detector de travados (45s) o marcaria como falha.
     return None, False
 
 
@@ -211,6 +214,51 @@ def track_and_publish_command(
             db.commit()
             return
         _publish_attempt(db, comando)
+    finally:
+        db.close()
+
+
+def track_and_publish_sensitive_command(
+    *,
+    machine_id: str,
+    command_id: str,
+    tipo: str,
+    topic: str,
+    payload: str,
+    payload_registrado: str,
+) -> None:
+    """Comando com dado sensivel (senha de Wi-Fi): no banco fica so
+    payload_registrado (sem a senha) e nunca ha reenvio automatico
+    (max_tentativas=1) - o retry republicaria o payload salvo. Sem resposta
+    da placa no ACK_TIMEOUT, o comando falha com retry_esgotado."""
+    from app.services.mqtt_commands import publish_raw_mqtt_command
+
+    db = SessionLocal()
+    try:
+        comando = _get_or_create_command(
+            db,
+            machine_id=machine_id,
+            command_id=command_id,
+            tipo=tipo,
+            topic=topic,
+            payload=payload_registrado,
+        )
+        comando.max_tentativas = 1
+        comando.tentativas = 1
+        comando.updated_at = _now()
+        try:
+            publish_raw_mqtt_command(topic, payload)
+        except Exception as exc:
+            comando.status = "falha_publicacao"
+            comando.ultimo_erro = str(exc)[:500]
+            comando.finished_at = _now()
+            comando.next_retry_at = None
+            db.commit()
+            raise
+        comando.status = "enviado"
+        comando.sent_at = _now()
+        comando.next_retry_at = _now() + timedelta(seconds=ACK_TIMEOUT_SECONDS)
+        db.commit()
     finally:
         db.close()
 

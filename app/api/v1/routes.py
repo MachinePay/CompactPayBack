@@ -17,6 +17,7 @@ from app.api.v1.endpoints import (
     produtos,
     relatorios,
     usuarios,
+    wifi,
 )
 
 router = APIRouter()
@@ -37,3 +38,4 @@ router.include_router(relatorios.router)
 router.include_router(pagamentos.router)
 router.include_router(pagamentos_escuta.router)
 router.include_router(dashboard.router)
+router.include_router(wifi.router)

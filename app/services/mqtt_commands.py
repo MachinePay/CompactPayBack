@@ -154,6 +154,45 @@ def publish_machine_device_config(
     return payload
 
 
+def publish_machine_wifi(machine_id: str, command_id: str, ssid: str, senha: str) -> None:
+    """Troca de Wi-Fi pelo painel (firmware 2.8.0+). SSID e senha vao em hex
+    (podem ter "|"). A placa confere a rede antes de largar a atual e volta
+    sozinha para ela se a nova nao conectar. Nada da senha vai para o banco
+    nem para o log."""
+    topic = f"/TEF/{machine_id}/cmd"
+    payload = (
+        f"{machine_id}@wifi|cmd={command_id}|ssid_hex={ssid.encode('utf-8').hex()}"
+        f"|pass_hex={senha.encode('utf-8').hex()}|"
+    )
+    from app.services.command_queue import track_and_publish_sensitive_command
+
+    track_and_publish_sensitive_command(
+        machine_id=machine_id,
+        command_id=command_id,
+        tipo="wifi",
+        topic=topic,
+        payload=payload,
+        payload_registrado=f"{machine_id}@wifi|cmd={command_id}|ssid={ssid}|senha=***|",
+    )
+    logging.info("MQTT troca de Wi-Fi publicada machine_id=%s command_id=%s rede=%r", machine_id, command_id, ssid)
+
+
+def publish_machine_wifi_info_request(machine_id: str, command_id: str) -> None:
+    """Pede para a placa reenviar a rede/senha atuais (STATUS|WIFI_INFO)."""
+    topic = f"/TEF/{machine_id}/cmd"
+    payload = f"{machine_id}@wifi_info|cmd={command_id}|"
+    from app.services.command_queue import track_and_publish_command
+
+    track_and_publish_command(
+        machine_id=machine_id,
+        command_id=command_id,
+        tipo="wifi_info",
+        topic=topic,
+        payload=payload,
+    )
+    logging.info("MQTT pedido de WIFI_INFO publicado machine_id=%s command_id=%s", machine_id, command_id)
+
+
 def publish_machine_ping(machine_id: str, command_id: str) -> str:
     topic = f"/TEF/{machine_id}/cmd"
     payload = f"{machine_id}@ping|cmd={command_id}|"

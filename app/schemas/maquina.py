@@ -56,6 +56,7 @@ class MaquinaOut(BaseModel):
     wifi_rssi: Optional[int] = None
     wifi_quality: Optional[int] = None
     ip_local: Optional[str] = None
+    wifi_ssid: Optional[str] = None
     ultimo_pagamento_em: Optional[datetime] = None
     ultimo_teste_em: Optional[datetime] = None
     ultima_saida_em: Optional[datetime] = None
