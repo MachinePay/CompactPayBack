@@ -268,6 +268,7 @@ def historico_wifi(
                 "motivo": t.motivo,
                 "motivo_texto": motivo_legivel(t.motivo),
                 "solicitado_por": t.solicitado_por,
+                "origem": t.origem or "painel",
                 "created_at": t.created_at,
                 "finished_at": t.finished_at,
             }

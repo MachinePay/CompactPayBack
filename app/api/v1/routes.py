@@ -1,6 +1,8 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    mapa,
+    ao_vivo,
     auditoria,
     auth,
     clientes,
@@ -39,3 +41,5 @@ router.include_router(pagamentos.router)
 router.include_router(pagamentos_escuta.router)
 router.include_router(dashboard.router)
 router.include_router(wifi.router)
+router.include_router(ao_vivo.router)
+router.include_router(mapa.router)

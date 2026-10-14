@@ -326,3 +326,66 @@ def test_uploaded_firmware_is_stored_in_database_and_deleted_with_row():
     assert delete.status_code == 200, delete.text
     assert delete.json()["arquivo_removido"] is True
     assert client.get(f"/api/v1/firmware-files/{filename}").status_code == 404
+
+
+def test_atualizacao_em_lote_sends_online_and_skips_offline_with_reason():
+    from app.models.models import FirmwareVersion
+
+    db = SessionLocal()
+    try:
+        firmware = FirmwareVersion(nome="Lote 2.8.2", url_bin="https://example.com/lote.bin", ativo=True)
+        db.add(firmware)
+        db.commit()
+        firmware_id = firmware.id
+    finally:
+        db.close()
+    _create_maquina("CPM-LOTE-ON", ultimo_sinal=datetime.utcnow(), firmware_version="2.7.9")
+    _create_maquina("CPM-LOTE-OFF", ultimo_sinal=datetime.utcnow() - timedelta(hours=2))
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-ota-lote@test.local")
+        headers = {"Authorization": f"Bearer {token}"}
+        with patch("app.services.mqtt_commands.publish.single"):
+            response = client.post(
+                "/api/v1/maquinas/atualizacao-lote",
+                json={"firmware_version_id": firmware_id, "machine_ids": ["CPM-LOTE-ON", "CPM-LOTE-OFF", "CPM-LOTE-ON"]},
+                headers=headers,
+            )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["enviados"] == 1 and data["pulados"] == 1
+    por_maquina = {item["machine_id"]: item for item in data["resultados"]}
+    assert por_maquina["CPM-LOTE-ON"]["enviado"] is True
+    assert "offline" in por_maquina["CPM-LOTE-OFF"]["motivo"].lower()
+    assert _get_maquina("CPM-LOTE-ON").firmware_update_status == "sent"
+    assert _get_maquina("CPM-LOTE-ON").firmware_target_version == "Lote 2.8.2"
+
+
+def test_enviar_atualizacao_rejects_while_credit_in_progress():
+    from app.models.models import ComandoMaquina
+
+    machine_id = "CPM-OTA-CREDITO"
+    _create_maquina(machine_id, ultimo_sinal=datetime.utcnow())
+    db = SessionLocal()
+    try:
+        db.add(
+            ComandoMaquina(
+                command_id="cmd-credito-andamento",
+                maquina_id=machine_id,
+                tipo="paid",
+                topic=f"/TEF/{machine_id}/cmd",
+                payload="x",
+                status="executando",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    with TestClient(app) as client:
+        token = _create_admin_token(client, "admin-ota-credito@test.local")
+        response = _request_update(client, {"Authorization": f"Bearer {token}"}, machine_id)
+
+    assert response.status_code == 409
+    assert "credito" in response.json()["detail"]

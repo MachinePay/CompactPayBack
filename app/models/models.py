@@ -57,6 +57,8 @@ class Cliente(Base):
     # historico de transacoes desse cliente, pra so buscar o que mudou desde
     # a ultima rodada (changes_since) em vez de reprocessar tudo toda vez.
     sumup_last_sync_at = Column(DateTime, nullable=True)
+    # Mapa das maquinas: desligado para o cliente ate o admin liberar.
+    mapa_habilitado = Column(Boolean, default=False, nullable=False)
     maquinas = relationship("Maquina", back_populates="dono")
 
 class Usuario(Base):
@@ -136,6 +138,9 @@ class Maquina(Base):
     # pelo botao "Procurar redes"): JSON [{ssid, rssi, seguranca}].
     wifi_redes_json = Column(Text, nullable=True)
     wifi_redes_em = Column(DateTime, nullable=True)
+    # Posicao no mapa (opcional). Sem ela o mapa usa o endereco do cliente.
+    latitude = Column(Float, nullable=True)
+    longitude = Column(Float, nullable=True)
     firmware_version = Column(String, nullable=True)
     firmware_target_version = Column(String, nullable=True)
     firmware_updated_at = Column(DateTime, nullable=True)
@@ -338,7 +343,9 @@ class MaquinaWifiTentativa(Base):
     command_id = Column(String, unique=True, index=True, nullable=False)
     ssid = Column(String, nullable=False)
     senha_cript = Column(String, nullable=False, default="")
-    # testando | trocado | falhou | recusado
+    # painel (troca pedida pelo painel) | portal (digitada no celular, no portal da placa)
+    origem = Column(String, nullable=False, default="painel")
+    # testando | trocado | falhou | recusado | sem_confirmacao
     resultado = Column(String, nullable=False, default="testando")
     motivo = Column(String, nullable=True)
     solicitado_por = Column(String, nullable=True)

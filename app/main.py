@@ -210,6 +210,18 @@ def startup_event():
         for column_name in ["wifi_ssid", "wifi_credencial_hash"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
+        if "maquinas_wifi_tentativas" in inspector.get_table_names():
+            tentativa_columns = {c["name"] for c in inspector.get_columns("maquinas_wifi_tentativas")}
+            if "origem" not in tentativa_columns:
+                connection.execute(
+                    text("ALTER TABLE maquinas_wifi_tentativas ADD COLUMN origem VARCHAR NOT NULL DEFAULT 'painel'")
+                )
+        for column_name in ["latitude", "longitude"]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} FLOAT"))
+        cliente_columns = {column["name"] for column in inspector.get_columns("clientes")}
+        if "mapa_habilitado" not in cliente_columns:
+            connection.execute(text("ALTER TABLE clientes ADD COLUMN mapa_habilitado BOOLEAN NOT NULL DEFAULT FALSE"))
         if "wifi_redes_json" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN wifi_redes_json TEXT"))
         if "wifi_redes_em" not in maquina_columns:

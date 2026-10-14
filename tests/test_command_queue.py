@@ -604,3 +604,46 @@ def test_evento_de_pulso_que_chega_depois_do_final_nao_vira_falha():
 
     comando = _get_comando("cmd-1006-tarde")
     assert comando.status == "executado"
+
+
+def test_credit_waits_in_queue_while_firmware_is_updating_and_is_released_after():
+    # Credito que chega enquanto a placa baixa/reinicia o firmware nao pode
+    # ser publicado (se perderia): espera na fila e sai quando ela termina.
+    from app.services.command_queue import process_queued_commands
+
+    db = SessionLocal()
+    try:
+        db.add(
+            Maquina(
+                id_hardware="CPM-OTA-FILA",
+                nome_local="CPM-OTA-FILA",
+                firmware_update_status="downloading",
+                firmware_update_requested_at=datetime.utcnow(),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    with patch("app.services.mqtt_commands.publish_raw_mqtt_command") as publish_mock:
+        track_and_publish_command(
+            machine_id="CPM-OTA-FILA",
+            command_id="cmd-ota-fila",
+            tipo="paid",
+            topic="/TEF/CPM-OTA-FILA/cmd",
+            payload="CPM-OTA-FILA@paid|cmd=cmd-ota-fila|",
+        )
+        process_queued_commands()
+        assert publish_mock.call_count == 0
+        assert _get_comando("cmd-ota-fila").detalhe_status == "aguardando_atualizacao_firmware"
+
+        db = SessionLocal()
+        try:
+            db.query(Maquina).filter(Maquina.id_hardware == "CPM-OTA-FILA").update({"firmware_update_status": "updated"})
+            db.commit()
+        finally:
+            db.close()
+        process_queued_commands()
+
+    publish_mock.assert_called_once()
+    assert _get_comando("cmd-ota-fila").status == "enviado"

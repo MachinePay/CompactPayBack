@@ -7,7 +7,7 @@ from sqlalchemy import and_, or_
 
 from app.core.config import settings
 from app.db.session import SessionLocal
-from app.models.models import ComandoMaquina
+from app.models.models import ComandoMaquina, Maquina
 
 ACK_TIMEOUT_SECONDS = 4
 RETRY_DELAY_SECONDS = 4
@@ -163,6 +163,35 @@ def _publish_attempt(db, comando: ComandoMaquina) -> None:
     db.commit()
 
 
+# Atualizacao de firmware em andamento (download + reinicio): a placa nao
+# processa credito nesse tempo. Credito que chega aqui espera na fila em vez de
+# ser publicado e se perder (retries esgotam enquanto ela baixa/reinicia).
+FIRMWARE_UPDATING_STATUSES = {"sent", "downloading", "restarting"}
+FIRMWARE_UPDATING_MAX_AGE = timedelta(minutes=4)
+
+
+def machine_is_updating_firmware(db, machine_id: str) -> bool:
+    maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
+    if not maquina or maquina.firmware_update_status not in FIRMWARE_UPDATING_STATUSES:
+        return False
+    inicio = maquina.firmware_update_requested_at or maquina.firmware_update_started_at
+    # Status preso (placa nunca respondeu): nao segura credito para sempre.
+    return bool(inicio and _now() - inicio < FIRMWARE_UPDATING_MAX_AGE)
+
+
+def machine_has_pending_credit(db, machine_id: str) -> bool:
+    """Credito em andamento OU esperando na fila desta maquina."""
+    return db.query(
+        db.query(ComandoMaquina)
+        .filter(
+            ComandoMaquina.maquina_id == machine_id,
+            ComandoMaquina.tipo == CREDIT_COMMAND_TIPO,
+            ComandoMaquina.status.notin_(FINAL_COMMAND_STATUSES),
+        )
+        .exists()
+    ).scalar()
+
+
 def _machine_has_in_flight_credit_command(
     db, machine_id: str, exclude_command_id: str | None = None
 ) -> bool:
@@ -205,11 +234,12 @@ def track_and_publish_command(
             topic=topic,
             payload=payload,
         )
-        if tipo == CREDIT_COMMAND_TIPO and _machine_has_in_flight_credit_command(
-            db, machine_id, exclude_command_id=command_id
+        atualizando = tipo == CREDIT_COMMAND_TIPO and machine_is_updating_firmware(db, machine_id)
+        if tipo == CREDIT_COMMAND_TIPO and (
+            atualizando or _machine_has_in_flight_credit_command(db, machine_id, exclude_command_id=command_id)
         ):
             comando.status = QUEUED_STATUS
-            comando.detalhe_status = "aguardando_maquina_livre"
+            comando.detalhe_status = "aguardando_atualizacao_firmware" if atualizando else "aguardando_maquina_livre"
             comando.updated_at = _now()
             db.commit()
             return
@@ -301,7 +331,7 @@ def process_queued_commands() -> int:
                 continue
             if _machine_has_in_flight_credit_command(
                 db, comando.maquina_id, exclude_command_id=comando.command_id
-            ):
+            ) or machine_is_updating_firmware(db, comando.maquina_id):
                 continue
             try:
                 _publish_attempt(db, comando)

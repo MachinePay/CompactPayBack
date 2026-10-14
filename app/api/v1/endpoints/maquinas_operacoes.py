@@ -26,7 +26,7 @@ from app.services.pagamentos_helpers import (
     should_use_sumup_refund,
 )
 from app.services.sumup import create_sumup_refund
-from app.services.command_queue import get_command_status
+from app.services.command_queue import get_command_status, machine_has_pending_credit
 from app.services.pulse_tracking import update_pulse_status
 from app.services.quedas_diagnostico import (
     EVENTO_ANTES_DA_QUEDA,
@@ -669,6 +669,15 @@ def enviar_atualizacao_firmware(
     if not maquina.ultimo_sinal or datetime.utcnow() - maquina.ultimo_sinal > timedelta(seconds=90):
         raise HTTPException(status_code=409, detail="Maquina offline. Aguarde ela ficar online para atualizar.")
 
+    # Nao comeca a atualizacao no meio de um credito (ou com credito na fila):
+    # a placa reinicia no fim e o credito podia se perder. A placa (2.8.3+)
+    # tambem espera o credito terminar, mas aqui ja evita o problema.
+    if machine_has_pending_credit(db, machine_id):
+        raise HTTPException(
+            status_code=409,
+            detail="A maquina esta liberando um credito agora. Tente de novo em alguns segundos.",
+        )
+
     if maquina.firmware_update_status in FIRMWARE_UPDATE_IN_FLIGHT_STATUSES:
         started_at = maquina.firmware_update_requested_at or maquina.firmware_update_started_at
         if started_at and datetime.utcnow() - started_at < FIRMWARE_UPDATE_LOCK_TIMEOUT:
@@ -776,6 +785,50 @@ def enviar_atualizacao_firmware(
         "firmware_version": firmware_version or None,
         "firmware_url": firmware_url,
     }
+
+
+MAX_MAQUINAS_ATUALIZACAO_LOTE = 100
+
+
+@router.post("/maquinas/atualizacao-lote")
+def enviar_atualizacao_firmware_lote(
+    payload: dict,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Manda a mesma versao de firmware para varias maquinas. Cada uma passa
+    pelas mesmas regras da atualizacao individual (online, sem outra
+    atualizacao em andamento...); as que nao podem sao puladas com o motivo,
+    sem impedir as outras."""
+    _, role, _ = user
+    if role != "admin":
+        raise HTTPException(status_code=403, detail="Apenas admin pode enviar atualizacao de firmware")
+    if not (payload or {}).get("firmware_version_id"):
+        raise HTTPException(status_code=422, detail="Escolha a versao de firmware")
+    machine_ids = list(dict.fromkeys(str(item) for item in (payload.get("machine_ids") or []) if item))
+    if not machine_ids:
+        raise HTTPException(status_code=422, detail="Escolha pelo menos uma maquina")
+    if len(machine_ids) > MAX_MAQUINAS_ATUALIZACAO_LOTE:
+        raise HTTPException(
+            status_code=422,
+            detail=f"No maximo {MAX_MAQUINAS_ATUALIZACAO_LOTE} maquinas por vez",
+        )
+
+    resultados = []
+    for machine_id in machine_ids:
+        try:
+            enviado = enviar_atualizacao_firmware(
+                machine_id,
+                {"firmware_version_id": payload["firmware_version_id"]},
+                db=db,
+                user=user,
+            )
+            resultados.append({"machine_id": machine_id, "enviado": True, "command_id": enviado["command_id"]})
+        except HTTPException as exc:
+            db.rollback()
+            resultados.append({"machine_id": machine_id, "enviado": False, "motivo": exc.detail})
+    enviados = sum(1 for item in resultados if item["enviado"])
+    return {"enviados": enviados, "pulados": len(resultados) - enviados, "resultados": resultados}
 
 
 @router.post("/maquinas/{machine_id}/observacoes")

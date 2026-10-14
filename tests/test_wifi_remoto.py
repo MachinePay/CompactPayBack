@@ -234,3 +234,28 @@ def test_attempt_without_result_becomes_sem_confirmacao():
         status = client.get(f"/api/v1/maquinas/{machine_id}/wifi/troca/cmd-sem-conf", headers=headers).json()
 
     assert status["resultado"] == "sem_confirmacao"
+
+
+def test_portal_attempts_are_recorded_with_result():
+    machine_id = "CPM-WIFI-PORTAL"
+    _create_maquina(machine_id, firmware_version=FW_OK, ultimo_sinal=datetime.utcnow())
+    base = f"/TEF/{machine_id}/attrs"
+    on_message(None, None, FakeMsg(base, f"STATUS|WIFI_PORTAL_TENTATIVA|ssid_hex={_hex('Loja')}|pass_hex={_hex('errada99')}|r=15|ordem=1|de=2"))
+    on_message(None, None, FakeMsg(base, f"STATUS|WIFI_PORTAL_TENTATIVA|ssid_hex={_hex('Loja')}|pass_hex={_hex('certa123')}|r=1|ordem=2|de=2"))
+
+    with TestClient(app) as client:
+        headers = _admin_headers(client, "admin-wifi-portal@test.local")
+        tentativas = client.get(f"/api/v1/wifi/historico?machine_id={machine_id}", headers=headers).json()["tentativas"]
+
+    por_senha = {t["senha"]: t for t in tentativas}
+    assert por_senha["errada99"]["origem"] == "portal"
+    assert por_senha["errada99"]["motivo_texto"] == "Senha errada"
+    assert por_senha["certa123"]["resultado"] == "trocado"
+
+    db = SessionLocal()
+    try:
+        textos = [h.descricao for h in db.query(HistoricoOperacao).filter(HistoricoOperacao.maquina_id == machine_id)]
+    finally:
+        db.close()
+    assert any("Senha errada" in t for t in textos)
+    assert not any("errada99" in t or "certa123" in t for t in textos)

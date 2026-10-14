@@ -183,6 +183,26 @@ def on_message(client, userdata, msg):
             _processar_wifi_info(db, maquina, id_extraido, status_fields)
             db.close()
             return
+        if status == "WIFI_PORTAL_TENTATIVA":
+            from app.services.wifi_credenciais import motivo_legivel, registrar_tentativa_portal
+
+            tentativa = registrar_tentativa_portal(db, id_extraido, status_fields)
+            if tentativa:
+                situacao = "conectou" if tentativa.resultado == "trocado" else motivo_legivel(tentativa.motivo)
+                db.add(
+                    HistoricoOperacao(
+                        maquina_id=id_extraido,
+                        categoria="DISPOSITIVO",
+                        descricao=f"Tentativa de Wi-Fi no portal: rede {tentativa.ssid} - {situacao}",
+                        valor=None,
+                        command_id=None,
+                        pulse_status=None,
+                        created_at=datetime.utcnow(),
+                    )
+                )
+            db.commit()
+            db.close()
+            return
         if status == "WIFI_REDES":
             from app.services.wifi_credenciais import interpretar_redes
 

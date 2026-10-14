@@ -157,6 +157,53 @@ def interpretar_redes(texto: str | None) -> list[dict]:
     return redes
 
 
+def motivo_por_codigo_wifi(codigo: int) -> str:
+    """Mesmo mapeamento do firmware (executarTrocaWiFi) para o motivo da
+    queda do Wi-Fi (wifi_err_reason_t)."""
+    if codigo in (2, 15, 23, 202, 204):
+        return "senha_errada"
+    if codigo in (201, 210, 211, 212):
+        return "rede_nao_encontrada"
+    return f"wifi_nao_conectou_{codigo}"
+
+
+def registrar_tentativa_portal(db, machine_id: str, fields: dict[str, str]) -> MaquinaWifiTentativa | None:
+    """STATUS|WIFI_PORTAL_TENTATIVA: rede/senha digitadas no portal do
+    celular, mandadas quando a placa conseguiu conectar. r=1 conectou,
+    r=0 sem resultado, outro = codigo da queda do Wi-Fi."""
+    import uuid
+
+    ssid = decodificar_hex(fields.get("ssid_hex"), SSID_MAX)
+    senha = decodificar_hex(fields.get("pass_hex"), 64)
+    try:
+        codigo = int(fields.get("r") or 0)
+    except ValueError:
+        codigo = 0
+    if not ssid or senha is None:
+        return None
+    if codigo == 1:
+        resultado, motivo = "trocado", None
+    elif codigo == 0:
+        resultado, motivo = "falhou", "sem_resultado"
+    else:
+        resultado, motivo = "falhou", motivo_por_codigo_wifi(codigo)
+    agora = datetime.utcnow()
+    tentativa = MaquinaWifiTentativa(
+        maquina_id=machine_id,
+        command_id=f"portal-{uuid.uuid4()}",
+        origem="portal",
+        ssid=ssid,
+        senha_cript=criptografar_senha(senha) if senha else "",
+        resultado=resultado,
+        motivo=motivo,
+        solicitado_por="Portal (celular)",
+        created_at=agora,
+        finished_at=agora,
+    )
+    db.add(tentativa)
+    return tentativa
+
+
 RESULTADO_POR_STATUS = {
     "WIFI_TROCADO": "trocado",
     "WIFI_TROCA_FALHOU": "falhou",
@@ -175,6 +222,7 @@ MOTIVOS_LEGIVEIS = {
     "varredura_falhou": "A placa nao conseguiu procurar redes - tente de novo",
     "dados_invalidos": "Dados invalidos",
     "sem_resposta": "A placa nao respondeu",
+    "sem_resultado": "Nao conectou (o portal foi fechado ou expirou antes de outra tentativa)",
     "sem_confirmacao": "A placa nao confirmou o resultado - use 'Pedir rede atual' para ver em qual rede ela ficou",
 }
 
