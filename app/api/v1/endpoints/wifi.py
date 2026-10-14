@@ -23,6 +23,7 @@ from app.services.mqtt_commands import (
 from app.services.wifi_credenciais import (
     criptografar_senha,
     descriptografar_senha,
+    fechar_tentativas_sem_confirmacao,
     motivo_legivel,
     validar_rede,
 )
@@ -144,6 +145,10 @@ def status_troca_wifi(machine_id: str, command_id: str, db: Session = Depends(ge
         tentativa.motivo = "sem_resposta"
         tentativa.finished_at = datetime.utcnow()
         db.commit()
+    if tentativa.resultado == "testando":
+        fechar_tentativas_sem_confirmacao(db, machine_id)
+        db.commit()
+        db.refresh(tentativa)
     etapa = tentativa.resultado
     if etapa == "testando":
         etapa = "testando" if comando and comando.ack_at else "enviando"
@@ -219,6 +224,9 @@ def historico_wifi(
         maquinas_q = maquinas_q.filter(Maquina.cliente_id == cliente_id)
     maquinas = {m.id_hardware: m for m in maquinas_q.all()}
     ids = list(maquinas)
+
+    fechar_tentativas_sem_confirmacao(db)
+    db.commit()
 
     credenciais_q = db.query(MaquinaWifiCredencial).filter(MaquinaWifiCredencial.maquina_id.in_(ids))
     tentativas_q = db.query(MaquinaWifiTentativa).filter(MaquinaWifiTentativa.maquina_id.in_(ids))

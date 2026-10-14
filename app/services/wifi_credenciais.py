@@ -13,7 +13,7 @@ import base64
 import hashlib
 import hmac
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -104,7 +104,39 @@ def registrar_wifi_info(db, maquina: Maquina, ssid: str, senha: str) -> MaquinaW
         db.add(registro)
     maquina.wifi_ssid = ssid
     maquina.wifi_credencial_hash = chave
+    _confirmar_tentativa_pela_rede(db, maquina.id_hardware, ssid, agora)
     return registro
+
+
+def _confirmar_tentativa_pela_rede(db, machine_id: str, ssid: str, agora: datetime) -> None:
+    pendentes = (
+        db.query(MaquinaWifiTentativa)
+        .filter(
+            MaquinaWifiTentativa.maquina_id == machine_id,
+            MaquinaWifiTentativa.resultado.in_(["testando", "sem_confirmacao"]),
+            MaquinaWifiTentativa.ssid == ssid,
+            MaquinaWifiTentativa.created_at >= agora - TENTATIVA_CONFIRMADA_POR_INFO_JANELA,
+        )
+        .all()
+    )
+    for tentativa in pendentes:
+        tentativa.resultado = "trocado"
+        tentativa.motivo = None
+        tentativa.finished_at = agora
+
+
+def fechar_tentativas_sem_confirmacao(db, machine_id: str | None = None) -> None:
+    """Marca como "sem_confirmacao" as trocas paradas em "testando"."""
+    limite = datetime.utcnow() - TENTATIVA_SEM_CONFIRMACAO_APOS
+    query = db.query(MaquinaWifiTentativa).filter(
+        MaquinaWifiTentativa.resultado == "testando", MaquinaWifiTentativa.created_at <= limite
+    )
+    if machine_id:
+        query = query.filter(MaquinaWifiTentativa.maquina_id == machine_id)
+    for tentativa in query.all():
+        tentativa.resultado = "sem_confirmacao"
+        tentativa.motivo = "sem_confirmacao"
+        tentativa.finished_at = datetime.utcnow()
 
 
 def interpretar_redes(texto: str | None) -> list[dict]:
@@ -143,7 +175,15 @@ MOTIVOS_LEGIVEIS = {
     "varredura_falhou": "A placa nao conseguiu procurar redes - tente de novo",
     "dados_invalidos": "Dados invalidos",
     "sem_resposta": "A placa nao respondeu",
+    "sem_confirmacao": "A placa nao confirmou o resultado - use 'Pedir rede atual' para ver em qual rede ela ficou",
 }
+
+# Troca sem resultado depois disso vira "sem_confirmacao" (o teste completo
+# leva no maximo ~2 min na placa).
+TENTATIVA_SEM_CONFIRMACAO_APOS = timedelta(minutes=5)
+# WIFI_INFO com a rede pedida dentro dessa janela confirma a troca, mesmo se o
+# WIFI_TROCADO se perdeu.
+TENTATIVA_CONFIRMADA_POR_INFO_JANELA = timedelta(minutes=15)
 
 
 def motivo_legivel(motivo: str | None) -> str | None:
@@ -160,7 +200,7 @@ def atualizar_tentativa(db, command_id: str | None, status: str, fields: dict[st
     if not command_id or not resultado:
         return
     tentativa = db.query(MaquinaWifiTentativa).filter(MaquinaWifiTentativa.command_id == command_id).first()
-    if not tentativa or tentativa.resultado != "testando":
+    if not tentativa or tentativa.resultado not in ("testando", "sem_confirmacao"):
         return
     tentativa.resultado = resultado
     tentativa.motivo = fields.get("motivo") or None

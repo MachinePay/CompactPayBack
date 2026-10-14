@@ -187,3 +187,50 @@ def test_wifi_scan_result_is_stored_and_listed():
         {"ssid": "Loja 5G", "rssi": -48, "aberta": False, "wep": False},
         {"ssid": "Visitantes", "rssi": -71, "aberta": True, "wep": False},
     ]
+
+
+def test_wifi_info_with_requested_network_confirms_lost_switch(monkeypatch):
+    # Caso real (1006, 14/10/2026): a placa trocou de rede mas o WIFI_TROCADO
+    # se perdeu; o painel ficou em "Testando". A rede nova chegando pelo
+    # WIFI_INFO tem que fechar a troca como "trocado".
+    machine_id = "CPM-WIFI-PERDIDO"
+    _create_maquina(machine_id, firmware_version=FW_OK, ultimo_sinal=datetime.utcnow())
+    monkeypatch.setattr(wifi_endpoints, "publish_machine_wifi", lambda *a: None)
+
+    with TestClient(app) as client:
+        headers = _admin_headers(client, "admin-wifi-perdido@test.local")
+        command_id = client.post(
+            f"/api/v1/maquinas/{machine_id}/wifi", json={"ssid": "Agarramais", "senha": "certa1234"}, headers=headers
+        ).json()["command_id"]
+        _wifi_info(machine_id, "Agarramais", "certa1234")
+        status = client.get(f"/api/v1/maquinas/{machine_id}/wifi/troca/{command_id}", headers=headers).json()
+
+    assert status["resultado"] == "trocado"
+
+
+def test_attempt_without_result_becomes_sem_confirmacao():
+    from datetime import timedelta
+
+    machine_id = "CPM-WIFI-SEM-CONF"
+    _create_maquina(machine_id, firmware_version=FW_OK, ultimo_sinal=datetime.utcnow())
+    db = SessionLocal()
+    try:
+        db.add(
+            MaquinaWifiTentativa(
+                maquina_id=machine_id,
+                command_id="cmd-sem-conf",
+                ssid="Rede",
+                senha_cript="",
+                resultado="testando",
+                created_at=datetime.utcnow() - timedelta(minutes=10),
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    with TestClient(app) as client:
+        headers = _admin_headers(client, "admin-wifi-sem-conf@test.local")
+        status = client.get(f"/api/v1/maquinas/{machine_id}/wifi/troca/cmd-sem-conf", headers=headers).json()
+
+    assert status["resultado"] == "sem_confirmacao"
