@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import get_current_user
+from app.core.escopo import filtrar_maquinas_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import (
     AlertaNotificacao,
@@ -43,12 +44,9 @@ def get_db():
 
 
 def _maquina_query_por_usuario(db: Session, role: str, cliente_id):
-    # joinedload evita 1 query extra por maquina so para ler o nome do cliente
-    # (maquina.dono) quando a listagem tem varias maquinas de clientes diferentes.
-    query = db.query(Maquina).options(joinedload(Maquina.dono))
-    if role == "admin":
-        return query
-    return query.filter(Maquina.cliente_id == cliente_id)
+    # Regra central de acesso (app/core/escopo.py): cliente so as proprias.
+    # joinedload evita 1 query extra por maquina so para ler o nome do cliente.
+    return filtrar_maquinas_do_usuario(db.query(Maquina).options(joinedload(Maquina.dono)), (None, role, cliente_id))
 
 
 def _generate_machine_id(db: Session) -> str:
@@ -322,6 +320,8 @@ def criar_maquina(
         db_maquina.sumup_device_code = device_code or None
     if (maquina.localizacao_mapa or "").strip():
         db_maquina.latitude, db_maquina.longitude = _coordenadas_ou_422(maquina.localizacao_mapa)
+        db_maquina.localizacao_origem = "manual"
+        db_maquina.localizacao_atualizada_em = datetime.utcnow()
     db.add(db_maquina)
     registrar_auditoria(
         db,
@@ -364,11 +364,18 @@ def atualizar_maquina(
     db_maquina.nome_local = maquina.nome
     db_maquina.localizacao = maquina.localizacao
     if maquina.localizacao_mapa is not None:
+        anterior = (db_maquina.latitude, db_maquina.longitude)
         if maquina.localizacao_mapa.strip():
-            db_maquina.latitude, db_maquina.longitude = _coordenadas_ou_422(maquina.localizacao_mapa)
+            novo = _coordenadas_ou_422(maquina.localizacao_mapa)
         else:
-            db_maquina.latitude = None
-            db_maquina.longitude = None
+            novo = (None, None)
+        # Campo reenviado igual (o formulario vem preenchido) nao conta como
+        # edicao manual - nao apaga a origem "celular".
+        if novo != anterior:
+            db_maquina.latitude, db_maquina.longitude = novo
+            db_maquina.localizacao_origem = "manual" if novo[0] is not None else None
+            db_maquina.localizacao_precisao_m = None
+            db_maquina.localizacao_atualizada_em = datetime.utcnow()
     db_maquina.cliente_id = maquina.cliente_id
     if maquina.banco_pagamento:
         db_maquina.banco_pagamento = maquina.banco_pagamento

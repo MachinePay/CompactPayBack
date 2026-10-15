@@ -1,6 +1,7 @@
 """Wi-Fi das maquinas: troca remota, rede atual e historico de redes/senhas.
 
-Tudo aqui e' so para admin: mostra senhas de Wi-Fi dos locais dos clientes.
+Acesso pela regra de app/core/escopo.py: admin ve todas as maquinas; cliente
+so as proprias (senhas do proprio local). Maquina de outro cliente = 404.
 Ver senhas e trocar Wi-Fi ficam registrados na auditoria.
 """
 import json
@@ -11,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
+from app.core.escopo import filtrar_maquinas_do_usuario, obter_maquina_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import ComandoMaquina, Maquina, MaquinaWifiCredencial, MaquinaWifiTentativa
 from app.services.auditoria import registrar_auditoria
@@ -42,16 +44,8 @@ def get_db():
         db.close()
 
 
-def _exigir_admin(user) -> None:
-    _, role, _ = user
-    if role != "admin":
-        raise HTTPException(status_code=403, detail="Apenas admin pode ver ou trocar o Wi-Fi das maquinas")
-
-
-def _maquina_pronta_para_wifi(db: Session, machine_id: str) -> Maquina:
-    maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
-    if not maquina:
-        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
+def _maquina_pronta_para_wifi(db: Session, user, machine_id: str) -> Maquina:
+    maquina = obter_maquina_do_usuario(db, user, machine_id)
     versao = _firmware_version_tuple(maquina.firmware_version)
     if versao is None or versao < MIN_FIRMWARE_VERSION_FOR_WIFI:
         minima = ".".join(str(parte) for parte in MIN_FIRMWARE_VERSION_FOR_WIFI)
@@ -77,13 +71,12 @@ def trocar_wifi(machine_id: str, payload: dict, db: Session = Depends(get_db), u
     """Pede para a placa trocar de rede. Ela confere se a rede esta no ar,
     testa a conexao (Wi-Fi + servidor) e, se nao der certo, volta sozinha para
     a rede antiga. O resultado chega em GET /maquinas/{id}/wifi/troca/{cmd}."""
-    _exigir_admin(user)
     ssid = str(payload.get("ssid") or "")
     senha = str(payload.get("senha") or "")
     erro = validar_rede(ssid, senha)
     if erro:
         raise HTTPException(status_code=422, detail=erro)
-    maquina = _maquina_pronta_para_wifi(db, machine_id)
+    maquina = _maquina_pronta_para_wifi(db, user, machine_id)
     em_andamento = (
         db.query(MaquinaWifiTentativa)
         .filter(MaquinaWifiTentativa.maquina_id == machine_id, MaquinaWifiTentativa.resultado == "testando")
@@ -129,7 +122,7 @@ def trocar_wifi(machine_id: str, payload: dict, db: Session = Depends(get_db), u
 
 @router.get("/maquinas/{machine_id}/wifi/troca/{command_id}")
 def status_troca_wifi(machine_id: str, command_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    _exigir_admin(user)
+    obter_maquina_do_usuario(db, user, machine_id)
     tentativa = (
         db.query(MaquinaWifiTentativa)
         .filter(MaquinaWifiTentativa.maquina_id == machine_id, MaquinaWifiTentativa.command_id == command_id)
@@ -165,8 +158,7 @@ def status_troca_wifi(machine_id: str, command_id: str, db: Session = Depends(ge
 def solicitar_wifi_atual(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Pede para a placa reenviar a rede/senha atuais (maquinas que ja
     estavam configuradas antes do firmware 2.8.0 so mandam quando a rede muda)."""
-    _exigir_admin(user)
-    _maquina_pronta_para_wifi(db, machine_id)
+    _maquina_pronta_para_wifi(db, user, machine_id)
     command_id = str(uuid4())
     publish_machine_wifi_info_request(machine_id, command_id)
     return {"command_id": command_id}
@@ -176,8 +168,7 @@ def solicitar_wifi_atual(machine_id: str, db: Session = Depends(get_db), user=De
 def procurar_redes(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Pede para a placa listar as redes Wi-Fi perto dela (sem desconectar).
     O resultado chega em GET /maquinas/{id}/wifi/redes."""
-    _exigir_admin(user)
-    _maquina_pronta_para_wifi(db, machine_id)
+    _maquina_pronta_para_wifi(db, user, machine_id)
     command_id = str(uuid4())
     publish_machine_wifi_scan(machine_id, command_id)
     return {"command_id": command_id, "pedido_em": datetime.utcnow()}
@@ -185,10 +176,7 @@ def procurar_redes(machine_id: str, db: Session = Depends(get_db), user=Depends(
 
 @router.get("/maquinas/{machine_id}/wifi/redes")
 def redes_proximas(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    _exigir_admin(user)
-    maquina = db.query(Maquina).filter(Maquina.id_hardware == machine_id).first()
-    if not maquina:
-        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
+    maquina = obter_maquina_do_usuario(db, user, machine_id)
     dados = json.loads(maquina.wifi_redes_json) if maquina.wifi_redes_json else {}
     return {
         "atualizado_em": maquina.wifi_redes_em,
@@ -213,11 +201,11 @@ def historico_wifi(
     pelo painel, inclusive as que falharam. Exige cliente ou maquina para nao
     puxar o historico de todas as maquinas sem querer - "todas=true" e' a
     escolha explicita de "Todas as maquinas" no painel."""
-    _exigir_admin(user)
     if not machine_id and cliente_id is None and not todas:
         raise HTTPException(status_code=422, detail="Escolha um cliente ou uma maquina")
 
-    maquinas_q = db.query(Maquina)
+    # Cliente: so as proprias maquinas (cliente_id/todas de outro sao ignorados).
+    maquinas_q = filtrar_maquinas_do_usuario(db.query(Maquina), user)
     if machine_id:
         maquinas_q = maquinas_q.filter(Maquina.id_hardware == machine_id)
     if cliente_id is not None:

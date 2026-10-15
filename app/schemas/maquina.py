@@ -62,6 +62,8 @@ class MaquinaOut(BaseModel):
     ip_local: Optional[str] = None
     latitude: Optional[float] = None
     longitude: Optional[float] = None
+    localizacao_origem: Optional[str] = None
+    localizacao_atualizada_em: Optional[datetime] = None
     wifi_ssid: Optional[str] = None
     ultimo_pagamento_em: Optional[datetime] = None
     ultimo_teste_em: Optional[datetime] = None

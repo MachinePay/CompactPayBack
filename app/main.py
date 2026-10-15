@@ -216,9 +216,16 @@ def startup_event():
                 connection.execute(
                     text("ALTER TABLE maquinas_wifi_tentativas ADD COLUMN origem VARCHAR NOT NULL DEFAULT 'painel'")
                 )
-        for column_name in ["latitude", "longitude"]:
+        for column_name in ["latitude", "longitude", "localizacao_precisao_m"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} FLOAT"))
+        if "localizacao_origem" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN localizacao_origem VARCHAR"))
+        if "localizacao_wifi_status" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN localizacao_wifi_status VARCHAR"))
+        for column_name in ["localizacao_atualizada_em", "portal_aberto_em", "portal_configurada_em", "localizacao_wifi_em"]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} TIMESTAMP"))
         cliente_columns = {column["name"] for column in inspector.get_columns("clientes")}
         if "mapa_habilitado" not in cliente_columns:
             connection.execute(text("ALTER TABLE clientes ADD COLUMN mapa_habilitado BOOLEAN NOT NULL DEFAULT FALSE"))

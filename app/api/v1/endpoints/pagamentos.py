@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user
+from app.core.escopo import obter_maquina_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import Cliente, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, SumupCheckout, SumupTransacaoPendente, Transacao, VendaPagamento
 from app.models.produto import Produto
@@ -34,13 +35,8 @@ def get_db():
 
 
 def _get_maquina_visivel(db: Session, maquina_id: str, role: str, cliente_id):
-    query = db.query(Maquina).filter(Maquina.id_hardware == maquina_id)
-    if role != "admin":
-        query = query.filter(Maquina.cliente_id == cliente_id)
-    maquina = query.first()
-    if not maquina:
-        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
-    return maquina
+    # Regra central de acesso (app/core/escopo.py): cliente so as proprias.
+    return obter_maquina_do_usuario(db, (None, role, cliente_id), maquina_id)
 
 
 @router.post("/callback-mercado-pago")

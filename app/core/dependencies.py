@@ -19,6 +19,15 @@ def get_current_user(token: str = Depends(oauth2_scheme)):
         cliente_id = payload.get("cliente_id")
         if email is None:
             raise credentials_exception
-        return TokenData(email=email), role, cliente_id
     except JWTError:
         raise credentials_exception
+    # Regra de acesso (app/core/escopo.py): quem nao e' admin so ve as maquinas
+    # do proprio cliente. Login de cliente sem cliente vinculado e' recusado
+    # aqui, senao os filtros "Maquina.cliente_id == cliente_id" virariam
+    # "IS NULL" e mostrariam maquinas sem dono.
+    if role != "admin" and cliente_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Usuario sem cliente vinculado. Fale com o administrador.",
+        )
+    return TokenData(email=email), role, cliente_id

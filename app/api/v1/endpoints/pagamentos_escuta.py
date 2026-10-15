@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
+from app.core.escopo import eh_admin, maquinas_do_usuario, obter_maquina_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import EscutaTerminal, Maquina
 
@@ -19,13 +20,8 @@ def get_db():
 
 
 def _get_maquina_visivel(db: Session, maquina_id: str, role: str, cliente_id):
-    query = db.query(Maquina).filter(Maquina.id_hardware == maquina_id)
-    if role != "admin":
-        query = query.filter(Maquina.cliente_id == cliente_id)
-    maquina = query.first()
-    if not maquina:
-        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
-    return maquina
+    # Regra central de acesso (app/core/escopo.py): cliente so as proprias.
+    return obter_maquina_do_usuario(db, (None, role, cliente_id), maquina_id)
 
 
 @router.post("/pagamentos/escuta/iniciar")
@@ -68,11 +64,16 @@ def iniciar_escuta_terminal(
 
 
 @router.post("/pagamentos/escuta/parar")
-def parar_escuta_terminal(dados: dict, db: Session = Depends(get_db)):
+def parar_escuta_terminal(dados: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
     terminal_id = (dados.get("terminal_id") or "").strip()
     if not terminal_id:
         raise HTTPException(status_code=422, detail="terminal_id e obrigatorio")
     escuta = db.query(EscutaTerminal).filter(EscutaTerminal.terminal_id == terminal_id).first()
+    if escuta and escuta.maquina_id:
+        # So para escuta de maquina que o login pode ver (regra de escopo.py).
+        obter_maquina_do_usuario(db, user, escuta.maquina_id)
+    elif escuta and not eh_admin(user):
+        raise HTTPException(status_code=404, detail="Escuta nao encontrada")
     ativo_antes = bool(escuta and escuta.ativo)
     if escuta:
         escuta.ativo = False
@@ -82,8 +83,11 @@ def parar_escuta_terminal(dados: dict, db: Session = Depends(get_db)):
 
 
 @router.get("/pagamentos/escuta")
-def listar_escutas(db: Session = Depends(get_db)):
+def listar_escutas(db: Session = Depends(get_db), user=Depends(get_current_user)):
     escutas = db.query(EscutaTerminal).filter(EscutaTerminal.ativo.is_(True)).all()
+    if not eh_admin(user):
+        visiveis = {m.id_hardware for m in maquinas_do_usuario(db, user)}
+        escutas = [item for item in escutas if item.maquina_id in visiveis]
     return {
         "ativos": [
             {

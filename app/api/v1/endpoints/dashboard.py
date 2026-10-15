@@ -5,6 +5,7 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import get_current_user
+from app.core.escopo import filtrar_maquinas_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import Maquina, Transacao, VendaPagamento
 from app.services.maquinas_relatorio import (
@@ -37,10 +38,8 @@ def get_db():
 def _maquina_query_por_usuario(db: Session, role: str, cliente_id):
     # joinedload evita 1 query extra por maquina so para ler o nome do cliente
     # (maquina.dono) quando ha varias maquinas de clientes diferentes no filtro.
-    query = db.query(Maquina).options(joinedload(Maquina.dono))
-    if role == "admin":
-        return query
-    return query.filter(Maquina.cliente_id == cliente_id)
+    # Regra central de acesso (app/core/escopo.py): cliente so as proprias.
+    return filtrar_maquinas_do_usuario(db.query(Maquina).options(joinedload(Maquina.dono)), (None, role, cliente_id))
 
 
 def _total_dinheiro_fisico(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> float:

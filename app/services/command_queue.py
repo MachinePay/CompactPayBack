@@ -63,7 +63,7 @@ def _status_from_device_status(status: str) -> tuple[str | None, bool]:
     # comando terminava executado normalmente um instante depois.
     if status in {"PULSO_INICIADO", "LIBERADO", "PULSO_CONFIRMADO", "PULSO_NAO_CONFIRMADO", "UPDATE_INICIADO"}:
         return "executando", False
-    if status in {"PULSOS_CONCLUIDOS", "PULSOS_ENVIADOS_SEM_RETORNO", "SALDO_PENDENTE", "UPDATE_OK", "UPDATE_SEM_NOVIDADE", "CONFIG_APLICADA", "WIFI_TROCADO", "WIFI_INFO", "WIFI_REDES"}:
+    if status in {"PULSOS_CONCLUIDOS", "PULSOS_ENVIADOS_SEM_RETORNO", "SALDO_PENDENTE", "UPDATE_OK", "UPDATE_SEM_NOVIDADE", "CONFIG_APLICADA", "WIFI_TROCADO", "WIFI_INFO", "WIFI_REDES", "WIFI_LOCALIZACAO"}:
         return "executado", True
     if status in {"CMD_IGNORADO", "PULSO_BLOQUEADO_SEGURANCA", "UPDATE_FALHOU", "WIFI_TROCA_FALHOU", "WIFI_TROCA_RECUSADA"}:
         return "falhou", True

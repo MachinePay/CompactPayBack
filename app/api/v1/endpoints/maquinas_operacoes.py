@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.dependencies import get_current_user
+from app.core.escopo import obter_maquina_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import AuditoriaOperacao, FirmwareVersion, HistoricoOperacao, Maquina, VendaPagamento
 from app.services.auditoria import registrar_auditoria
@@ -55,13 +56,8 @@ def get_db():
 
 
 def _get_maquina_visivel(db: Session, machine_id: str, role: str, cliente_id):
-    query = db.query(Maquina)
-    if role != "admin":
-        query = query.filter(Maquina.cliente_id == cliente_id)
-    maquina = query.filter(Maquina.id_hardware == machine_id).first()
-    if not maquina:
-        raise HTTPException(status_code=404, detail="Maquina nao encontrada")
-    return maquina
+    # Regra central de acesso (app/core/escopo.py): cliente so as proprias.
+    return obter_maquina_do_usuario(db, (None, role, cliente_id), machine_id)
 
 
 def _get_user_email(user) -> str:

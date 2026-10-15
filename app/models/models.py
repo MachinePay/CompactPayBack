@@ -141,6 +141,20 @@ class Maquina(Base):
     # Posicao no mapa (opcional). Sem ela o mapa usa o endereco do cliente.
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)
+    # De onde veio a posicao: "celular" (GPS do celular ao configurar a
+    # maquina pelo painel) ou "manual" (link/coordenadas digitados).
+    localizacao_origem = Column(String, nullable=True)
+    localizacao_precisao_m = Column(Float, nullable=True)
+    localizacao_atualizada_em = Column(DateTime, nullable=True)
+    # Portal dos 5 cliques: quando abriu (STATUS|RESET_WIFI_BOTAO) e quando a
+    # placa voltou depois dele. Nos 15 min seguintes o painel no celular
+    # oferece salvar a localizacao (tinha alguem do lado da maquina).
+    portal_aberto_em = Column(DateTime, nullable=True)
+    # Ultima tentativa de achar a posicao pelos roteadores Wi-Fi (Google):
+    # ok | mantida | sem_chave | sem_redes | nao_encontrada | erro
+    localizacao_wifi_status = Column(String, nullable=True)
+    localizacao_wifi_em = Column(DateTime, nullable=True)
+    portal_configurada_em = Column(DateTime, nullable=True)
     firmware_version = Column(String, nullable=True)
     firmware_target_version = Column(String, nullable=True)
     firmware_updated_at = Column(DateTime, nullable=True)

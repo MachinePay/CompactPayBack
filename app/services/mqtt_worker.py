@@ -121,6 +121,28 @@ def _processar_wifi_info(db, maquina, machine_id: str, fields: dict[str, str]) -
         update_command_from_device_status(command_id, "WIFI_INFO")
 
 
+PORTAL_VOLTA_MAXIMA = timedelta(minutes=30)  # portal fica no ar no maximo 8 min + reinicio
+
+
+def _marcar_configuracao_no_local(maquina, status: str | None, fields: dict[str, str], agora: datetime) -> None:
+    """Marca que alguem configurou a placa no local (portal dos 5 cliques).
+    Funciona com qualquer firmware: RESET_WIFI_BOTAO chega antes do portal
+    abrir e a primeira mensagem depois dele significa que a placa voltou.
+    CONFIG_SALVA (2.8.4+) e WIFI_PORTAL_TENTATIVA r=1 (2.8.2+) tambem contam."""
+    if status == "RESET_WIFI_BOTAO":
+        maquina.portal_aberto_em = agora
+        return
+    if status == "CONFIG_SALVA" or (status == "WIFI_PORTAL_TENTATIVA" and fields.get("r") == "1"):
+        maquina.portal_configurada_em = agora
+        maquina.portal_aberto_em = None
+        return
+    aberto = maquina.portal_aberto_em
+    if aberto and agora - aberto >= timedelta(seconds=5):
+        if agora - aberto <= PORTAL_VOLTA_MAXIMA:
+            maquina.portal_configurada_em = agora
+        maquina.portal_aberto_em = None
+
+
 def on_connect(client, userdata, flags, rc):
     print(f"MQTT conectado com código {rc}")
     client.subscribe(TOPIC)
@@ -178,6 +200,7 @@ def on_message(client, userdata, msg):
         agora = datetime.utcnow()
         sinal_anterior = maquina.ultimo_sinal
         maquina.ultimo_sinal = agora
+        _marcar_configuracao_no_local(maquina, status, status_fields, agora)
         db.commit()
         if status == "WIFI_INFO":
             _processar_wifi_info(db, maquina, id_extraido, status_fields)
@@ -202,6 +225,14 @@ def on_message(client, userdata, msg):
                 )
             db.commit()
             db.close()
+            return
+        if status == "WIFI_LOCALIZACAO":
+            # Consulta o Google fora do worker (nao atrasa pagamentos).
+            from app.services.geolocalizacao_wifi import localizar_por_wifi_em_segundo_plano
+
+            db.close()
+            update_command_from_device_status(status_fields.get("cmd"), "WIFI_LOCALIZACAO")
+            localizar_por_wifi_em_segundo_plano(id_extraido, status_fields.get("aps"))
             return
         if status == "WIFI_REDES":
             from app.services.wifi_credenciais import interpretar_redes

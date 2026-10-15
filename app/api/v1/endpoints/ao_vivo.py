@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import get_current_user
+from app.core.escopo import maquinas_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import HistoricoOperacao, Maquina, Transacao, VendaPagamento
 from app.services.maquinas_relatorio import (
@@ -43,13 +44,8 @@ def get_db():
 
 
 def _maquinas_do_usuario(db: Session, user, cliente_id: int | None) -> list[Maquina]:
-    _, role, cliente_do_usuario = user
-    query = db.query(Maquina).options(joinedload(Maquina.dono))
-    if role != "admin":
-        query = query.filter(Maquina.cliente_id == cliente_do_usuario)
-    elif cliente_id is not None:
-        query = query.filter(Maquina.cliente_id == cliente_id)
-    return query.all()
+    # Regra central (app/core/escopo.py): cliente so ve as proprias maquinas.
+    return maquinas_do_usuario(db, user, cliente_id)
 
 
 def _jogadas(valor: float, maquina: Maquina | None) -> int | None:

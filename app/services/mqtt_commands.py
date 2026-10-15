@@ -190,6 +190,19 @@ def publish_machine_wifi_scan(machine_id: str, command_id: str) -> None:
     )
 
 
+def publish_machine_wifi_localizar(machine_id: str, command_id: str) -> None:
+    """Pede para a placa mandar os roteadores Wi-Fi em volta (localizacao)."""
+    from app.services.command_queue import track_and_publish_command
+
+    track_and_publish_command(
+        machine_id=machine_id,
+        command_id=command_id,
+        tipo="wifi_localizar",
+        topic=f"/TEF/{machine_id}/cmd",
+        payload=f"{machine_id}@wifi_localizar|cmd={command_id}|",
+    )
+
+
 def publish_machine_wifi_info_request(machine_id: str, command_id: str) -> None:
     """Pede para a placa reenviar a rede/senha atuais (STATUS|WIFI_INFO)."""
     topic = f"/TEF/{machine_id}/cmd"
