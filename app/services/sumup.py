@@ -223,6 +223,26 @@ def extract_card_reader_code(receipt: dict) -> str | None:
     return str(code) if code else None
 
 
+def create_managed_member(access_token: str, merchant_code: str, email: str, password: str, nickname: str) -> dict:
+    """Cria um usuario gerenciado (sem convite por e-mail) na conta SumUp do
+    cliente - usado como "usuario da maquininha": cada maquininha logada com
+    o seu, o Pix chega com esse usuario e o sistema sabe de qual maquina e'.
+    A chave precisa do escopo members.write (ou user.subaccounts)."""
+    return su_request(
+        "POST",
+        f"{API}/v0.1/merchants/{merchant_code}/members",
+        access_token,
+        body={
+            "email": email,
+            "password": password,
+            "nickname": nickname[:64],
+            "is_managed_user": True,
+            "roles": ["role_employee"],
+            "metadata": {"origem": "compactpay", "maquina": nickname[:60]},
+        },
+    )
+
+
 def create_sumup_refund(access_token: str, transaction_id: str) -> None:
     # Endpoint de refund da SumUp usa o transaction_id (nao o checkout_id) -
     # ver get_reader_checkout, que devolve esse campo assim que o pagamento

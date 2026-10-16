@@ -124,6 +124,16 @@ class Maquina(Base):
     # esteja "Cloud-paired" (sumup_reader_id so existe pra isso). Descoberto
     # fazendo um pagamento teste na maquininha e lendo o codigo no log.
     sumup_device_code = Column(String, nullable=True)
+    # Usuario (operador) SumUp logado na maquininha desta maquina. O Pix feito
+    # direto na maquininha nao traz o codigo do reader (nem no recibo) - o
+    # campo "user" da transacao e' o unico jeito de saber de qual maquina veio,
+    # desde que cada maquininha fique logada com um operador diferente.
+    sumup_usuario = Column(String, nullable=True)
+    # Quando o usuario da maquininha foi criado pelo CompactPay (API de
+    # membros da SumUp): senha criptografada (para logar a maquininha de novo)
+    # e o id do membro na SumUp.
+    sumup_usuario_senha_cript = Column(String, nullable=True)
+    sumup_usuario_member_id = Column(String, nullable=True)
     ultimo_sinal = Column(DateTime, nullable=True)
     wifi_rssi = Column(Integer, nullable=True)
     wifi_quality = Column(Integer, nullable=True)

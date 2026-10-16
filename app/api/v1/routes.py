@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1.endpoints import (
+    sumup_usuarios,
     mapa,
     ao_vivo,
     auditoria,
@@ -43,3 +44,4 @@ router.include_router(dashboard.router)
 router.include_router(wifi.router)
 router.include_router(ao_vivo.router)
 router.include_router(mapa.router)
+router.include_router(sumup_usuarios.router)

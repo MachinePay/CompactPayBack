@@ -2,6 +2,7 @@ from datetime import datetime
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.dependencies import get_current_user
@@ -253,6 +254,31 @@ def _aplicar_ficha(db_maquina: Maquina, maquina_ficha: bool | None, valor_ficha:
     db_maquina.maquina_ficha = bool(maquina_ficha)
 
 
+def _sumup_usuario_validado(db: Session, usuario: str | None, cliente_id, machine_id: str | None) -> str | None:
+    """Usuario SumUp da maquininha: nao pode repetir em duas maquinas do mesmo
+    cliente (o Pix dele nao saberia para qual maquina ir)."""
+    usuario = (usuario or "").strip().lower() or None
+    if usuario:
+        outra = (
+            db.query(Maquina)
+            .filter(
+                Maquina.cliente_id == cliente_id,
+                func.lower(Maquina.sumup_usuario) == usuario,
+                Maquina.id_hardware != (machine_id or ""),
+            )
+            .first()
+        )
+        if outra:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"O usuario SumUp {usuario} ja esta na maquina {outra.id_hardware}. Cada maquininha precisa "
+                    "estar logada com um usuario (operador) diferente."
+                ),
+            )
+    return usuario
+
+
 def _coordenadas_ou_422(texto: str) -> tuple[float, float]:
     from app.api.v1.endpoints.mapa import extrair_coordenadas
 
@@ -334,6 +360,7 @@ def criar_maquina(
             )
         db_maquina.sumup_reader_id = reader_id or None
         db_maquina.sumup_device_code = device_code or None
+        db_maquina.sumup_usuario = _sumup_usuario_validado(db, maquina.sumup_usuario, maquina.cliente_id, None)
     _aplicar_ficha(db_maquina, maquina.maquina_ficha, maquina.valor_ficha)
     if (maquina.localizacao_mapa or "").strip():
         db_maquina.latitude, db_maquina.longitude = _coordenadas_ou_422(maquina.localizacao_mapa)
@@ -401,6 +428,10 @@ def atualizar_maquina(
         db_maquina.sumup_reader_id = maquina.sumup_reader_id.strip() or None
     if maquina.sumup_device_code is not None:
         db_maquina.sumup_device_code = maquina.sumup_device_code.strip() or None
+    if maquina.sumup_usuario is not None:
+        db_maquina.sumup_usuario = _sumup_usuario_validado(
+            db, maquina.sumup_usuario, maquina.cliente_id, db_maquina.id_hardware
+        )
     registrar_auditoria(
         db,
         user,

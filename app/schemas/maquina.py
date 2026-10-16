@@ -18,6 +18,7 @@ class MaquinaCreate(BaseModel):
     # que o reader esteja "Cloud-paired" (so' descobre fazendo um pagamento
     # teste e lendo o codigo no log/recibo).
     sumup_device_code: Optional[str] = None
+    sumup_usuario: Optional[str] = None
     # Opcional: link do Google Maps ou "lat, lng" para aparecer no Mapa.
     localizacao_mapa: Optional[str] = None
     # Maquina de ficha: cada entrada fisica vale valor_ficha (obrigatorio se marcada).
@@ -32,6 +33,7 @@ class MaquinaUpdate(BaseModel):
     banco_pagamento: Optional[str] = None
     sumup_reader_id: Optional[str] = None
     sumup_device_code: Optional[str] = None
+    sumup_usuario: Optional[str] = None
     # None = nao mexe; "" = tira do mapa; texto = link do Google Maps ou "lat, lng".
     localizacao_mapa: Optional[str] = None
     # None = nao mexe.
@@ -53,6 +55,7 @@ class MaquinaOut(BaseModel):
     mp_qr_image: Optional[str] = None
     sumup_reader_id: Optional[str] = None
     sumup_device_code: Optional[str] = None
+    sumup_usuario: Optional[str] = None
     firmware_version: Optional[str] = None
     firmware_target_version: Optional[str] = None
     firmware_updated_at: Optional[datetime] = None

@@ -33,6 +33,8 @@ def _resolve_maquina(
     maquina_by_reader_id: dict[str, Maquina],
     single_machine: Maquina | None,
     reader_device_map: dict[str, str],
+    usuario: str | None = None,
+    maquina_by_usuario: dict[str, Maquina] | None = None,
 ) -> tuple[Maquina | None, str]:
     """SEMPRE verifica contra o reader real antes de creditar - nunca credita
     'no escuro' so porque o cliente tem uma maquina so. Prioridade:
@@ -55,6 +57,12 @@ def _resolve_maquina(
         if reader_id and reader_id in maquina_by_reader_id:
             return maquina_by_reader_id[reader_id], "verificado_por_device"
         return None, "device_sem_reader_correspondente"
+    # Pix feito na maquininha: a SumUp nao manda o codigo do reader, mas manda
+    # o usuario (operador) logado nela. Funciona se cada maquininha estiver
+    # logada com um operador diferente (Maquina.sumup_usuario).
+    usuario = (usuario or "").strip().lower()
+    if usuario and maquina_by_usuario and usuario in maquina_by_usuario:
+        return maquina_by_usuario[usuario], "verificado_por_usuario"
     if single_machine is not None:
         return single_machine, "fallback_sem_device_info"
     return None, "sem_device_info_multiplas_maquinas"
@@ -82,7 +90,11 @@ def process_cliente(db, cliente: Cliente) -> None:
         db.query(Maquina)
         .filter(
             Maquina.cliente_id == cliente.id,
-            or_(Maquina.sumup_reader_id.isnot(None), Maquina.sumup_device_code.isnot(None)),
+            or_(
+                Maquina.sumup_reader_id.isnot(None),
+                Maquina.sumup_device_code.isnot(None),
+                Maquina.sumup_usuario.isnot(None),
+            ),
         )
         .all()
     )
@@ -91,6 +103,7 @@ def process_cliente(db, cliente: Cliente) -> None:
 
     maquina_by_reader_id = {m.sumup_reader_id: m for m in maquinas if m.sumup_reader_id}
     maquina_by_device_code = {m.sumup_device_code: m for m in maquinas if m.sumup_device_code}
+    maquina_by_usuario = {m.sumup_usuario.strip().lower(): m for m in maquinas if m.sumup_usuario}
     single_machine = maquinas[0] if len(maquinas) == 1 else None
 
     # Formato exato da doc oficial ("2019-08-28T09:00:00Z") - sem isso,
@@ -161,7 +174,13 @@ def process_cliente(db, cliente: Cliente) -> None:
             receipt = {}
         device_identifier = extract_card_reader_code(receipt)
         maquina, motivo = _resolve_maquina(
-            device_identifier, maquina_by_device_code, maquina_by_reader_id, single_machine, reader_device_map
+            device_identifier,
+            maquina_by_device_code,
+            maquina_by_reader_id,
+            single_machine,
+            reader_device_map,
+            usuario=transacao.get("user"),
+            maquina_by_usuario=maquina_by_usuario,
         )
         logging.info(
             "[SumUp poller] transacao %s resolvida: maquina=%s motivo=%s device=%s",

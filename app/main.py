@@ -216,6 +216,9 @@ def startup_event():
                 connection.execute(
                     text("ALTER TABLE maquinas_wifi_tentativas ADD COLUMN origem VARCHAR NOT NULL DEFAULT 'painel'")
                 )
+        for column_name in ["sumup_usuario", "sumup_usuario_senha_cript", "sumup_usuario_member_id"]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
         if "maquina_ficha" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN maquina_ficha BOOLEAN NOT NULL DEFAULT FALSE"))
         if "valor_ficha" not in maquina_columns:
