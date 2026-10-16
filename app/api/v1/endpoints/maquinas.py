@@ -237,6 +237,22 @@ def listar_alertas_maquinas(
     return {"resumo": resumo, "alertas": filtered}
 
 
+def _aplicar_ficha(db_maquina: Maquina, maquina_ficha: bool | None, valor_ficha: float | None) -> None:
+    """Maquina de ficha: precisa do valor da ficha (> 0). Desmarcar mantem o
+    valor guardado, mas a entrada fisica volta a valer R$ 1,00 por pulso."""
+    if maquina_ficha is None:
+        if valor_ficha is not None and db_maquina.maquina_ficha:
+            maquina_ficha = True
+        else:
+            return
+    if maquina_ficha:
+        valor = valor_ficha if valor_ficha is not None else db_maquina.valor_ficha
+        if valor is None or float(valor) <= 0:
+            raise HTTPException(status_code=422, detail="Informe o valor de cada ficha (maior que zero)")
+        db_maquina.valor_ficha = round(float(valor), 2)
+    db_maquina.maquina_ficha = bool(maquina_ficha)
+
+
 def _coordenadas_ou_422(texto: str) -> tuple[float, float]:
     from app.api.v1.endpoints.mapa import extrair_coordenadas
 
@@ -318,6 +334,7 @@ def criar_maquina(
             )
         db_maquina.sumup_reader_id = reader_id or None
         db_maquina.sumup_device_code = device_code or None
+    _aplicar_ficha(db_maquina, maquina.maquina_ficha, maquina.valor_ficha)
     if (maquina.localizacao_mapa or "").strip():
         db_maquina.latitude, db_maquina.longitude = _coordenadas_ou_422(maquina.localizacao_mapa)
         db_maquina.localizacao_origem = "manual"
@@ -363,6 +380,7 @@ def atualizar_maquina(
     banco_anterior = db_maquina.banco_pagamento
     db_maquina.nome_local = maquina.nome
     db_maquina.localizacao = maquina.localizacao
+    _aplicar_ficha(db_maquina, maquina.maquina_ficha, maquina.valor_ficha)
     if maquina.localizacao_mapa is not None:
         anterior = (db_maquina.latitude, db_maquina.longitude)
         if maquina.localizacao_mapa.strip():

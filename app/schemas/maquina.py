@@ -20,6 +20,9 @@ class MaquinaCreate(BaseModel):
     sumup_device_code: Optional[str] = None
     # Opcional: link do Google Maps ou "lat, lng" para aparecer no Mapa.
     localizacao_mapa: Optional[str] = None
+    # Maquina de ficha: cada entrada fisica vale valor_ficha (obrigatorio se marcada).
+    maquina_ficha: Optional[bool] = None
+    valor_ficha: Optional[float] = None
 
 
 class MaquinaUpdate(BaseModel):
@@ -31,6 +34,9 @@ class MaquinaUpdate(BaseModel):
     sumup_device_code: Optional[str] = None
     # None = nao mexe; "" = tira do mapa; texto = link do Google Maps ou "lat, lng".
     localizacao_mapa: Optional[str] = None
+    # None = nao mexe.
+    maquina_ficha: Optional[bool] = None
+    valor_ficha: Optional[float] = None
 
 
 class MaquinaOut(BaseModel):
@@ -64,6 +70,10 @@ class MaquinaOut(BaseModel):
     longitude: Optional[float] = None
     localizacao_origem: Optional[str] = None
     localizacao_atualizada_em: Optional[datetime] = None
+    maquina_ficha: bool = False
+    valor_ficha: Optional[float] = None
+    faturamento_fisico: float = 0.0
+    fisico_quantidade: int = 0
     wifi_ssid: Optional[str] = None
     ultimo_pagamento_em: Optional[datetime] = None
     ultimo_teste_em: Optional[datetime] = None

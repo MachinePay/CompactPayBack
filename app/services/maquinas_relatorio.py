@@ -161,7 +161,7 @@ def real_revenue_totals(db: Session, machine_ids: list[str], start_dt: datetime,
 
 def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
     if not machine_ids:
-        return {"total": 0.0, "digital": 0.0, "fisico": 0.0, "count": 0, "devolvido": 0.0}
+        return {"total": 0.0, "digital": 0.0, "fisico": 0.0, "fisico_quantidade": 0, "count": 0, "devolvido": 0.0}
 
     vendas_base_query = db.query(VendaPagamento).filter(
         VendaPagamento.maquina_id.in_(machine_ids),
@@ -174,12 +174,10 @@ def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: dateti
     # continuar contando como se o dinheiro ainda estivesse com a gente.
     vendas_query = vendas_base_query.filter(VendaPagamento.refunded_at.is_(None))
     vendas_total = float(vendas_query.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0)
-    vendas_fisicas = float(
-        vendas_query.filter(or_(VendaPagamento.origem == "fisico", VendaPagamento.provider == "fisico"))
-        .with_entities(func.sum(VendaPagamento.valor_liquido))
-        .scalar()
-        or 0.0
-    )
+    vendas_fisicas_query = vendas_query.filter(or_(VendaPagamento.origem == "fisico", VendaPagamento.provider == "fisico"))
+    vendas_fisicas = float(vendas_fisicas_query.with_entities(func.sum(VendaPagamento.valor_liquido)).scalar() or 0.0)
+    # Quantidade de entradas fisicas (em maquina de ficha = fichas que entraram).
+    vendas_fisicas_quantidade = vendas_fisicas_query.with_entities(func.count(VendaPagamento.id)).scalar() or 0
     vendas_digitais = max(0.0, vendas_total - vendas_fisicas)
     vendas_count = (
         vendas_query.filter(VendaPagamento.conta_ticket_medio.is_(True))
@@ -230,6 +228,7 @@ def real_revenue_breakdown(db: Session, machine_ids: list[str], start_dt: dateti
         "total": total_digital + total_fisico,
         "digital": total_digital,
         "fisico": total_fisico,
+        "fisico_quantidade": int(vendas_fisicas_quantidade or 0) + int(fisico_legado_count or 0),
         "count": int(vendas_count or 0) + int(digital_legado_count or 0) + int(fisico_legado_count or 0),
         "devolvido": vendas_devolvidas + digital_legado_devolvido,
     }
@@ -242,7 +241,7 @@ def real_revenue_breakdown_fechamento_aware(
     efetivo" (max(start_dt, fim do ultimo fechamento dela)) - pagamento que ja
     entrou num fechamento nao pode ser contado de novo no total corrente."""
     if not machine_ids:
-        return {"total": 0.0, "digital": 0.0, "fisico": 0.0, "count": 0, "devolvido": 0.0}
+        return {"total": 0.0, "digital": 0.0, "fisico": 0.0, "fisico_quantidade": 0, "count": 0, "devolvido": 0.0}
 
     ultimos_fechamentos = _ultimo_fechamento_fim_por_maquina(db, machine_ids)
     grupos: dict[datetime, list[str]] = {}
@@ -252,15 +251,23 @@ def real_revenue_breakdown_fechamento_aware(
         grupos.setdefault(effective_start, []).append(machine_id)
 
     total = digital = fisico = devolvido = 0.0
-    count = 0
+    count = fisico_quantidade = 0
     for effective_start, ids_do_grupo in grupos.items():
         breakdown = real_revenue_breakdown(db, ids_do_grupo, effective_start, end_dt)
         total += breakdown["total"]
         digital += breakdown["digital"]
         fisico += breakdown["fisico"]
+        fisico_quantidade += breakdown.get("fisico_quantidade", 0)
         devolvido += breakdown["devolvido"]
         count += breakdown["count"]
-    return {"total": total, "digital": digital, "fisico": fisico, "count": count, "devolvido": devolvido}
+    return {
+        "total": total,
+        "digital": digital,
+        "fisico": fisico,
+        "fisico_quantidade": fisico_quantidade,
+        "count": count,
+        "devolvido": devolvido,
+    }
 
 
 def compute_financial_summary(db: Session, machine_ids: list[str], start_dt: datetime, end_dt: datetime) -> dict:
@@ -268,6 +275,7 @@ def compute_financial_summary(db: Session, machine_ids: list[str], start_dt: dat
     zero_summary = {
         "faturamento_total": 0.0,
         "faturamento_fisico": 0.0,
+        "fisico_quantidade": 0,
         "faturamento_digital": 0.0,
         "ticket_medio": 0.0,
         "vendas_count": 0,
@@ -333,6 +341,7 @@ def compute_financial_summary(db: Session, machine_ids: list[str], start_dt: dat
     return {
         "faturamento_total": float(breakdown["total"]),
         "faturamento_fisico": float(breakdown["fisico"]),
+        "fisico_quantidade": int(breakdown.get("fisico_quantidade", 0)),
         "faturamento_digital": float(breakdown["digital"]),
         "ticket_medio": float(breakdown["total"]) / vendas_count if vendas_count else 0.0,
         "vendas_count": vendas_count,
@@ -348,6 +357,7 @@ def _zero_financial_summary() -> dict:
     return {
         "faturamento_total": 0.0,
         "faturamento_fisico": 0.0,
+        "fisico_quantidade": 0,
         "faturamento_digital": 0.0,
         "ticket_medio": 0.0,
         "vendas_count": 0,
@@ -372,6 +382,7 @@ def compute_financial_summary_by_machine(
         machine_id: {
             "digital": 0.0,
             "fisico": 0.0,
+            "fisico_quantidade": 0,
             "count": 0,
             "testes_count": 0,
             "testes_valor": 0.0,
@@ -419,6 +430,7 @@ def compute_financial_summary_by_machine(
         valor = float(valor_liquido or 0.0)
         if origem == "fisico" or provider == "fisico":
             bucket["fisico"] += valor
+            bucket["fisico_quantidade"] += 1
         else:
             bucket["digital"] += valor
         if conta_ticket_medio:
@@ -459,6 +471,7 @@ def compute_financial_summary_by_machine(
         if bucket is None or data_hora < _effective_start(maquina_id):
             continue
         bucket["fisico"] += float(valor or 0.0)
+        bucket["fisico_quantidade"] += 1
         bucket["count"] += 1
 
     testes_rows = (
@@ -516,6 +529,7 @@ def compute_financial_summary_by_machine(
         summary = _zero_financial_summary()
         summary["faturamento_total"] = total
         summary["faturamento_fisico"] = bucket["fisico"]
+        summary["fisico_quantidade"] = bucket["fisico_quantidade"]
         summary["faturamento_digital"] = digital
         summary["vendas_count"] = bucket["count"]
         summary["ticket_medio"] = total / bucket["count"] if bucket["count"] else 0.0
@@ -536,6 +550,7 @@ def sum_financial_summaries(summaries: list[dict]) -> dict:
     for summary in summaries:
         combined["faturamento_total"] += summary["faturamento_total"]
         combined["faturamento_fisico"] += summary["faturamento_fisico"]
+        combined["fisico_quantidade"] = combined.get("fisico_quantidade", 0) + summary.get("fisico_quantidade", 0)
         combined["faturamento_digital"] += summary["faturamento_digital"]
         combined["vendas_count"] += summary["vendas_count"]
         combined["testes_count"] += summary["testes_count"]
@@ -879,6 +894,8 @@ def serialize_health_machine(maquina: Maquina, now: datetime, ultimo_pagamento: 
         "ip_local": maquina.ip_local,
         "latitude": maquina.latitude,
         "longitude": maquina.longitude,
+        "maquina_ficha": bool(maquina.maquina_ficha),
+        "valor_ficha": maquina.valor_ficha,
         "localizacao_origem": maquina.localizacao_origem,
         "localizacao_atualizada_em": maquina.localizacao_atualizada_em,
         "wifi_ssid": maquina.wifi_ssid,
@@ -1534,7 +1551,8 @@ def serialize_machine_summary(
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
     ultimo_fechamento_fim = _ultimo_fechamento_fim_por_maquina(db, [maquina.id_hardware]).get(maquina.id_hardware)
     effective_start_dt = max(start_dt, ultimo_fechamento_fim) if ultimo_fechamento_fim else start_dt
-    faturamento, _ = real_revenue_totals(db, [maquina.id_hardware], effective_start_dt, end_dt)
+    breakdown = real_revenue_breakdown(db, [maquina.id_hardware], effective_start_dt, end_dt)
+    faturamento = float(breakdown["total"])
     ultimo_pagamento_em = (
         db.query(func.max(Transacao.data_hora))
         .filter(
@@ -1619,6 +1637,8 @@ def serialize_machine_summary(
         "ip_local": maquina.ip_local,
         "latitude": maquina.latitude,
         "longitude": maquina.longitude,
+        "maquina_ficha": bool(maquina.maquina_ficha),
+        "valor_ficha": maquina.valor_ficha,
         "localizacao_origem": maquina.localizacao_origem,
         "localizacao_atualizada_em": maquina.localizacao_atualizada_em,
         "wifi_ssid": maquina.wifi_ssid,
@@ -1629,6 +1649,8 @@ def serialize_machine_summary(
         "status_online": status_online,
         "status_operacional": status_operacional(status_online, ultima_atividade_em),
         "faturamento": float(faturamento),
+        "faturamento_fisico": float(breakdown["fisico"]),
+        "fisico_quantidade": int(breakdown["fisico_quantidade"]),
         "quantidade_saidas": int(quantidade_saidas),
         "ignorar_saida_pos_credito": bool(maquina.ignorar_saida_pos_credito),
         "wifi_hard_reset_ms": maquina.wifi_hard_reset_ms,
@@ -1710,7 +1732,8 @@ def serialize_machines_summary_batch(
             maquina.firmware_update_finished_at = agora
             houve_commit_pendente = True
 
-        faturamento = faturamento_por_maquina.get(maquina.id_hardware, {}).get("faturamento_total", 0.0)
+        resumo_financeiro = faturamento_por_maquina.get(maquina.id_hardware, {})
+        faturamento = resumo_financeiro.get("faturamento_total", 0.0)
 
         resultado.append(
             {
@@ -1740,6 +1763,8 @@ def serialize_machines_summary_batch(
                 "ip_local": maquina.ip_local,
                 "latitude": maquina.latitude,
                 "longitude": maquina.longitude,
+                "maquina_ficha": bool(maquina.maquina_ficha),
+                "valor_ficha": maquina.valor_ficha,
                 "localizacao_origem": maquina.localizacao_origem,
                 "localizacao_atualizada_em": maquina.localizacao_atualizada_em,
                 "wifi_ssid": maquina.wifi_ssid,
@@ -1750,6 +1775,8 @@ def serialize_machines_summary_batch(
                 "status_online": status_online,
                 "status_operacional": status_operacional(status_online, ultima_atividade_em),
                 "faturamento": float(faturamento),
+                "faturamento_fisico": float(resumo_financeiro.get("faturamento_fisico", 0.0)),
+                "fisico_quantidade": int(resumo_financeiro.get("fisico_quantidade", 0)),
                 "quantidade_saidas": int(quantidade_saidas),
                 "ignorar_saida_pos_credito": bool(maquina.ignorar_saida_pos_credito),
                 "wifi_hard_reset_ms": maquina.wifi_hard_reset_ms,

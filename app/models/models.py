@@ -138,6 +138,10 @@ class Maquina(Base):
     # pelo botao "Procurar redes"): JSON [{ssid, rssi, seguranca}].
     wifi_redes_json = Column(Text, nullable=True)
     wifi_redes_em = Column(DateTime, nullable=True)
+    # Maquina de ficha: cada pulso da entrada fisica (IN) e' uma ficha, gravada
+    # com o valor da ficha (valor_ficha) em vez de R$ 1,00.
+    maquina_ficha = Column(Boolean, default=False, nullable=False)
+    valor_ficha = Column(Float, nullable=True)
     # Posicao no mapa (opcional). Sem ela o mapa usa o endereco do cliente.
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)

@@ -409,22 +409,25 @@ def on_message(client, userdata, msg):
             return
         # Processamento de pulso
         if payload == "MOEDA DETECTADA (IN)":
+            # Maquina de ficha: cada pulso e' uma ficha e vale valor_ficha.
+            eh_ficha = bool(maquina.maquina_ficha and maquina.valor_ficha)
+            valor_entrada = float(maquina.valor_ficha) if eh_ficha else 1.00
             nova_transacao = Transacao(
                 maquina_id=id_extraido,
                 tipo=EventoTipo.in_flux,
                 metodo=MetodoPagamento.fisico,
-                valor=1.00
+                valor=valor_entrada
             )
             db.add(nova_transacao)
             db.flush()
             registrar_venda_pagamento(
                 db,
                 maquina_id=id_extraido,
-                valor=1.00,
+                valor=valor_entrada,
                 origem="fisico",
                 transacao_id=nova_transacao.id,
                 provider="fisico",
-                tipo_pagamento="moeda_nota",
+                tipo_pagamento="ficha" if eh_ficha else "moeda_nota",
                 status_pulso="fisico",
                 created_at=nova_transacao.data_hora,
             )

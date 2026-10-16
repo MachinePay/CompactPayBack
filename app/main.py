@@ -216,6 +216,10 @@ def startup_event():
                 connection.execute(
                     text("ALTER TABLE maquinas_wifi_tentativas ADD COLUMN origem VARCHAR NOT NULL DEFAULT 'painel'")
                 )
+        if "maquina_ficha" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN maquina_ficha BOOLEAN NOT NULL DEFAULT FALSE"))
+        if "valor_ficha" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN valor_ficha FLOAT"))
         for column_name in ["latitude", "longitude", "localizacao_precisao_m"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} FLOAT"))
