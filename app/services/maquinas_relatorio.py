@@ -1895,6 +1895,8 @@ def build_machine_history_payload(
     total_fisico = resumo_faturamento["fisico"]
     total_devolvido = resumo_faturamento["devolvido"]
     quantidade_pagamentos_reais = resumo_faturamento["count"]
+    # So maquina de ficha: fichas que entraram (cada entrada fisica = 1 ficha).
+    quantidade_fichas = int(resumo_faturamento["fisico_quantidade"]) if maquina.maquina_ficha else None
     ultimo_pagamento = pagamentos[0] if pagamentos else None
     ultimo_teste = testes[0] if testes else None
     ultima_saida = saidas[0] if saidas else None
@@ -2077,6 +2079,8 @@ def build_machine_history_payload(
                     "refunded_at": None,
                     "can_refund": False,
                     "pulse_count": pulse_count,
+                    # Maquina de ficha: cada entrada fisica e' uma ficha.
+                    "fichas": pulse_count if maquina.maquina_ficha else None,
                     "descricao": (
                         f"Pagamento fisico registrado pela maquina ({pulse_count} pulsos)"
                         if pulse_count > 1
@@ -2268,6 +2272,7 @@ def build_machine_history_payload(
             "ultimo_teste_em": ultimo_teste.created_at if ultimo_teste else None,
             "ultima_saida_em": ultima_saida.data_hora if ultima_saida else None,
             "ultimo_fechamento_em": ultimo_fechamento_fim,
+            "quantidade_fichas": quantidade_fichas,
         },
         "totais_por_dia": [
             {"dia": dia, "total": round(total, 2)}
@@ -2388,6 +2393,7 @@ def build_all_machines_history_payload(
     proposito, e o frontend esconde os cards correspondentes nesse modo."""
     machine_ids = [m.id_hardware for m in maquinas]
     nomes = {m.id_hardware: (m.nome_local or m.id_hardware) for m in maquinas}
+    ids_ficha = {m.id_hardware for m in maquinas if m.maquina_ficha}
     registro_filter = _normalize_filter(registro)
     origem_filter = _normalize_filter(origem)
     forma_filter = _normalize_filter(forma)
@@ -2503,6 +2509,7 @@ def build_all_machines_history_payload(
     total_fisico = 0.0
     total_devolvido = 0.0
     quantidade_pagamentos_reais = 0
+    quantidade_fichas = 0 if ids_ficha else None
     for effective_start, ids_do_grupo in grupos_por_effective_start.items():
         resumo_faturamento = real_revenue_breakdown(db, ids_do_grupo, effective_start, end_dt)
         total_pagamentos += resumo_faturamento["total"]
@@ -2510,6 +2517,11 @@ def build_all_machines_history_payload(
         total_fisico += resumo_faturamento["fisico"]
         total_devolvido += resumo_faturamento["devolvido"]
         quantidade_pagamentos_reais += resumo_faturamento["count"]
+        ids_ficha_do_grupo = [machine_id for machine_id in ids_do_grupo if machine_id in ids_ficha]
+        if ids_ficha_do_grupo:
+            quantidade_fichas += int(
+                real_revenue_breakdown(db, ids_ficha_do_grupo, effective_start, end_dt)["fisico_quantidade"]
+            )
 
     ultimo_pagamento = pagamentos[0] if pagamentos else None
     ultimo_teste = testes[0] if testes else None
@@ -2630,6 +2642,7 @@ def build_all_machines_history_payload(
                     "refunded_at": None,
                     "can_refund": False,
                     "pulse_count": pulse_count,
+                    "fichas": pulse_count if group["maquina_id"] in ids_ficha else None,
                     "descricao": (
                         f"Pagamento fisico registrado pela maquina ({pulse_count} pulsos)"
                         if pulse_count > 1
@@ -2738,6 +2751,7 @@ def build_all_machines_history_payload(
             "ultimo_pagamento_em": ultimo_pagamento.data_hora if ultimo_pagamento else None,
             "ultimo_teste_em": ultimo_teste.created_at if ultimo_teste else None,
             "ultima_saida_em": ultima_saida.data_hora if ultima_saida else None,
+            "quantidade_fichas": quantidade_fichas,
         },
         "totais_por_dia": [
             {"dia": dia, "total": round(total, 2)}

@@ -62,6 +62,12 @@ def test_maquina_de_ficha_grava_valor_da_ficha_e_conta_fichas():
             on_message(None, None, FakeMsg("/TEF/FICHA-1/attrs", "MOEDA DETECTADA (IN)"))
 
         item = next(m for m in client.get("/api/v1/maquinas?periodo=dia", headers=admin).json() if m["id_hardware"] == "FICHA-1")
+        historico = client.get("/api/v1/maquinas/FICHA-1/historico?periodo=dia", headers=admin).json()
+
+    # Tela de pagamentos: card de fichas e "N fichas" na linha da entrada fisica.
+    assert historico["resumo"]["quantidade_fichas"] == 3
+    fisicas = [v for v in historico["vendas"] if v["kind"] == "pagamento_fisico"]
+    assert sum(v["fichas"] for v in fisicas) == 3
 
     assert item["fisico_quantidade"] == 3  # 3 fichas
     assert item["faturamento_fisico"] == 7.5  # valor real: 3 x R$ 2,50
@@ -87,3 +93,22 @@ def test_maquina_comum_continua_um_real_por_pulso():
         assert venda.valor_bruto == 1.0 and venda.tipo_pagamento == "moeda_nota"
     finally:
         db.close()
+
+
+def test_maquina_comum_nao_mostra_fichas():
+    with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            if not db.query(Usuario).filter(Usuario.email == "admin-ficha@test.local").first():
+                db.close()
+                admin = _admin(client)
+            else:
+                token = client.post(
+                    "/api/v1/login", data={"username": "admin-ficha@test.local", "password": "123456"}
+                ).json()["access_token"]
+                admin = {"Authorization": f"Bearer {token}"}
+        finally:
+            db.close()
+        historico = client.get("/api/v1/maquinas/MOEDA-1/historico?periodo=dia", headers=admin).json()
+    assert historico["resumo"]["quantidade_fichas"] is None
+    assert all(v.get("fichas") is None for v in historico["vendas"] if v["kind"] == "pagamento_fisico")
