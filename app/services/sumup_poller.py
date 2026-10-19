@@ -31,7 +31,6 @@ def _resolve_maquina(
     device_identifier: str | None,
     maquina_by_device_code: dict[str, Maquina],
     maquina_by_reader_id: dict[str, Maquina],
-    single_machine: Maquina | None,
     reader_device_map: dict[str, str],
     usuario: str | None = None,
     maquina_by_usuario: dict[str, Maquina] | None = None,
@@ -46,9 +45,10 @@ def _resolve_maquina(
     3. device_identifier veio mas NAO bate com nada conhecido -> e' sinal de
        reader fora do CompactPay na mesma conta - ignora (ver process_cliente).
     4. Sem device_info (Pix): credita a maquina cujo sumup_usuario bate com o
-       "user" da transacao - inclusive quando o cliente tem uma maquina so.
-    5. Sem device_info, cliente com UMA maquina e SEM usuario cadastrado ->
-       credita por falta de alternativa, logado como fallback (nao verificado).
+       "user" da transacao. Se nao bate com nenhuma, NAO credita - nem quando o
+       cliente tem uma maquina so: um Pix qualquer recebido na conta SumUp
+       (sem passar pela maquininha) liberaria pulso sem ter nada a ver com ela.
+       Fica pendente para resolucao manual.
     """
     if device_identifier:
         maquina_direta = maquina_by_device_code.get(device_identifier)
@@ -64,14 +64,7 @@ def _resolve_maquina(
     usuario = (usuario or "").strip().lower()
     if usuario and maquina_by_usuario and usuario in maquina_by_usuario:
         return maquina_by_usuario[usuario], "verificado_por_usuario"
-    # Mesmo com uma maquina so na conta, se ela tem usuario cadastrado o Pix
-    # tem que bater pelo usuario - um "user" diferente e' venda de outro
-    # aparelho/pessoa na mesma conta SumUp, nao desta maquininha.
-    if single_machine is not None and single_machine.sumup_usuario:
-        return None, "usuario_nao_confere"
-    if single_machine is not None:
-        return single_machine, "fallback_sem_device_info"
-    return None, "sem_device_info_multiplas_maquinas"
+    return None, "usuario_nao_confere"
 
 
 def _ja_processada(db, transaction_id: str) -> bool:
@@ -110,7 +103,6 @@ def process_cliente(db, cliente: Cliente) -> None:
     maquina_by_reader_id = {m.sumup_reader_id: m for m in maquinas if m.sumup_reader_id}
     maquina_by_device_code = {m.sumup_device_code: m for m in maquinas if m.sumup_device_code}
     maquina_by_usuario = {m.sumup_usuario.strip().lower(): m for m in maquinas if m.sumup_usuario}
-    single_machine = maquinas[0] if len(maquinas) == 1 else None
 
     # Formato exato da doc oficial ("2019-08-28T09:00:00Z") - sem isso,
     # .isoformat() manda microssegundos e sem "Z" (ex.: "...23:08:39.967797"),
@@ -183,7 +175,6 @@ def process_cliente(db, cliente: Cliente) -> None:
             device_identifier,
             maquina_by_device_code,
             maquina_by_reader_id,
-            single_machine,
             reader_device_map,
             usuario=transacao.get("user"),
             maquina_by_usuario=maquina_by_usuario,

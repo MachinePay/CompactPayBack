@@ -27,15 +27,15 @@ def test_pix_sem_codigo_do_reader_vai_para_a_maquina_do_usuario():
     m16 = Maquina(id_hardware="S-1016", nome_local="1016", sumup_usuario="maquina1016@loja.com")
     por_usuario = {"maquina1014@loja.com": m14, "maquina1016@loja.com": m16}
 
-    maquina, motivo = _resolve_maquina(None, {}, {}, None, {}, usuario="Maquina1016@Loja.com", maquina_by_usuario=por_usuario)
+    maquina, motivo = _resolve_maquina(None, {}, {}, {}, usuario="Maquina1016@Loja.com", maquina_by_usuario=por_usuario)
     assert maquina is m16 and motivo == "verificado_por_usuario"
 
     # Usuario desconhecido (ex.: dono da conta logado nas duas): continua pendente.
-    maquina, motivo = _resolve_maquina(None, {}, {}, None, {}, usuario="dono@loja.com", maquina_by_usuario=por_usuario)
-    assert maquina is None and motivo == "sem_device_info_multiplas_maquinas"
+    maquina, motivo = _resolve_maquina(None, {}, {}, {}, usuario="dono@loja.com", maquina_by_usuario=por_usuario)
+    assert maquina is None and motivo == "usuario_nao_confere"
 
     # Codigo do reader (cartao) continua tendo prioridade.
-    maquina, motivo = _resolve_maquina("123", {"123": m14}, {}, None, {}, usuario="maquina1016@loja.com", maquina_by_usuario=por_usuario)
+    maquina, motivo = _resolve_maquina("123", {"123": m14}, {}, {}, usuario="maquina1016@loja.com", maquina_by_usuario=por_usuario)
     assert maquina is m14 and motivo == "verificado_por_device_code"
 
 
@@ -71,14 +71,16 @@ def test_maquina_unica_com_usuario_so_credita_pix_do_usuario_dela():
     m14 = Maquina(id_hardware="S-1014", nome_local="1014", sumup_usuario="maquina1014@loja.com")
     por_usuario = {"maquina1014@loja.com": m14}
 
-    maquina, motivo = _resolve_maquina(None, {}, {}, m14, {}, usuario="maquina1014@loja.com", maquina_by_usuario=por_usuario)
+    maquina, motivo = _resolve_maquina(None, {}, {}, {}, usuario="maquina1014@loja.com", maquina_by_usuario=por_usuario)
     assert maquina is m14 and motivo == "verificado_por_usuario"
 
     # Outro usuario na mesma conta SumUp: nao credita so porque a maquina e' unica.
-    maquina, motivo = _resolve_maquina(None, {}, {}, m14, {}, usuario="dono@loja.com", maquina_by_usuario=por_usuario)
+    maquina, motivo = _resolve_maquina(None, {}, {}, {}, usuario="dono@loja.com", maquina_by_usuario=por_usuario)
     assert maquina is None and motivo == "usuario_nao_confere"
 
-    # Maquina unica sem usuario cadastrado continua no fallback antigo.
-    m16 = Maquina(id_hardware="S-1016", nome_local="1016")
-    maquina, motivo = _resolve_maquina(None, {}, {}, m16, {}, usuario="dono@loja.com", maquina_by_usuario={})
-    assert maquina is m16 and motivo == "fallback_sem_device_info"
+    # Maquina unica sem usuario cadastrado: Pix (ou qualquer venda sem codigo do
+    # reader) nunca e' creditado so porque ela e' a unica da conta.
+    maquina, motivo = _resolve_maquina(None, {}, {}, {}, usuario="dono@loja.com", maquina_by_usuario={})
+    assert maquina is None and motivo == "usuario_nao_confere"
+    maquina, motivo = _resolve_maquina(None, {}, {}, {}, usuario=None, maquina_by_usuario={})
+    assert maquina is None and motivo == "usuario_nao_confere"
