@@ -1,3 +1,4 @@
+import logging
 import time
 from datetime import datetime
 
@@ -23,7 +24,11 @@ FINAL_PULSE_STATUSES = {
 }
 
 
-def update_pulse_status(command_id: str | None, status: str) -> None:
+def update_pulse_status(command_id: str | None, status: str, estornar: bool = True) -> None:
+    """Grava o status do pulso no historico e na venda. O estorno automatico
+    roda DEPOIS do commit do status: antes, um erro no estorno (ex.: SumUp
+    recusou estornar um Pix) desfazia tudo e o pagamento ficava "pendente"
+    para sempre - caso real 1016 (16/10/2026), 1011 e 1014."""
     if not command_id:
         return
     update_command_from_pulse_status(command_id, status)
@@ -45,18 +50,37 @@ def update_pulse_status(command_id: str | None, status: str) -> None:
         # um rotulo de progresso que nunca mais avancava. Mesma logica de
         # protecao que _update_command_status ja tem pro ComandoMaquina.
         is_final = status in FINAL_PULSE_STATUSES
+        para_estornar = []
         for item in historicos:
             if item.pulse_status in FINAL_PULSE_STATUSES and not is_final:
                 continue
             item.pulse_status = status
             if status in NON_RELEASED_PULSE_STATUSES:
-                maquina = db.query(Maquina).filter(Maquina.id_hardware == item.maquina_id).first()
-                auto_refund_failed_pulse(db, item, maquina=maquina)
+                para_estornar.append(item.id)
         for item in vendas:
             if item.status_pulso in FINAL_PULSE_STATUSES and not is_final:
                 continue
             item.status_pulso = status
         db.commit()
+
+        if not estornar:
+            return
+        for historico_id in para_estornar:
+            item = db.query(HistoricoOperacao).filter(HistoricoOperacao.id == historico_id).first()
+            maquina = db.query(Maquina).filter(Maquina.id_hardware == item.maquina_id).first()
+            try:
+                auto_refund_failed_pulse(db, item, maquina=maquina)
+            except Exception as exc:
+                db.rollback()
+                motivo = str(getattr(exc, "detail", None) or exc)[:300]
+                item = db.query(HistoricoOperacao).filter(HistoricoOperacao.id == historico_id).first()
+                if item and "Estorno automatico nao feito" not in (item.descricao or ""):
+                    item.descricao = f"{item.descricao or ''} | Estorno automatico nao feito: {motivo}"
+                    db.commit()
+                logging.warning(
+                    "Estorno automatico falhou command_id=%s historico=%s: %s",
+                    command_id, historico_id, getattr(exc, "detail", exc),
+                )
     finally:
         db.close()
 

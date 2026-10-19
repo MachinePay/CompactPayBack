@@ -519,7 +519,50 @@ def process_due_command_retries() -> int:
                 update_pulse_status(command_id, "falha_sem_confirmacao")
     finally:
         db.close()
+    corrigir_pagamentos_presos_em_comando_falho()
     return processed
+
+
+# Status "em andamento" do pagamento (mesmo conjunto do alerta "Pagamento sem
+# credito confirmado").
+_PULSO_EM_ANDAMENTO = ("pendente", "comando_enviado", "cmd_recebido", "cmd_duplicado", "pulso_iniciado")
+CORRECAO_PRESOS_JANELA = timedelta(days=30)
+
+
+def corrigir_pagamentos_presos_em_comando_falho() -> int:
+    """Pagamento ainda "em andamento" cujo comando de credito ja terminou em
+    falha (ex.: o estorno automatico deu erro e desfez a marcacao - ver
+    pulse_tracking.update_pulse_status). Grava a falha certa SEM tentar
+    estornar de novo (estorno de pagamento antigo fica para decisao manual)."""
+    from app.models.models import VendaPagamento
+    from app.services.pulse_tracking import update_pulse_status
+
+    db = SessionLocal()
+    try:
+        presos = (
+            db.query(ComandoMaquina.command_id, ComandoMaquina.detalhe_status, ComandoMaquina.ack_at)
+            .join(VendaPagamento, VendaPagamento.command_id == ComandoMaquina.command_id)
+            .filter(
+                ComandoMaquina.tipo == CREDIT_COMMAND_TIPO,
+                ComandoMaquina.status == "falhou",
+                VendaPagamento.status_pulso.in_(_PULSO_EM_ANDAMENTO),
+                VendaPagamento.created_at >= _now() - CORRECAO_PRESOS_JANELA,
+            )
+            .distinct()
+            .all()
+        )
+    finally:
+        db.close()
+    for command_id, detalhe, ack_at in presos:
+        if detalhe == QUEUE_EXPIRED_PULSE_STATUS:
+            status = QUEUE_EXPIRED_PULSE_STATUS
+        elif detalhe == "retry_esgotado" and not ack_at:
+            status = "falha_dispositivo_offline"
+        else:
+            status = "falha_sem_confirmacao"
+        logging.warning("Pagamento preso corrigido command_id=%s -> %s", command_id, status)
+        update_pulse_status(command_id, status, estornar=False)
+    return len(presos)
 
 
 def run_command_queue_worker() -> None:

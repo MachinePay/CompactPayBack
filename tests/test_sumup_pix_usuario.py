@@ -65,3 +65,20 @@ def test_mesmo_usuario_sumup_nao_pode_ficar_em_duas_maquinas_do_cliente():
         )
         assert ok.status_code == 200, ok.text
         assert ok.json()["sumup_usuario"] == "op2@loja.com"
+
+
+def test_maquina_unica_com_usuario_so_credita_pix_do_usuario_dela():
+    m14 = Maquina(id_hardware="S-1014", nome_local="1014", sumup_usuario="maquina1014@loja.com")
+    por_usuario = {"maquina1014@loja.com": m14}
+
+    maquina, motivo = _resolve_maquina(None, {}, {}, m14, {}, usuario="maquina1014@loja.com", maquina_by_usuario=por_usuario)
+    assert maquina is m14 and motivo == "verificado_por_usuario"
+
+    # Outro usuario na mesma conta SumUp: nao credita so porque a maquina e' unica.
+    maquina, motivo = _resolve_maquina(None, {}, {}, m14, {}, usuario="dono@loja.com", maquina_by_usuario=por_usuario)
+    assert maquina is None and motivo == "usuario_nao_confere"
+
+    # Maquina unica sem usuario cadastrado continua no fallback antigo.
+    m16 = Maquina(id_hardware="S-1016", nome_local="1016")
+    maquina, motivo = _resolve_maquina(None, {}, {}, m16, {}, usuario="dono@loja.com", maquina_by_usuario={})
+    assert maquina is m16 and motivo == "fallback_sem_device_info"

@@ -243,10 +243,26 @@ def create_managed_member(access_token: str, merchant_code: str, email: str, pas
     )
 
 
-def create_sumup_refund(access_token: str, transaction_id: str) -> None:
+PIX_SEM_ESTORNO_API = (
+    "A SumUp nao permite devolver Pix pelo sistema. Devolva pelo app ou painel da SumUp "
+    "(Vendas > abra a venda > Reembolsar)."
+)
+
+
+def sumup_permite_estorno(access_token: str, merchant_code: str, transaction_id: str) -> bool:
+    """A SumUp so oferece estorno pela API quando a transacao traz o link
+    "refund" - cartao traz, Pix (payment_type APM) nao traz. Confirmado em
+    producao em 16/10/2026 (Pix da 1016)."""
+    detalhes = get_transaction_details(access_token, merchant_code, transaction_id)
+    return any((link or {}).get("rel") == "refund" for link in (detalhes.get("links") or []))
+
+
+def create_sumup_refund(access_token: str, transaction_id: str, merchant_code: str | None = None) -> None:
     # Endpoint de refund da SumUp usa o transaction_id (nao o checkout_id) -
     # ver get_reader_checkout, que devolve esse campo assim que o pagamento
     # e' concluido com sucesso.
+    if merchant_code and not sumup_permite_estorno(access_token, merchant_code, transaction_id):
+        raise HTTPException(status_code=422, detail=PIX_SEM_ESTORNO_API)
     su_request("POST", f"{API}/v0.1/me/refund/{transaction_id}", access_token, body={})
 
 

@@ -45,9 +45,10 @@ def _resolve_maquina(
        a uma maquina conhecida (sumup_reader_id) -> credita essa maquina.
     3. device_identifier veio mas NAO bate com nada conhecido -> e' sinal de
        reader fora do CompactPay na mesma conta - ignora (ver process_cliente).
-    4. A SumUp nao devolveu device_info nessa transacao (raro, mas acontece)
-       e o cliente so tem UMA maquina -> credita por falta de alternativa,
-       mas loga como fallback (nao verificado) pra ficar rastreavel.
+    4. Sem device_info (Pix): credita a maquina cujo sumup_usuario bate com o
+       "user" da transacao - inclusive quando o cliente tem uma maquina so.
+    5. Sem device_info, cliente com UMA maquina e SEM usuario cadastrado ->
+       credita por falta de alternativa, logado como fallback (nao verificado).
     """
     if device_identifier:
         maquina_direta = maquina_by_device_code.get(device_identifier)
@@ -63,6 +64,11 @@ def _resolve_maquina(
     usuario = (usuario or "").strip().lower()
     if usuario and maquina_by_usuario and usuario in maquina_by_usuario:
         return maquina_by_usuario[usuario], "verificado_por_usuario"
+    # Mesmo com uma maquina so na conta, se ela tem usuario cadastrado o Pix
+    # tem que bater pelo usuario - um "user" diferente e' venda de outro
+    # aparelho/pessoa na mesma conta SumUp, nao desta maquininha.
+    if single_machine is not None and single_machine.sumup_usuario:
+        return None, "usuario_nao_confere"
     if single_machine is not None:
         return single_machine, "fallback_sem_device_info"
     return None, "sem_device_info_multiplas_maquinas"

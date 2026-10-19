@@ -910,7 +910,8 @@ def estornar_pagamento_maquina(
         token = (maquina.dono.sumup_api_key if getattr(maquina, "dono", None) else "") or ""
         if not token:
             raise HTTPException(status_code=422, detail="Cliente sem API key SumUp para estorno")
-        create_sumup_refund(token.strip(), payment_id)
+        merchant_code = (getattr(maquina.dono, "sumup_merchant_code", None) or "").strip() or None
+        create_sumup_refund(token.strip(), payment_id, merchant_code)
     else:
         token = (maquina.dono.mp_access_token if getattr(maquina, "dono", None) else "") or ""
         if not token:

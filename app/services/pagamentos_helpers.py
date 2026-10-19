@@ -121,7 +121,7 @@ def auto_refund_failed_pulse(db: Session, historico: HistoricoOperacao | None, m
         token = (getattr(dono, "sumup_api_key", None) or "") if dono else ""
         if not token:
             return False
-        create_sumup_refund(token.strip(), payment_id)
+        create_sumup_refund(token.strip(), payment_id, (getattr(dono, "sumup_merchant_code", None) or "").strip() or None)
     else:
         return False
 
