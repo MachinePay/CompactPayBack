@@ -91,10 +91,17 @@ def resolve_date_window(
     por isso toda a janela e' calculada em horario de Brasilia e so depois
     convertida para UTC no fim."""
     if data_inicio and data_fim:
+        # Aceita so a data ("2026-10-19", dia inteiro) ou data + hora
+        # ("2026-10-19T14:30", filtro de horario da tela). Com hora, o fim
+        # inclui o minuto inteiro (14:30 vai ate 14:30:59.999999).
         start_local = datetime.fromisoformat(data_inicio)
-        end_local = (
-            datetime.fromisoformat(data_fim) + timedelta(days=1) - timedelta(microseconds=1)
-        )
+        if "T" in data_fim:
+            end_local = datetime.fromisoformat(data_fim).replace(second=0, microsecond=0)
+            end_local += timedelta(minutes=1) - timedelta(microseconds=1)
+        else:
+            end_local = (
+                datetime.fromisoformat(data_fim) + timedelta(days=1) - timedelta(microseconds=1)
+            )
         return (
             _brasilia_local_to_utc_naive(start_local),
             _brasilia_local_to_utc_naive(end_local),
