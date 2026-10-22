@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import Cliente, UserRole, Usuario
 from app.schemas.usuario import UsuarioCreate, UsuarioUpdate
+from app.services.stone import StoneAPIError, test_secret_key
 from app.services.sumup import get_sumup_merchant_code
 
 
@@ -20,6 +21,30 @@ def _resolve_sumup_merchant_code(api_key: str | None, merchant_code: str | None)
     except HTTPException as exc:
         print(f"[SumUp] nao foi possivel resolver merchant_code automaticamente: {exc.detail}")
         return None
+
+
+def validate_stone_secret_key(secret_key: str | None, service_referer_name: str | None) -> None:
+    """So barra o salvamento quando a Stone recusa a chave (401/403) - Stone
+    fora do ar nao pode travar o cadastro do cliente, igual o SumUp acima."""
+    if not secret_key or secret_key == "********":
+        return
+    try:
+        test_secret_key(secret_key, service_referer_name or None)
+    except StoneAPIError as exc:
+        if exc.provider_status in {401, 403}:
+            raise HTTPException(status_code=400, detail="Stone recusou a Secret Key - confira a chave sk_ copiada do Partner Hub/Dashboard Pagar.me") from exc
+        print(f"[Stone] nao foi possivel validar a Secret Key agora: {exc.detail}")
+
+
+def _apply_stone_fields(target, usuario: UsuarioCreate | UsuarioUpdate) -> None:
+    target.cliente_stone = bool(usuario.cliente_stone)
+    if not usuario.cliente_stone:
+        target.stone_secret_key = None
+        target.stone_service_referer_name = None
+        return
+    target.stone_service_referer_name = (usuario.stone_service_referer_name or "").strip() or None
+    if usuario.stone_secret_key and usuario.stone_secret_key != "********":
+        target.stone_secret_key = usuario.stone_secret_key.strip()
 
 
 def resolve_user_role(role: str) -> UserRole:
@@ -61,6 +86,7 @@ def create_cliente_for_user(db: Session, usuario: UsuarioCreate | UsuarioUpdate)
         sumup_api_key=usuario.sumup_api_key,
         sumup_merchant_code=_resolve_sumup_merchant_code(usuario.sumup_api_key, usuario.sumup_merchant_code),
     )
+    _apply_stone_fields(cliente, usuario)
     db.add(cliente)
     db.flush()
     return cliente
@@ -96,6 +122,8 @@ def sync_cliente_from_usuario(db: Session, usuario: UsuarioCreate | UsuarioUpdat
         if usuario.sumup_api_key and usuario.sumup_api_key != "********":
             cliente.sumup_api_key = usuario.sumup_api_key
         cliente.sumup_merchant_code = _resolve_sumup_merchant_code(cliente.sumup_api_key, usuario.sumup_merchant_code)
+
+    _apply_stone_fields(cliente, usuario)
 
     if not usuario.cliente_mercado_pago:
         cliente.mp_public_key = None
@@ -144,6 +172,8 @@ def sync_db_usuario_fields(db_usuario: Usuario, usuario: UsuarioCreate | Usuario
         if usuario.sumup_api_key and usuario.sumup_api_key != "********":
             db_usuario.sumup_api_key = usuario.sumup_api_key
         db_usuario.sumup_merchant_code = _resolve_sumup_merchant_code(db_usuario.sumup_api_key, usuario.sumup_merchant_code)
+
+    _apply_stone_fields(db_usuario, usuario)
 
     if not usuario.cliente_mercado_pago:
         db_usuario.mp_public_key = None
@@ -199,6 +229,9 @@ def serialize_usuario(db_usuario: Usuario) -> dict:
         "cliente_sumup": bool(db_usuario.cliente_sumup or (cliente and cliente.cliente_sumup)),
         "sumup_api_key": "********" if db_usuario.sumup_api_key or (cliente and cliente.sumup_api_key) else None,
         "sumup_merchant_code": db_usuario.sumup_merchant_code or (cliente.sumup_merchant_code if cliente else None),
+        "cliente_stone": bool(db_usuario.cliente_stone or (cliente and cliente.cliente_stone)),
+        "stone_secret_key": "********" if db_usuario.stone_secret_key or (cliente and cliente.stone_secret_key) else None,
+        "stone_service_referer_name": db_usuario.stone_service_referer_name or (cliente.stone_service_referer_name if cliente else None),
         "mp_scope": db_usuario.mp_scope or (cliente.mp_scope if cliente else None),
         "mp_pos_category": db_usuario.mp_pos_category or (cliente.mp_pos_category if cliente else None),
         "mp_configurado": bool(db_usuario.mp_access_token or (cliente and cliente.mp_access_token)),

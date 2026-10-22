@@ -19,6 +19,7 @@ from app.api.v1.endpoints import (
     pagamentos_escuta,
     produtos,
     relatorios,
+    smartapp,
     usuarios,
     wifi,
 )
@@ -45,3 +46,4 @@ router.include_router(wifi.router)
 router.include_router(ao_vivo.router)
 router.include_router(mapa.router)
 router.include_router(sumup_usuarios.router)
+router.include_router(smartapp.router)

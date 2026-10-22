@@ -63,6 +63,8 @@ def listar_clientes(
             "mp_store_external_id": cliente.mp_store_external_id,
             "cliente_sumup": bool(cliente.cliente_sumup or (cliente.sumup_api_key and cliente.sumup_merchant_code)),
             "sumup_configurado": bool(cliente.sumup_api_key and cliente.sumup_merchant_code),
+            "cliente_stone": bool(cliente.cliente_stone or cliente.stone_secret_key),
+            "stone_configurado": bool(cliente.stone_secret_key),
         }
         for cliente in clientes
     ]

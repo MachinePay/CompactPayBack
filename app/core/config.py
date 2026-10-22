@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     # intervalo de polling). Limita a concorrencia em vez de disparar uma
     # thread por cliente de uma vez so.
     SUMUP_POLLER_MAX_WORKERS: int = int(os.getenv("SUMUP_POLLER_MAX_WORKERS", "10"))
+    # Stone (Connect Stone / API Pagar.me v5) - fallback global, igual o
+    # SUMUP_API_KEY; normalmente cada cliente tem a propria cliente.stone_secret_key.
+    STONE_SECRET_KEY: str = os.getenv("STONE_SECRET_KEY", "")
+    STONE_SERVICE_REFERER_NAME: str = os.getenv("STONE_SERVICE_REFERER_NAME", "")
+    # A venda feita na maquininha chega pelo webhook charge.paid; o poller
+    # (stone_poller.py) e' so' a rede de seguranca pra webhook perdido.
+    START_STONE_POLLER_WORKER: bool = os.getenv("START_STONE_POLLER_WORKER", "true").lower() == "true"
+    STONE_POLLER_INTERVAL_SECONDS: int = int(os.getenv("STONE_POLLER_INTERVAL_SECONDS", "30"))
     FRONTEND_URL: str = os.getenv("FRONTEND_URL", "http://localhost:5173")
     CORS_ALLOWED_ORIGINS: str = os.getenv("CORS_ALLOWED_ORIGINS", "")
     MP_DEFAULT_STORE_STREET_NAME: str = os.getenv("MP_DEFAULT_STORE_STREET_NAME", "Rua CompactPay")

@@ -32,6 +32,7 @@ from app.services.maquinas_relatorio import (
     serialize_machines_summary_batch,
 )
 from app.services.mercado_pago import create_pos_for_machine
+from app.services.stone import normalize_serial
 
 router = APIRouter()
 
@@ -279,6 +280,24 @@ def _sumup_usuario_validado(db: Session, usuario: str | None, cliente_id, machin
     return usuario
 
 
+def _stone_serial_validado(db: Session, serial: str | None, machine_id: str | None) -> str | None:
+    """Serial da maquininha Stone: nao pode repetir em nenhuma outra maquina
+    (de nenhum cliente) - o webhook charge.paid acha a maquina so' por ele."""
+    serial = normalize_serial(serial) or None
+    if serial:
+        outra = (
+            db.query(Maquina)
+            .filter(Maquina.stone_serial_number == serial, Maquina.id_hardware != (machine_id or ""))
+            .first()
+        )
+        if outra:
+            raise HTTPException(
+                status_code=422,
+                detail=f"A maquininha Stone {serial} ja esta vinculada a maquina {outra.id_hardware}.",
+            )
+    return serial
+
+
 def _coordenadas_ou_422(texto: str) -> tuple[float, float]:
     from app.api.v1.endpoints.mapa import extrair_coordenadas
 
@@ -307,7 +326,7 @@ def criar_maquina(
     if not cliente:
         raise HTTPException(status_code=422, detail="Escolha um usuario/cliente valido para criar a maquina")
     banco_pagamento = (maquina.banco_pagamento or "mercado_pago").strip().lower()
-    bancos_validos = {"mercado_pago", "pagbank", "s6pay", "token_play", "sumup"}
+    bancos_validos = {"mercado_pago", "pagbank", "s6pay", "token_play", "sumup", "stone", "mercado_pago_apk"}
     if banco_pagamento not in bancos_validos:
         raise HTTPException(status_code=422, detail="Banco de pagamento invalido")
     banco_habilitado = {
@@ -316,10 +335,13 @@ def criar_maquina(
         "s6pay": bool(cliente.cliente_s6pay),
         "token_play": bool(cliente.cliente_token_play),
         "sumup": bool(cliente.cliente_sumup or (cliente.sumup_api_key and cliente.sumup_merchant_code)),
+        "stone": bool(cliente.cliente_stone or cliente.stone_secret_key),
+        # App CompactPay na Point Smart (android-point/, rotas /smartapp).
+        "mercado_pago_apk": bool(cliente.mp_access_token),
     }[banco_pagamento]
     if not banco_habilitado:
         raise HTTPException(status_code=422, detail="O banco escolhido nao esta habilitado para este cliente")
-    if banco_pagamento not in {"mercado_pago", "token_play", "sumup"}:
+    if banco_pagamento not in {"mercado_pago", "token_play", "sumup", "stone", "mercado_pago_apk"}:
         raise HTTPException(status_code=501, detail="Integracao deste banco ainda nao foi implementada")
 
     db_maquina = Maquina(
@@ -361,6 +383,18 @@ def criar_maquina(
         db_maquina.sumup_reader_id = reader_id or None
         db_maquina.sumup_device_code = device_code or None
         db_maquina.sumup_usuario = _sumup_usuario_validado(db, maquina.sumup_usuario, maquina.cliente_id, None)
+    if banco_pagamento == "stone":
+        if not cliente.stone_secret_key:
+            raise HTTPException(
+                status_code=422,
+                detail="O usuario escolhido ainda nao tem a Secret Key da Stone cadastrada",
+            )
+        db_maquina.stone_serial_number = _stone_serial_validado(db, maquina.stone_serial_number, None)
+        if not db_maquina.stone_serial_number:
+            raise HTTPException(
+                status_code=422,
+                detail="Informe o numero de serie da maquininha Stone desta maquina (etiqueta atras da maquininha)",
+            )
     _aplicar_ficha(db_maquina, maquina.maquina_ficha, maquina.valor_ficha)
     if (maquina.localizacao_mapa or "").strip():
         db_maquina.latitude, db_maquina.longitude = _coordenadas_ou_422(maquina.localizacao_mapa)
@@ -432,6 +466,8 @@ def atualizar_maquina(
         db_maquina.sumup_usuario = _sumup_usuario_validado(
             db, maquina.sumup_usuario, maquina.cliente_id, db_maquina.id_hardware
         )
+    if maquina.stone_serial_number is not None:
+        db_maquina.stone_serial_number = _stone_serial_validado(db, maquina.stone_serial_number, db_maquina.id_hardware)
     registrar_auditoria(
         db,
         user,

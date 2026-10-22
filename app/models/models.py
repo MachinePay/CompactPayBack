@@ -57,6 +57,14 @@ class Cliente(Base):
     # historico de transacoes desse cliente, pra so buscar o que mudou desde
     # a ultima rodada (changes_since) em vez de reprocessar tudo toda vez.
     sumup_last_sync_at = Column(DateTime, nullable=True)
+    # Stone (Connect Stone / API Pagar.me v5): Secret Key (sk_...) fixa por
+    # cliente e o ServiceRefererName opcional (id de parceiro do Partner Hub).
+    # A maquininha e' identificada pelo numero de serie (Maquina.stone_serial_number).
+    cliente_stone = Column(Boolean, nullable=True)
+    stone_secret_key = Column(String, nullable=True)
+    stone_service_referer_name = Column(String, nullable=True)
+    # Marca d'agua do polling de seguranca (stone_poller.py), igual sumup_last_sync_at.
+    stone_last_sync_at = Column(DateTime, nullable=True)
     # Mapa das maquinas: desligado para o cliente ate o admin liberar.
     mapa_habilitado = Column(Boolean, default=False, nullable=False)
     maquinas = relationship("Maquina", back_populates="dono")
@@ -93,6 +101,9 @@ class Usuario(Base):
     cliente_sumup = Column(Boolean, nullable=True)
     sumup_api_key = Column(String, nullable=True)
     sumup_merchant_code = Column(String, nullable=True)
+    cliente_stone = Column(Boolean, nullable=True)
+    stone_secret_key = Column(String, nullable=True)
+    stone_service_referer_name = Column(String, nullable=True)
     email = Column(String, unique=True, index=True)
     hashed_password = Column(String)
     role = Column(Enum(UserRole), default=UserRole.cliente)
@@ -134,6 +145,11 @@ class Maquina(Base):
     # e o id do membro na SumUp.
     sumup_usuario_senha_cript = Column(String, nullable=True)
     sumup_usuario_member_id = Column(String, nullable=True)
+    # Numero de serie da maquininha Stone desta maquina (etiqueta atras dela ou
+    # Menu > Sobre). A venda digitada direto na maquininha chega no webhook
+    # charge.paid com metadata.terminal_serial_number - e' por ele que achamos
+    # qual maquina creditar.
+    stone_serial_number = Column(String, nullable=True)
     ultimo_sinal = Column(DateTime, nullable=True)
     wifi_rssi = Column(Integer, nullable=True)
     wifi_quality = Column(Integer, nullable=True)

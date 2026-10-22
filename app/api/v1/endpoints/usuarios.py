@@ -18,6 +18,7 @@ from app.services.usuarios_helpers import (
     sync_cliente_from_usuario,
     sync_db_usuario_fields,
     validate_cliente_id,
+    validate_stone_secret_key,
 )
 
 router = APIRouter()
@@ -45,6 +46,8 @@ def criar_usuario(
         raise HTTPException(status_code=400, detail="Email ja cadastrado")
 
     user_role = resolve_user_role(usuario.role)
+    if usuario.cliente_stone:
+        validate_stone_secret_key(usuario.stone_secret_key, usuario.stone_service_referer_name)
     cliente_id = validate_cliente_id(db, user_role, usuario.cliente_id)
     if user_role == UserRole.cliente and cliente_id is None:
         cliente_id = create_cliente_for_user(db, usuario).id
@@ -103,6 +106,8 @@ def atualizar_usuario(
         raise HTTPException(status_code=404, detail="Usuario nao encontrado")
 
     user_role = resolve_user_role(usuario.role)
+    if usuario.cliente_stone:
+        validate_stone_secret_key(usuario.stone_secret_key, usuario.stone_service_referer_name)
     cliente_id = validate_cliente_id(db, user_role, usuario.cliente_id)
     if user_role == UserRole.cliente and cliente_id is None:
         cliente_id = db_usuario.cliente_id
@@ -126,7 +131,8 @@ def atualizar_usuario(
             f"Usuario atualizado email={usuario.email} role={user_role.value} "
             f"cliente_id={cliente_id} senha_alterada={bool(usuario.password)} "
             f"mp_habilitado={bool(usuario.cliente_mercado_pago)} pagbank={bool(usuario.cliente_pagbank)} "
-            f"s6pay={bool(usuario.cliente_s6pay)} token_play={bool(usuario.cliente_token_play)}"
+            f"s6pay={bool(usuario.cliente_s6pay)} token_play={bool(usuario.cliente_token_play)} "
+            f"sumup={bool(usuario.cliente_sumup)} stone={bool(usuario.cliente_stone)}"
         ),
     )
 

@@ -26,6 +26,7 @@ from app.services.pagamentos_helpers import (
     should_allow_refund,
     should_use_sumup_refund,
 )
+from app.services.stone import STONE_SEM_ESTORNO_API
 from app.services.sumup import create_sumup_refund
 from app.services.command_queue import get_command_status, machine_has_pending_credit
 from app.services.pulse_tracking import update_pulse_status
@@ -901,6 +902,8 @@ def estornar_pagamento_maquina(
     if historico.refunded_at:
         raise HTTPException(status_code=400, detail="Pagamento ja foi estornado")
     payment_id = extract_provider_payment_id(historico)
+    if str(historico.provider or "").strip().lower() == "stone":
+        raise HTTPException(status_code=422, detail=STONE_SEM_ESTORNO_API)
     if not should_allow_refund(historico.pulse_status, historico.refunded_at, payment_id, historico.provider):
         raise HTTPException(status_code=422, detail="Extorno permitido apenas para pagamentos com identificador do Mercado Pago/SumUp e ainda nao estornados")
     if not payment_id:

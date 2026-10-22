@@ -19,6 +19,9 @@ class MaquinaCreate(BaseModel):
     # teste e lendo o codigo no log/recibo).
     sumup_device_code: Optional[str] = None
     sumup_usuario: Optional[str] = None
+    # Obrigatorio quando banco_pagamento == "stone" - numero de serie da
+    # maquininha Stone (etiqueta atras dela), usado pra achar a maquina no webhook.
+    stone_serial_number: Optional[str] = None
     # Opcional: link do Google Maps ou "lat, lng" para aparecer no Mapa.
     localizacao_mapa: Optional[str] = None
     # Maquina de ficha: cada entrada fisica vale valor_ficha (obrigatorio se marcada).
@@ -34,6 +37,7 @@ class MaquinaUpdate(BaseModel):
     sumup_reader_id: Optional[str] = None
     sumup_device_code: Optional[str] = None
     sumup_usuario: Optional[str] = None
+    stone_serial_number: Optional[str] = None
     # None = nao mexe; "" = tira do mapa; texto = link do Google Maps ou "lat, lng".
     localizacao_mapa: Optional[str] = None
     # None = nao mexe.
@@ -56,6 +60,7 @@ class MaquinaOut(BaseModel):
     sumup_reader_id: Optional[str] = None
     sumup_device_code: Optional[str] = None
     sumup_usuario: Optional[str] = None
+    stone_serial_number: Optional[str] = None
     firmware_version: Optional[str] = None
     firmware_target_version: Optional[str] = None
     firmware_updated_at: Optional[datetime] = None

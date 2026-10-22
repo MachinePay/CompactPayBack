@@ -34,6 +34,9 @@ class UsuarioBase(BaseModel):
     cliente_sumup: Optional[bool] = None
     sumup_api_key: Optional[str] = None
     sumup_merchant_code: Optional[str] = None
+    cliente_stone: Optional[bool] = None
+    stone_secret_key: Optional[str] = None
+    stone_service_referer_name: Optional[str] = None
 
 
 class UsuarioCreate(UsuarioBase):

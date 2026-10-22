@@ -19,6 +19,7 @@ from app.services.command_queue import start_command_queue_worker
 from app.services.mqtt_worker import start_mqtt_worker
 from app.services.retention import start_retention_worker
 from app.services.sumup_poller import start_sumup_poller_worker
+from app.services.stone_poller import start_stone_poller_worker
 from app.api.v1.routes import router as api_router
 from app.db.base import Base
 from app.db.session import engine
@@ -156,9 +157,13 @@ def startup_event():
             "sumup_api_key",
             "sumup_merchant_code",
             "sumup_last_sync_at",
+            "cliente_stone",
+            "stone_secret_key",
+            "stone_service_referer_name",
+            "stone_last_sync_at",
         ]:
             if column_name not in cliente_columns:
-                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup"} else "TIMESTAMP" if column_name in {"mp_token_expires_at", "sumup_last_sync_at"} else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
+                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup", "cliente_stone"} else "TIMESTAMP" if column_name in {"mp_token_expires_at", "sumup_last_sync_at", "stone_last_sync_at"} else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
                 connection.execute(text(f"ALTER TABLE clientes ADD COLUMN {column_name} {column_type}"))
 
         usuario_columns = {column["name"] for column in inspector.get_columns("usuarios")}
@@ -192,9 +197,12 @@ def startup_event():
             "cliente_sumup",
             "sumup_api_key",
             "sumup_merchant_code",
+            "cliente_stone",
+            "stone_secret_key",
+            "stone_service_referer_name",
         ]:
             if column_name not in usuario_columns:
-                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup"} else "TIMESTAMP" if column_name == "mp_token_expires_at" else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
+                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup", "cliente_stone"} else "TIMESTAMP" if column_name == "mp_token_expires_at" else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
                 connection.execute(text(f"ALTER TABLE usuarios ADD COLUMN {column_name} {column_type}"))
 
         maquina_columns = {column["name"] for column in inspector.get_columns("maquinas")}
@@ -248,6 +256,7 @@ def startup_event():
             "mp_qr_image",
             "sumup_reader_id",
             "sumup_device_code",
+            "stone_serial_number",
             "firmware_version",
             "firmware_target_version",
             "firmware_update_status",
@@ -375,3 +384,4 @@ def startup_event():
     start_retention_worker()
     start_alert_notifier_worker()
     start_sumup_poller_worker()
+    start_stone_poller_worker()

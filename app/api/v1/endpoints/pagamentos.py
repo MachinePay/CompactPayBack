@@ -19,6 +19,7 @@ from app.services.mqtt_commands import publish_machine_credit_pulses
 from app.services.pagamentos_helpers import calcular_pulsos_por_valor
 from app.services.command_queue import get_command_status
 from app.services.pulse_tracking import update_pulse_status
+from app.services.stone_webhook import processar_callback_stone
 from app.services.sumup import create_reader_checkout
 from app.services.sumup_webhook import liberar_pulso_sumup, processar_callback_sumup, registrar_pagamento_sumup
 from app.services.vendas import registrar_venda_pagamento
@@ -57,6 +58,14 @@ def processar_callback_sumup_endpoint(request: Request, dados: dict | None = Non
 
     print(f"[SumUp webhook] query={payload_query} body={payload_body}")
     return processar_callback_sumup(dados)
+
+
+@router.post("/callback-stone")
+def processar_callback_stone_endpoint(request: Request, dados: dict | None = None):
+    # Webhook do Connect Stone (Pagar.me > Configuracoes > Webhooks, eventos
+    # charge.paid e charge.refunded). O corpo nao e' confiavel - a cobranca e'
+    # sempre reconsultada na API da Stone com a chave do cliente.
+    return processar_callback_stone(dados or {})
 
 
 @router.post("/pagamentos/lancar", response_model=PagamentoOut)
