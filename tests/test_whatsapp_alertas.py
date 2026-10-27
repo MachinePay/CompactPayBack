@@ -7,13 +7,13 @@ from pathlib import Path
 
 import pytest
 
-os.environ.setdefault("DATABASE_URL", f"sqlite:///{tempfile.mkdtemp()}/compactpay-test.db")
+os.environ["DATABASE_URL"] = f"sqlite:///{tempfile.mkdtemp()}/compactpay-test.db"
 os.environ["START_MQTT_WORKER"] = "false"
 os.environ["START_COMMAND_QUEUE_WORKER"] = "false"
 os.environ["START_RETENTION_WORKER"] = "false"
 os.environ["START_ALERT_NOTIFIER_WORKER"] = "false"
 os.environ["START_WHATSAPP_ALERT_WORKER"] = "false"
-os.environ.setdefault("SECRET_KEY", "test-secret-key")
+os.environ["SECRET_KEY"] = "test-secret-key"
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from app.db.base import Base
