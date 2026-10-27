@@ -237,6 +237,8 @@ class Maquina(Base):
     # "fechado" em vez de "offline". NULL = nunca fecha. Ver
     # app/services/horario_fechado.py.
     horario_fechado_json = Column(Text, nullable=True)
+    # Fechamentos pontuais (feriado, reforma): JSON [{inicio, fim, motivo}].
+    fechamentos_pontuais_json = Column(Text, nullable=True)
     dono = relationship("Cliente", back_populates="maquinas")
     transacoes = relationship("Transacao", back_populates="maquina")
 

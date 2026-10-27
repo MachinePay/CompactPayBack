@@ -86,3 +86,26 @@ def test_ponto_fechado_nao_gera_alerta_offline():
     assert "offline" not in tipos
     tipos = {a["tipo"] for a in build_machine_alerts({**machine, "ponto_fechado": False}, agora, 0)}
     assert "offline" in tipos
+
+
+def test_fechamento_pontual():
+    from app.services.horario_fechado import carregar_pontuais, fim_ultimo_fechamento, salvar_pontuais
+
+    maquina = SimpleNamespace(horario_fechado_json=None, fechamentos_pontuais_json=None)
+    agora = _utc(*SEGUNDA, 10)
+    salvar_pontuais(
+        maquina,
+        [
+            {"inicio": "2026-12-25T00:00", "fim": "2026-12-26T23:59", "motivo": "Natal"},
+            {"inicio": "2026-10-26T08:00", "fim": "2026-10-26T09:30"},
+            # Acabou ha mais de 30 dias: some ao salvar.
+            {"inicio": "2026-08-01T00:00", "fim": "2026-08-02T00:00"},
+        ],
+        agora,
+    )
+    assert len(carregar_pontuais(maquina)) == 2
+    assert ponto_fechado_agora(maquina, _utc(2026, 12, 25, 15))
+    assert not ponto_fechado_agora(maquina, _utc(2026, 12, 27, 0, 1))
+    assert fim_ultimo_fechamento(maquina, agora) == _utc(*SEGUNDA, 9, 30)
+    with pytest.raises(ValueError):
+        salvar_pontuais(maquina, [{"inicio": "2026-12-26T00:00", "fim": "2026-12-25T00:00"}], agora)

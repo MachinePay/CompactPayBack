@@ -252,6 +252,34 @@ def startup_event():
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN wifi_redes_em TIMESTAMP"))
         if "horario_fechado_json" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN horario_fechado_json TEXT"))
+        if "fechamentos_pontuais_json" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN fechamentos_pontuais_json TEXT"))
+        # Colunas novas das tabelas do WhatsApp (criadas antes delas existirem).
+        tabelas = set(inspector.get_table_names())
+        whatsapp_colunas = {
+            "whatsapp_config": {
+                "lembrete_horas": "INTEGER NOT NULL DEFAULT 24",
+                "mensagem_lembrete": "TEXT",
+                "resumo_horario": "VARCHAR NOT NULL DEFAULT '22:00'",
+                "mensagem_resumo": "TEXT",
+                "worker_lock_id": "VARCHAR",
+                "worker_lock_ate": "TIMESTAMP",
+            },
+            "whatsapp_clientes": {
+                "recebe_lembrete": "BOOLEAN NOT NULL DEFAULT FALSE",
+                "recebe_voltou": "BOOLEAN NOT NULL DEFAULT FALSE",
+                "resumo_diario": "BOOLEAN NOT NULL DEFAULT FALSE",
+                "resumo_horario": "VARCHAR",
+                "resumo_ultimo_dia": "VARCHAR",
+            },
+        }
+        for tabela, colunas in whatsapp_colunas.items():
+            if tabela not in tabelas:
+                continue
+            existentes = {column["name"] for column in inspector.get_columns(tabela)}
+            for column_name, column_type in colunas.items():
+                if column_name not in existentes:
+                    connection.execute(text(f"ALTER TABLE {tabela} ADD COLUMN {column_name} {column_type}"))
         for column_name in [
             "mp_store_id",
             "mp_store_external_id",

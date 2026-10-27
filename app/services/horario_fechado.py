@@ -10,6 +10,10 @@ dia: 0=segunda ... 6=domingo (igual datetime.weekday()).
 fim <= inicio atravessa a meia-noite (segunda 22:00 -> terca 08:00).
 inicio == fim fecha 24h a partir do inicio ("00:00"-"00:00" = o dia todo).
 Sem nada configurado (padrao) o ponto nunca fecha.
+
+Fechamento pontual (feriado, reforma) fica em Maquina.fechamentos_pontuais_json:
+    [{"inicio": "2026-12-25T00:00", "fim": "2026-12-26T23:59", "motivo": "Natal"}]
+Vale junto com o horario da semana, sem mexer nele.
 """
 
 import json
@@ -18,6 +22,9 @@ from datetime import datetime, timedelta, timezone
 
 BRASILIA_TZ = timezone(timedelta(hours=-3))
 _HORA_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
+_DATA_HORA_FMT = "%Y-%m-%dT%H:%M"
+# Fechamento pontual que ja acabou ha mais que isso some ao salvar.
+PONTUAL_MANTER_POR = timedelta(days=30)
 
 
 def _minutos(hora: str) -> int:
@@ -63,11 +70,72 @@ def salvar_horarios(maquina, horarios) -> list[dict]:
     return normalizados
 
 
+def _ler_data_hora(texto) -> datetime:
+    try:
+        return datetime.strptime(str(texto or "").strip()[:16], _DATA_HORA_FMT)
+    except ValueError:
+        raise ValueError(f"Data/hora invalida: {texto!r} (use AAAA-MM-DDTHH:MM)")
+
+
+def _agora_local_naive(agora_utc: datetime) -> datetime:
+    return agora_utc.replace(tzinfo=timezone.utc).astimezone(BRASILIA_TZ).replace(tzinfo=None)
+
+
+def normalizar_pontuais(itens, agora_utc: datetime | None = None) -> list[dict]:
+    agora_local = _agora_local_naive(agora_utc or datetime.utcnow())
+    resultado = []
+    for item in itens or []:
+        if not isinstance(item, dict):
+            raise ValueError("Fechamento pontual invalido")
+        inicio = _ler_data_hora(item.get("inicio"))
+        fim = _ler_data_hora(item.get("fim"))
+        if fim <= inicio:
+            raise ValueError("No fechamento pontual o fim precisa ser depois do inicio")
+        if fim < agora_local - PONTUAL_MANTER_POR:
+            continue
+        motivo = str(item.get("motivo") or "").strip()[:80]
+        resultado.append(
+            {"inicio": inicio.strftime(_DATA_HORA_FMT), "fim": fim.strftime(_DATA_HORA_FMT), "motivo": motivo}
+        )
+    resultado.sort(key=lambda item: item["inicio"])
+    return resultado
+
+
+def carregar_pontuais(maquina) -> list[dict]:
+    bruto = getattr(maquina, "fechamentos_pontuais_json", None)
+    if not bruto:
+        return []
+    try:
+        itens = json.loads(bruto)
+        return [
+            {"inicio": i["inicio"], "fim": i["fim"], "motivo": i.get("motivo") or ""}
+            for i in itens
+            if _ler_data_hora(i["inicio"]) and _ler_data_hora(i["fim"])
+        ]
+    except (ValueError, TypeError, KeyError):
+        return []
+
+
+def salvar_pontuais(maquina, itens, agora_utc: datetime | None = None) -> list[dict]:
+    normalizados = normalizar_pontuais(itens, agora_utc)
+    maquina.fechamentos_pontuais_json = json.dumps(normalizados) if normalizados else None
+    return normalizados
+
+
+def _pontual_agora(maquina, agora_utc: datetime) -> bool:
+    agora_local = _agora_local_naive(agora_utc)
+    return any(
+        _ler_data_hora(i["inicio"]) <= agora_local < _ler_data_hora(i["fim"]) for i in carregar_pontuais(maquina)
+    )
+
+
 def ponto_fechado_agora(maquina, agora_utc: datetime | None = None) -> bool:
+    agora_utc = agora_utc or datetime.utcnow()
+    if _pontual_agora(maquina, agora_utc):
+        return True
     horarios = carregar_horarios(maquina)
     if not horarios:
         return False
-    agora_utc = agora_utc or datetime.utcnow()
     local = agora_utc.replace(tzinfo=timezone.utc).astimezone(BRASILIA_TZ)
     dia_hoje = local.weekday()
     dia_ontem = (dia_hoje - 1) % 7
@@ -92,12 +160,17 @@ def fim_ultimo_fechamento(maquina, agora_utc: datetime | None = None) -> datetim
     fecha. Serve para contar o tempo offline a partir da abertura do ponto, e
     nao de quando a maquina foi desligada na noite anterior."""
     horarios = carregar_horarios(maquina)
-    if not horarios:
+    pontuais = carregar_pontuais(maquina)
+    if not horarios and not pontuais:
         return None
     agora_utc = agora_utc or datetime.utcnow()
     agora_local = agora_utc.replace(tzinfo=timezone.utc).astimezone(BRASILIA_TZ)
     hoje = agora_local.replace(hour=0, minute=0, second=0, microsecond=0)
     ultimo = None
+    for item in pontuais:
+        termino = _ler_data_hora(item["fim"]).replace(tzinfo=BRASILIA_TZ)
+        if termino <= agora_local and (ultimo is None or termino > ultimo):
+            ultimo = termino
     for atras in range(0, 9):
         dia = hoje - timedelta(days=atras)
         for item in horarios:
