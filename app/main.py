@@ -30,20 +30,35 @@ import app.models.produto  # noqa: F401
 import app.models.whatsapp  # noqa: F401
 from app.db.indices import criar_indices_em_segundo_plano
 
-app = FastAPI()
+from app.core.ambiente import ORIGENS_DESENVOLVIMENTO, docs_da_api_visiveis, em_producao
+from app.core.compressao import GZipExcetoFirmware
+
+# Em producao a documentacao da API (/docs, /redoc, /openapi.json) fica
+# escondida: ela lista todas as rotas do sistema. EXPOSE_API_DOCS=true reabre.
+_docs = docs_da_api_visiveis()
+app = FastAPI(
+    docs_url="/docs" if _docs else None,
+    redoc_url="/redoc" if _docs else None,
+    openapi_url="/openapi.json" if _docs else None,
+)
 
 def _normalize_origin(origin: str) -> str:
     return origin.strip().rstrip("/")
 
 
+def _origem_local(origin: str) -> bool:
+    return "://localhost" in origin or "://127.0.0.1" in origin
+
+
 def _build_allowed_origins() -> list[str]:
     extra_origins = settings.CORS_ALLOWED_ORIGINS.split(",")
+    # localhost so fora de producao (CORS_ALLOWED_ORIGINS adiciona se precisar).
     origins = [
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
+        *([] if em_producao() else ORIGENS_DESENVOLVIMENTO),
         "https://compactpay.com.br",
         "https://compactpay.vercel.app",
-        settings.FRONTEND_URL,
+        # FRONTEND_URL tem localhost como padrao quando nao configurado.
+        "" if em_producao() and _origem_local(settings.FRONTEND_URL) else settings.FRONTEND_URL,
         *extra_origins,
     ]
     return list(dict.fromkeys(origin for origin in (_normalize_origin(item) for item in origins) if origin))
@@ -61,6 +76,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.add_middleware(GZipExcetoFirmware, minimum_size=1000)
 
 app.include_router(api_router, prefix="/api/v1")
 
