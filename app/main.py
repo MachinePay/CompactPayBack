@@ -28,6 +28,7 @@ from sqlalchemy import inspect, text
 import app.models.models  # noqa: F401
 import app.models.produto  # noqa: F401
 import app.models.whatsapp  # noqa: F401
+from app.db.indices import criar_indices_em_segundo_plano
 
 app = FastAPI()
 
@@ -420,3 +421,4 @@ def startup_event():
     start_sumup_poller_worker()
     start_stone_poller_worker()
     start_whatsapp_alert_worker()
+    criar_indices_em_segundo_plano(engine)
