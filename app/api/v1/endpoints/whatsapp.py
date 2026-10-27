@@ -22,7 +22,9 @@ from app.services.whatsapp_alertas import (
     conectar,
     conexao_para_tela,
     config_para_tela,
+    enviar_resumo_agora,
     enviar_texto,
+    hora_local_agora,
     modelo_mensagem,
     montar_mensagem,
     normalizar_telefone,
@@ -196,6 +198,12 @@ def salvar_cliente(
     # Lembrete e "voltou" dependem do aviso de offline.
     escolha.recebe_lembrete = payload.ativo and payload.recebe_lembrete
     escolha.recebe_voltou = payload.ativo and payload.recebe_voltou
+    # Mudou o horario (ou ligou o resumo) para mais tarde hoje: volta a valer
+    # hoje, mesmo que um horario anterior ja tenha disparado.
+    horario_efetivo = horario or obter_config(db).resumo_horario or "22:00"
+    mudou = horario != escolha.resumo_horario or (payload.resumo_diario and not escolha.resumo_diario)
+    if payload.resumo_diario and mudou and horario_efetivo > hora_local_agora():
+        escolha.resumo_ultimo_dia = None
     escolha.resumo_diario = payload.resumo_diario
     escolha.resumo_horario = horario
     escolha.updated_at = agora
@@ -209,6 +217,19 @@ def salvar_cliente(
     )
     db.commit()
     return _cliente_para_tela(db, cliente, escolha, db.query(Maquina).filter(Maquina.cliente_id == cliente_id).count())
+
+
+@router.post("/clientes/{cliente_id}/resumo-agora")
+def resumo_agora(cliente_id: int, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    _somente_admin(user)
+    cliente = db.get(Cliente, cliente_id)
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado")
+    try:
+        enviados = enviar_resumo_agora(db, cliente)
+    except WhatsappErro as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    return {"ok": True, "enviados": enviados}
 
 
 @router.get("/envios")

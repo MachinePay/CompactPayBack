@@ -34,6 +34,9 @@ class WhatsappConfig(Base):
     # Trava para so um processo do backend enviar por vez (ver _pegar_trava).
     worker_lock_id = Column(String, nullable=True)
     worker_lock_ate = Column(DateTime, nullable=True)
+    # Diagnostico do ultimo ciclo do envio automatico (mostrado na tela).
+    ultimo_ciclo_em = Column(DateTime, nullable=True)
+    ultimo_ciclo_status = Column(String, nullable=True)
     updated_by = Column(String, nullable=True)
     updated_at = Column(DateTime, nullable=True)
 

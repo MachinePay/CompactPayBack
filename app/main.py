@@ -264,6 +264,8 @@ def startup_event():
                 "mensagem_resumo": "TEXT",
                 "worker_lock_id": "VARCHAR",
                 "worker_lock_ate": "TIMESTAMP",
+                "ultimo_ciclo_em": "TIMESTAMP",
+                "ultimo_ciclo_status": "VARCHAR",
             },
             "whatsapp_clientes": {
                 "recebe_lembrete": "BOOLEAN NOT NULL DEFAULT FALSE",

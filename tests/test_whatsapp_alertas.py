@@ -219,3 +219,43 @@ def test_mensagem_e_telefone():
     texto = whatsapp_alertas.montar_mensagem("Oi {cliente} {chave_solta} {maquina}", {"cliente": "A", "maquina": "B"})
     assert texto == "Oi A {chave_solta} B"
     assert whatsapp_alertas.formatar_moeda(1234.5) == "R$ 1.234,50"
+
+
+def test_registra_status_do_ciclo(ambiente, monkeypatch):
+    db, enviados = ambiente
+    monkeypatch.setattr(whatsapp_alertas, "estado_conexao", lambda config: "close")
+    _cliente(db)
+    whatsapp_alertas.verificar_e_enviar(db, AGORA)
+    db.expire_all()
+    config = db.get(WhatsappConfig, 1)
+    assert config.ultimo_ciclo_em is not None
+    assert "desconectado" in config.ultimo_ciclo_status
+
+
+def test_erro_no_offline_nao_impede_resumo(ambiente, monkeypatch):
+    db, enviados = ambiente
+    monkeypatch.setattr(whatsapp_alertas, "_avisar_quedas", lambda *a: 1 / 0)
+    monkeypatch.setattr(
+        whatsapp_alertas, "compute_financial_summary_by_machine",
+        lambda db, ids, inicio, fim: {i: {"faturamento_total": 10.0, "vendas_count": 2} for i in ids},
+    )
+    cliente = _cliente(db, resumo_diario=True, resumo_horario="08:00")
+    _maquina(db, cliente, AGORA)
+    resultado = whatsapp_alertas.verificar_e_enviar(db, AGORA)
+    assert resultado["resumo"] == 1
+    db.expire_all()
+    assert db.get(WhatsappConfig, 1).ultimo_ciclo_status.startswith("Erro: offline")
+
+
+def test_enviar_resumo_agora(ambiente, monkeypatch):
+    db, enviados = ambiente
+    monkeypatch.setattr(
+        whatsapp_alertas, "compute_financial_summary_by_machine",
+        lambda db, ids, inicio, fim: {i: {"faturamento_total": 99.0, "vendas_count": 9} for i in ids},
+    )
+    cliente = _cliente(db, ativo=False)
+    _maquina(db, cliente, AGORA)
+    assert whatsapp_alertas.enviar_resumo_agora(db, cliente, AGORA) == 1
+    assert "R$ 99,00" in enviados[-1][1]
+    # Nao conta como o resumo do dia.
+    assert db.get(WhatsappCliente, cliente.id).resumo_ultimo_dia is None

@@ -155,6 +155,8 @@ def config_para_tela(config: WhatsappConfig) -> dict:
         "mensagens": {tipo: modelo_mensagem(config, tipo) for tipo in PADROES},
         "mensagens_padrao": PADROES,
         "variaveis": VARIAVEIS,
+        "ultimo_ciclo_em": config.ultimo_ciclo_em,
+        "ultimo_ciclo_status": config.ultimo_ciclo_status,
         "updated_by": config.updated_by,
         "updated_at": config.updated_at,
     }
@@ -514,15 +516,56 @@ def verificar_e_enviar(db: Session, agora: datetime | None = None) -> dict:
     config = db.get(WhatsappConfig, 1)
     if not config or not config.ativo:
         resultado["pulado"] = "desativado"
+        if config:
+            _registrar_ciclo(db, resultado)
         return resultado
     if not _pegar_trava(db):
         resultado["pulado"] = "outro_processo"
         return resultado
     try:
         _ciclo(db, agora, resultado)
+    except Exception as exc:
+        logger.exception("[whatsapp] ciclo falhou")
+        db.rollback()
+        resultado.setdefault("erros", []).append(str(exc)[:200])
     finally:
+        _registrar_ciclo(db, resultado)
         _soltar_trava(db)
     return resultado
+
+
+_PULADO_TEXTO = {
+    "desativado": "Envio automatico desativado",
+    "sem_clientes": "Nenhum cliente marcado para receber",
+    "desconectado": "WhatsApp desconectado: nada foi enviado",
+}
+
+
+def descrever_ciclo(resultado: dict) -> str:
+    if resultado.get("erros"):
+        return "Erro: " + " | ".join(resultado["erros"])
+    if resultado.get("pulado"):
+        return _PULADO_TEXTO.get(resultado["pulado"], resultado["pulado"])
+    enviados = {t: resultado[t] for t in ("offline", "lembrete", "voltou", "resumo") if resultado.get(t)}
+    if not enviados:
+        return "OK, nada para enviar agora"
+    return "OK, enviado: " + ", ".join(f"{qtd} {tipo}" for tipo, qtd in enviados.items())
+
+
+def _registrar_ciclo(db: Session, resultado: dict) -> None:
+    """Grava como foi o ultimo ciclo para a tela mostrar (diagnostico)."""
+    try:
+        db.rollback()
+        db.execute(
+            update(WhatsappConfig)
+            .where(WhatsappConfig.id == 1)
+            .values(ultimo_ciclo_em=datetime.utcnow(), ultimo_ciclo_status=descrever_ciclo(resultado)[:500])
+            .execution_options(synchronize_session=False)
+        )
+        db.commit()
+    except Exception:
+        logger.exception("[whatsapp] nao foi possivel registrar o ciclo")
+        db.rollback()
 
 
 def _ciclo(db: Session, agora: datetime, resultado: dict) -> None:
@@ -551,10 +594,20 @@ def _ciclo(db: Session, agora: datetime, resultado: dict) -> None:
     maquinas = db.query(Maquina).options(joinedload(Maquina.dono)).filter(or_(*filtros)).all()
     por_id = {m.id_hardware: m for m in maquinas}
 
-    _avisar_voltou(db, config, agora, escolhas, abertos, por_id, resultado)
-    _avisar_quedas(db, config, agora, escolhas, maquinas, resultado)
-    _avisar_lembretes(db, config, agora, escolhas, abertos, por_id, resultado)
-    _enviar_resumos(db, config, agora, escolhas, maquinas, resultado)
+    # Cada rotina isolada: erro numa nao impede as outras.
+    etapas = [
+        ("voltou", lambda: _avisar_voltou(db, config, agora, escolhas, abertos, por_id, resultado)),
+        ("offline", lambda: _avisar_quedas(db, config, agora, escolhas, maquinas, resultado)),
+        ("lembrete", lambda: _avisar_lembretes(db, config, agora, escolhas, abertos, por_id, resultado)),
+        ("resumo", lambda: _enviar_resumos(db, config, agora, escolhas, maquinas, resultado)),
+    ]
+    for nome, etapa in etapas:
+        try:
+            etapa()
+        except Exception as exc:
+            logger.exception("[whatsapp] etapa %s falhou", nome)
+            db.rollback()
+            resultado.setdefault("erros", []).append(f"{nome}: {exc}"[:200])
 
 
 def _avisar_voltou(db, config, agora, escolhas, abertos, por_id, resultado) -> None:
@@ -663,6 +716,33 @@ def _avisar_lembretes(db, config, agora, escolhas, abertos, por_id, resultado) -
         texto = montar_mensagem(modelo_mensagem(config, "lembrete"), valores_grupo(cliente, pares, agora, "lembrete"))
         if _enviar_para_cliente(db, config, cliente, "lembrete", texto, [m.id_hardware for m, _ in pares]):
             resultado["lembrete"] += 1
+
+
+def enviar_resumo_agora(db: Session, cliente: Cliente, agora: datetime | None = None) -> int:
+    """Resumo de hoje com os dados reais, fora do horario (botao da tela).
+    Nao mexe no controle de "ja enviado hoje"."""
+    agora = agora or datetime.utcnow()
+    config = obter_config(db)
+    if estado_conexao(config) != "open":
+        raise WhatsappErro("WhatsApp desconectado. Conecte o numero antes de enviar.")
+    maquinas = db.query(Maquina).filter(Maquina.cliente_id == cliente.id).all()
+    texto = montar_mensagem(modelo_mensagem(config, "resumo"), valores_resumo(db, cliente, maquinas, agora))
+    if not telefones_do_cliente(db, cliente):
+        raise WhatsappErro("Cliente sem telefone valido no perfil.")
+    enviados = _enviar_para_cliente(db, config, cliente, "resumo", texto, [m.id_hardware for m in maquinas])
+    if not enviados:
+        erro = (
+            db.query(WhatsappEnvio.erro)
+            .filter(WhatsappEnvio.cliente_id == cliente.id, WhatsappEnvio.status == "erro")
+            .order_by(WhatsappEnvio.id.desc())
+            .scalar()
+        )
+        raise WhatsappErro(erro or "Nao foi possivel enviar o resumo.")
+    return enviados
+
+
+def hora_local_agora(agora: datetime | None = None) -> str:
+    return _local(agora or datetime.utcnow()).strftime("%H:%M")
 
 
 def _enviar_resumos(db, config, agora, escolhas, maquinas, resultado) -> None:
