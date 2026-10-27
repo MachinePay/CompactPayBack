@@ -141,3 +141,13 @@ def test_ip_inventado_no_cabecalho_nao_burla_o_limite():
     for i in range(20):
         _login(f"naoexiste{i}@x.com", "errada", ip=f"1.2.3.{i}, 10.7.7.7")
     assert _login(_usuario(), "certa123", ip="9.9.9.9, 10.7.7.7").status_code == 429
+
+
+def test_bloqueio_dura_5_minutos():
+    email = _usuario()
+    for _ in range(5):
+        _login(email, "errada")
+    resposta = _login(email, "certa123")
+    assert resposta.status_code == 429
+    assert int(resposta.headers["Retry-After"]) <= 5 * 60
+    assert "5 minuto" in resposta.json()["detail"]

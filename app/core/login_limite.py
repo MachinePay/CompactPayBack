@@ -1,7 +1,7 @@
 """Limite de tentativas de login (contra quem fica testando senhas).
 
-- Por e-mail: 5 senhas erradas em 15 min bloqueiam aquele e-mail por 15 min.
-- Por IP: 20 erros em 15 min bloqueiam o IP por 15 min (pega quem testa
+- Por e-mail: 5 senhas erradas em 15 min bloqueiam aquele e-mail por 5 min.
+- Por IP: 20 erros em 15 min bloqueiam o IP por 5 min (pega quem testa
   varios e-mails).
 - Login certo zera o contador do e-mail.
 - Bloqueado, a senha nem e' conferida (nao da para continuar testando).
@@ -16,7 +16,7 @@ import time
 from collections import deque
 
 JANELA_SEGUNDOS = 15 * 60
-BLOQUEIO_SEGUNDOS = 15 * 60
+BLOQUEIO_SEGUNDOS = 5 * 60
 MAX_FALHAS_EMAIL = 5
 MAX_FALHAS_IP = 20
 _MAX_CHAVES = 20_000
