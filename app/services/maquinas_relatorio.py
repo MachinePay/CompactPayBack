@@ -17,6 +17,7 @@ from app.models.models import (
     Transacao,
     VendaPagamento,
 )
+from app.services.horario_fechado import maquina_fechada
 from app.services.mercado_pago import get_active_terminal_for_machine
 from app.services.pagamentos_helpers import should_allow_refund
 
@@ -865,9 +866,11 @@ def wifi_health(quality) -> str:
     return "ruim"
 
 
-def machine_health_status(status_online: bool, wifi_status: str, firmware_alert: bool, pulse_alert: bool) -> str:
+def machine_health_status(
+    status_online: bool, wifi_status: str, firmware_alert: bool, pulse_alert: bool, ponto_fechado: bool = False
+) -> str:
     if not status_online:
-        return "offline"
+        return "fechado" if ponto_fechado else "offline"
     if wifi_status == "ruim" or firmware_alert or pulse_alert:
         return "atencao"
     return "online"
@@ -884,7 +887,8 @@ def serialize_health_machine(maquina: Maquina, now: datetime, ultimo_pagamento: 
     )
     pulse_status = str((ultimo_pulso or {}).get("status") or "").lower()
     pulse_alert = pulse_status.startswith("falha") or pulse_status in PULSE_ABSENT_STATUSES
-    health_status = machine_health_status(status_online, wifi_status, firmware_alert, pulse_alert)
+    ponto_fechado = maquina_fechada(maquina, status_online, now)
+    health_status = machine_health_status(status_online, wifi_status, firmware_alert, pulse_alert, ponto_fechado)
 
     return {
         "id_hardware": maquina.id_hardware,
@@ -894,6 +898,7 @@ def serialize_health_machine(maquina: Maquina, now: datetime, ultimo_pagamento: 
         "localizacao": maquina.localizacao,
         "health_status": health_status,
         "status_online": status_online,
+        "ponto_fechado": ponto_fechado,
         "mqtt_status": "conectado" if status_online else "sem_sinal",
         "ultimo_sinal": maquina.ultimo_sinal,
         "wifi_quality": maquina.wifi_quality,
@@ -992,7 +997,13 @@ def build_machine_alerts(
             )
         )
     last_signal = machine.get("ultimo_sinal")
-    if not machine["status_online"] and last_signal and now - last_signal >= OFFLINE_ALERT_AFTER:
+    # Ponto fechado (horario configurado na maquina) nao e' queda: sem alerta.
+    if (
+        not machine["status_online"]
+        and not machine.get("ponto_fechado")
+        and last_signal
+        and now - last_signal >= OFFLINE_ALERT_AFTER
+    ):
         minutes = int((now - last_signal).total_seconds() // 60)
         alerts.append(
             make_alert(
@@ -1491,9 +1502,9 @@ def recent_terminal_payment_status(db: Session, machine_id: str) -> dict:
     }
 
 
-def status_operacional(status_online: bool, ultima_atividade_em: datetime | None) -> str:
+def status_operacional(status_online: bool, ultima_atividade_em: datetime | None, ponto_fechado: bool = False) -> str:
     if not status_online:
-        return "offline"
+        return "fechado" if ponto_fechado else "offline"
     if ultima_atividade_em is None:
         return "atencao"
     return "operando"
@@ -1555,6 +1566,7 @@ def serialize_machine_summary(
 ):
     agora = datetime.utcnow()
     status_online = bool(maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
+    ponto_fechado = maquina_fechada(maquina, status_online, agora)
     start_dt, end_dt = resolve_date_window(periodo, data_inicio, data_fim)
     ultimo_fechamento_fim = _ultimo_fechamento_fim_por_maquina(db, [maquina.id_hardware]).get(maquina.id_hardware)
     effective_start_dt = max(start_dt, ultimo_fechamento_fim) if ultimo_fechamento_fim else start_dt
@@ -1658,7 +1670,8 @@ def serialize_machine_summary(
         "ultima_saida_em": ultima_saida_em,
         "ultima_atividade_em": ultima_atividade_em,
         "status_online": status_online,
-        "status_operacional": status_operacional(status_online, ultima_atividade_em),
+        "status_operacional": status_operacional(status_online, ultima_atividade_em, ponto_fechado),
+        "ponto_fechado": ponto_fechado,
         "faturamento": float(faturamento),
         "faturamento_fisico": float(breakdown["fisico"]),
         "fisico_quantidade": int(breakdown["fisico_quantidade"]),
@@ -1719,6 +1732,7 @@ def serialize_machines_summary_batch(
     resultado = []
     for maquina in maquinas:
         status_online = bool(maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
+        ponto_fechado = maquina_fechada(maquina, status_online, agora)
         transacoes = transacoes_por_maquina.get(
             maquina.id_hardware, {"ultimo_pagamento_em": None, "ultima_saida_em": None, "quantidade_saidas": 0}
         )
@@ -1788,7 +1802,8 @@ def serialize_machines_summary_batch(
                 "ultima_saida_em": ultima_saida_em,
                 "ultima_atividade_em": ultima_atividade_em,
                 "status_online": status_online,
-                "status_operacional": status_operacional(status_online, ultima_atividade_em),
+                "status_operacional": status_operacional(status_online, ultima_atividade_em, ponto_fechado),
+                "ponto_fechado": ponto_fechado,
                 "faturamento": float(faturamento),
                 "faturamento_fisico": float(resumo_financeiro.get("faturamento_fisico", 0.0)),
                 "fisico_quantidade": int(resumo_financeiro.get("fisico_quantidade", 0)),
@@ -2261,7 +2276,9 @@ def build_machine_history_payload(
             "cliente_nome": maquina.dono.nome_empresa if getattr(maquina, "dono", None) else None,
             "status_online": status_online,
             "ultimo_sinal": maquina.ultimo_sinal,
-            "status_operacional": status_operacional(status_online, ultima_atividade),
+            "status_operacional": status_operacional(
+                status_online, ultima_atividade, maquina_fechada(maquina, status_online)
+            ),
         },
         "resumo": {
             "total_pagamentos": total_pagamentos,

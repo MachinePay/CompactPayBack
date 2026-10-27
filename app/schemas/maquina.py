@@ -89,6 +89,8 @@ class MaquinaOut(BaseModel):
     ultima_atividade_em: Optional[datetime] = None
     status_online: bool = False
     status_operacional: str = "offline"
+    # Sem sinal dentro do horario em que o ponto fica fechado.
+    ponto_fechado: bool = False
     faturamento: float = 0.0
     quantidade_saidas: int = 0
     ignorar_saida_pos_credito: bool = True

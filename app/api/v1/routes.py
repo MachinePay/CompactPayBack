@@ -12,6 +12,7 @@ from app.api.v1.endpoints import (
     firmware_versions,
     health,
     maquinas,
+    maquinas_horario,
     maquinas_operacoes,
     maquinas_relatorios,
     mercado_pago,
@@ -21,6 +22,7 @@ from app.api.v1.endpoints import (
     relatorios,
     smartapp,
     usuarios,
+    whatsapp,
     wifi,
 )
 
@@ -35,6 +37,7 @@ router.include_router(clientes.router)
 router.include_router(comandos_maquinas.router)
 router.include_router(firmware_versions.router)
 router.include_router(maquinas.router)
+router.include_router(maquinas_horario.router)
 router.include_router(maquinas_operacoes.router)
 router.include_router(maquinas_relatorios.router)
 router.include_router(produtos.router)
@@ -47,3 +50,4 @@ router.include_router(ao_vivo.router)
 router.include_router(mapa.router)
 router.include_router(sumup_usuarios.router)
 router.include_router(smartapp.router)
+router.include_router(whatsapp.router)

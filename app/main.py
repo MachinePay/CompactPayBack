@@ -20,12 +20,14 @@ from app.services.mqtt_worker import start_mqtt_worker
 from app.services.retention import start_retention_worker
 from app.services.sumup_poller import start_sumup_poller_worker
 from app.services.stone_poller import start_stone_poller_worker
+from app.services.whatsapp_alertas import start_whatsapp_alert_worker
 from app.api.v1.routes import router as api_router
 from app.db.base import Base
 from app.db.session import engine
 from sqlalchemy import inspect, text
 import app.models.models  # noqa: F401
 import app.models.produto  # noqa: F401
+import app.models.whatsapp  # noqa: F401
 
 app = FastAPI()
 
@@ -248,6 +250,8 @@ def startup_event():
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN wifi_redes_json TEXT"))
         if "wifi_redes_em" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN wifi_redes_em TIMESTAMP"))
+        if "horario_fechado_json" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN horario_fechado_json TEXT"))
         for column_name in [
             "mp_store_id",
             "mp_store_external_id",
@@ -385,3 +389,4 @@ def startup_event():
     start_alert_notifier_worker()
     start_sumup_poller_worker()
     start_stone_poller_worker()
+    start_whatsapp_alert_worker()

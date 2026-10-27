@@ -18,6 +18,7 @@ from app.core.escopo import maquinas_do_usuario, obter_maquina_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import Cliente, Maquina
 from app.services.auditoria import registrar_auditoria
+from app.services.horario_fechado import maquina_fechada
 from app.services.maquinas_relatorio import (
     ONLINE_SIGNAL_WINDOW,
     compute_financial_summary_by_machine,
@@ -112,6 +113,7 @@ def maquinas_no_mapa(
             "local": maquina.localizacao,
             "cliente_nome": dono.nome_empresa if dono else None,
             "online": online,
+            "fechado": maquina_fechada(maquina, online, agora),
             "wifi_quality": maquina.wifi_quality,
             "faturamento_hoje": round(float((financeiro.get(maquina.id_hardware) or {}).get("faturamento_total") or 0), 2),
             "ultima_venda_em": (ultimos.get(maquina.id_hardware) or {}).get("data"),

@@ -188,6 +188,7 @@ def listar_saude_maquinas(
         "online": sum(1 for item in maquinas if item["health_status"] == "online"),
         "atencao": sum(1 for item in maquinas if item["health_status"] == "atencao"),
         "offline": sum(1 for item in maquinas if item["health_status"] == "offline"),
+        "fechado": sum(1 for item in maquinas if item["health_status"] == "fechado"),
         "wifi_ruim": sum(1 for item in maquinas if item["wifi_status"] == "ruim"),
         "pulso_ausente": sum(1 for item in maquinas if item["pulse_alert"]),
         "firmware_pendente": sum(1 for item in maquinas if item["firmware_alert"]),

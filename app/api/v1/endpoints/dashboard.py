@@ -8,6 +8,7 @@ from app.core.dependencies import get_current_user
 from app.core.escopo import filtrar_maquinas_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import Maquina, Transacao, VendaPagamento
+from app.services.horario_fechado import ponto_fechado_agora
 from app.services.maquinas_relatorio import (
     ONLINE_SIGNAL_WINDOW,
     compute_financial_summary,
@@ -162,6 +163,8 @@ def dashboard_overview(
     alerts = []
     for maquina in maquinas:
         if not maquina.ultimo_sinal or (agora - maquina.ultimo_sinal) >= ONLINE_SIGNAL_WINDOW:
+            if ponto_fechado_agora(maquina, agora):
+                continue
             alerts.append(
                 {
                     "title": f"Verificar conectividade da {maquina.nome_local or maquina.id_hardware}",
