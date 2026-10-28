@@ -266,6 +266,13 @@ def dashboard_overview(
             "faturamento_digital": resumo_periodo["faturamento_digital"],
             "premios_entregues": int(premios),
             "maquinas_ativas": len(maquinas_online),
+            # Sem sinal dentro do horario em que o ponto fica fechado.
+            "maquinas_fechadas": sum(
+                1
+                for maquina in maquinas
+                if not (maquina.ultimo_sinal and (agora - maquina.ultimo_sinal) < ONLINE_SIGNAL_WINDOW)
+                and ponto_fechado_agora(maquina, agora)
+            ),
             "total_maquinas": len(maquinas),
             "ticket_medio": float(ticket_medio),
             "percentual_ativas": round((len(maquinas_online) / len(maquinas)) * 100, 1) if maquinas else 0.0,

@@ -507,3 +507,39 @@ def test_dashboard_overview_endpoint_returns_financial_breakdown():
 
     clientes_resumo = data["clientes_resumo"]
     assert any(item["cliente_id"] == cliente_id for item in clientes_resumo)
+
+
+def test_dashboard_overview_conta_maquinas_fechadas_separado_das_offline():
+    from app.core.security import create_access_token
+    from app.services.horario_fechado import salvar_horarios
+
+    with TestClient(app) as client:
+        token = create_access_token({"sub": "admin-fechadas@test.local", "role": "admin", "cliente_id": None})
+        headers = {"Authorization": f"Bearer {token}"}
+        db = SessionLocal()
+        try:
+            cliente = Cliente(
+                nome_empresa="Cliente Fechado Teste",
+                email_contato="cliente-fechado@test.local",
+                api_key="api-key-fechado-teste",
+            )
+            db.add(cliente)
+            db.commit()
+            sem_sinal = datetime.utcnow() - timedelta(hours=3)
+            fechada = Maquina(id_hardware="CPM-FECHADA", nome_local="F", cliente_id=cliente.id, ultimo_sinal=sem_sinal)
+            # Ponto fechado o dia todo, todos os dias.
+            salvar_horarios(fechada, [{"dia": d, "inicio": "00:00", "fim": "00:00"} for d in range(7)])
+            db.add(fechada)
+            db.add(Maquina(id_hardware="CPM-CAIU", nome_local="C", cliente_id=cliente.id, ultimo_sinal=sem_sinal))
+            db.add(Maquina(id_hardware="CPM-ON", nome_local="O", cliente_id=cliente.id, ultimo_sinal=datetime.utcnow()))
+            db.commit()
+            cliente_id = cliente.id
+        finally:
+            db.close()
+
+        response = client.get(f"/api/v1/dashboard/overview?periodo=mes&cliente_id={cliente_id}", headers=headers)
+
+    stats = response.json()["stats"]
+    assert stats["total_maquinas"] == 3
+    assert stats["maquinas_ativas"] == 1
+    assert stats["maquinas_fechadas"] == 1
