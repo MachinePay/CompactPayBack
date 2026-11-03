@@ -1,3 +1,4 @@
+from bisect import bisect_left, bisect_right
 from datetime import datetime, timedelta
 import re
 import time
@@ -482,13 +483,18 @@ def listar_quedas(
     else:
         eventos_por_maquina = {}
 
+    # Eventos ja vem ordenados por data: busca binaria em vez de varrer a
+    # lista inteira da maquina para cada queda (ficava O(quedas x eventos)).
+    tempos_por_maquina = {mid: [e.created_at for e in evs] for mid, evs in eventos_por_maquina.items()}
+
     for linha in linhas:
         maquina = maquinas.get(linha.maquina_id)
         eventos = eventos_por_maquina.get(linha.maquina_id, [])
+        tempos = tempos_por_maquina.get(linha.maquina_id, [])
         is_reinicio = linha.descricao.startswith("Maquina se reiniciou sozinha")
 
-        depois_todos = [e for e in eventos if e.created_at > linha.created_at]
-        proximo = depois_todos[0] if depois_todos else None
+        i_depois = bisect_right(tempos, linha.created_at)
+        proximo = eventos[i_depois] if i_depois < len(eventos) else None
         reconectou_em = proximo.created_at if proximo else None
         inicio_estimado = linha.created_at
 
@@ -500,14 +506,12 @@ def listar_quedas(
             tipo = "queda_conexao"
             motivo_tecnico = None
             depois = []
-            for e in depois_todos:
+            for e in eventos[i_depois:]:
                 if e.is_queda:
                     break
                 depois.append(e)
-            antes = [
-                e
-                for e in eventos
-                if linha.created_at - timedelta(hours=6) <= e.created_at < linha.created_at
+            antes = eventos[
+                bisect_left(tempos, linha.created_at - timedelta(hours=6)) : bisect_left(tempos, linha.created_at)
             ]
             # So o que aconteceu nos minutos antes conta como "causa" (atualizacao,
             # botao); o heartbeat mais antigo serve de base para o firmware velho.
@@ -515,9 +519,12 @@ def listar_quedas(
             antes_base = [e for e in antes if e.status() == "ONLINE"][-1:]
             vizinhas = sum(
                 1
-                for e in eventos
-                if e.is_queda and abs((e.created_at - linha.created_at).total_seconds())
-                <= ID_DUPLICADO_JANELA.total_seconds()
+                for e in eventos[
+                    bisect_left(tempos, linha.created_at - ID_DUPLICADO_JANELA) : bisect_right(
+                        tempos, linha.created_at + ID_DUPLICADO_JANELA
+                    )
+                ]
+                if e.is_queda
             )
             diagnostico = diagnosticar_queda(
                 Evento(linha.created_at, linha.descricao),
