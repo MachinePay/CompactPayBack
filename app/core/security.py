@@ -5,11 +5,17 @@ from datetime import datetime, timedelta
 from jose import jwt
 from passlib.context import CryptContext
 
+from app.core.ambiente import em_producao
+
 DEFAULT_SECRET_KEY = "compactpay-secret-key"
 SECRET_KEY = os.getenv("SECRET_KEY", DEFAULT_SECRET_KEY)
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
+# Em producao, sem SECRET_KEY propria o backend nem sobe: com a chave padrao
+# (que esta no codigo) qualquer um fabricaria um login de admin.
+if em_producao() and SECRET_KEY == DEFAULT_SECRET_KEY:
+    raise RuntimeError("SECRET_KEY padrao em producao. Configure SECRET_KEY no ambiente.")
 if SECRET_KEY == DEFAULT_SECRET_KEY:
     logging.warning("SECRET_KEY padrao em uso. Configure SECRET_KEY no ambiente de producao.")
 

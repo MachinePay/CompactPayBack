@@ -23,6 +23,12 @@ from app.services.usuarios_helpers import (
 
 router = APIRouter()
 PROTECTED_ADMIN_EMAILS = {"admin@compactpay.com.br"}
+SENHA_MIN_CARACTERES = 10
+
+
+def validar_senha(senha: str) -> None:
+    if len(senha or "") < SENHA_MIN_CARACTERES:
+        raise HTTPException(status_code=400, detail=f"A senha precisa ter no minimo {SENHA_MIN_CARACTERES} caracteres")
 
 
 def get_db():
@@ -44,6 +50,7 @@ def criar_usuario(
         raise HTTPException(status_code=403, detail="Apenas admin pode criar usuarios")
     if db.query(Usuario).filter(Usuario.email == usuario.email).first():
         raise HTTPException(status_code=400, detail="Email ja cadastrado")
+    validar_senha(usuario.password)
 
     user_role = resolve_user_role(usuario.role)
     if usuario.cliente_stone:
@@ -120,6 +127,7 @@ def atualizar_usuario(
     db_usuario.role = user_role
     db_usuario.cliente_id = cliente_id
     if usuario.password:
+        validar_senha(usuario.password)
         db_usuario.hashed_password = get_password_hash(usuario.password)
     registrar_auditoria(
         db,
