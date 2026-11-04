@@ -164,6 +164,9 @@ class Maquina(Base):
     # pelo botao "Procurar redes"): JSON [{ssid, rssi, seguranca}].
     wifi_redes_json = Column(Text, nullable=True)
     wifi_redes_em = Column(DateTime, nullable=True)
+    # Redes reserva salvas no painel que ainda nao foram confirmadas pela
+    # placa (services/wifi_reservas.py manda quando ela aparece online).
+    wifi_reservas_pendente = Column(Boolean, default=False, nullable=False)
     # Maquina de ficha: cada pulso da entrada fisica (IN) e' uma ficha, gravada
     # com o valor da ficha (valor_ficha) em vez de R$ 1,00.
     maquina_ficha = Column(Boolean, default=False, nullable=False)

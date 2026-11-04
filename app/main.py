@@ -268,6 +268,10 @@ def startup_event():
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN wifi_redes_json TEXT"))
         if "wifi_redes_em" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN wifi_redes_em TIMESTAMP"))
+        if "wifi_reservas_pendente" not in maquina_columns:
+            connection.execute(
+                text("ALTER TABLE maquinas ADD COLUMN wifi_reservas_pendente BOOLEAN NOT NULL DEFAULT FALSE")
+            )
         if "horario_fechado_json" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN horario_fechado_json TEXT"))
         if "fechamentos_pontuais_json" not in maquina_columns:

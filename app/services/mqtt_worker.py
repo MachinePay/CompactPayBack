@@ -398,6 +398,10 @@ def on_message(client, userdata, msg):
                 from app.services.wifi_credenciais import atualizar_tentativa
 
                 atualizar_tentativa(db, command_id, status, status_fields)
+            if status in ("WIFI_RESERVAS_SALVAS", "WIFI_RESERVAS_RECUSADAS"):
+                from app.services.wifi_reservas import concluir_envio
+
+                concluir_envio(db, maquina, command_id)
             if command_id:
                 update_command_from_device_status(command_id, status)
             if command_id and pulse_status:
@@ -426,6 +430,11 @@ def on_message(client, userdata, msg):
             # Commit sempre roda aqui, mesmo em heartbeat de rotina, para nao perder
             # a telemetria (wifi, uptime, heap, etc.) que foi atualizada em maquina acima.
             db.commit()
+            if maquina.wifi_reservas_pendente and not status.startswith("WIFI_RESERVAS_"):
+                # Redes reserva salvas com a maquina offline: vao agora.
+                from app.services.wifi_reservas import enviar_reservas_pendentes
+
+                enviar_reservas_pendentes(db, maquina)
             print(f"Status MQTT registrado para maquina {id_extraido}: {payload}")
             db.close()
             return

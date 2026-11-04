@@ -8,39 +8,33 @@ apaga) e aqui, com a senha criptografada, para o painel mostrar e editar.
 Mesmo acesso de wifi.py: admin ve todas, cliente so as proprias maquinas.
 """
 from datetime import datetime
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.v1.endpoints.maquinas_operacoes import _firmware_version_tuple
 from app.api.v1.endpoints.wifi import _email_usuario, get_db
 from app.core.dependencies import get_current_user
 from app.core.escopo import obter_maquina_do_usuario
-from app.models.models import ComandoMaquina, MaquinaWifiReserva
+from app.models.models import Maquina, MaquinaWifiReserva
 from app.services.auditoria import registrar_auditoria
-from app.services.maquinas_relatorio import ONLINE_SIGNAL_WINDOW
-from app.services.mqtt_commands import publish_machine_wifi_reservas
 from app.services.wifi_credenciais import criptografar_senha, descriptografar_senha, validar_rede
+from app.services.wifi_reservas import (
+    MIN_FIRMWARE_VERSION_FOR_RESERVAS,
+    enviar_reservas_pendentes,
+    suporta_reservas,
+    ultimo_envio,
+)
 
 router = APIRouter()
 
-MIN_FIRMWARE_VERSION_FOR_RESERVAS = (2, 9, 0)
 RESERVAS_MAX = 4
 
 
-def _suporta_reservas(firmware_version: str | None) -> bool:
-    versao = _firmware_version_tuple(firmware_version)
-    return versao is not None and versao >= MIN_FIRMWARE_VERSION_FOR_RESERVAS
-
-
-def _situacao_na_placa(db: Session, machine_id: str) -> dict | None:
-    comando = (
-        db.query(ComandoMaquina)
-        .filter(ComandoMaquina.maquina_id == machine_id, ComandoMaquina.tipo == "wifi_reservas")
-        .order_by(ComandoMaquina.created_at.desc())
-        .first()
-    )
+def _situacao_na_placa(db: Session, maquina: Maquina) -> dict | None:
+    comando = ultimo_envio(db, maquina.id_hardware)
+    if maquina.wifi_reservas_pendente and (not comando or comando.status in ("executado", "falhou")):
+        # Salva no painel, esperando a maquina ficar online (com firmware 2.9.0+).
+        return {"situacao": "pendente", "detalhe": None, "enviado_em": None, "finalizado_em": None}
     if not comando:
         return None
     if comando.status == "executado":
@@ -69,9 +63,9 @@ def listar_reservas(machine_id: str, db: Session = Depends(get_db), user=Depends
     return {
         "redes": [{"ordem": r.ordem, "ssid": r.ssid, "tem_senha": bool(r.senha_cript)} for r in reservas],
         "max": RESERVAS_MAX,
-        "suporta": _suporta_reservas(maquina.firmware_version),
+        "suporta": suporta_reservas(maquina.firmware_version),
         "versao_minima": ".".join(str(parte) for parte in MIN_FIRMWARE_VERSION_FOR_RESERVAS),
-        "na_placa": _situacao_na_placa(db, machine_id),
+        "na_placa": _situacao_na_placa(db, maquina),
         "atualizado_por": reservas[0].atualizado_por if reservas else None,
         "atualizado_em": reservas[0].updated_at if reservas else None,
     }
@@ -79,20 +73,10 @@ def listar_reservas(machine_id: str, db: Session = Depends(get_db), user=Depends
 
 @router.put("/maquinas/{machine_id}/wifi/reservas")
 def salvar_reservas(machine_id: str, payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    """Substitui a lista inteira e manda para a placa. Em cada rede, senha
-    ausente (null) mantem a senha ja salva para essa mesma rede."""
+    """Substitui a lista inteira. Em cada rede, senha ausente (null) mantem a
+    senha ja salva para essa mesma rede. Salva mesmo com a maquina offline ou
+    com firmware antigo: a placa recebe quando estiver online com 2.9.0+."""
     maquina = obter_maquina_do_usuario(db, user, machine_id)
-    if not _suporta_reservas(maquina.firmware_version):
-        minima = ".".join(str(parte) for parte in MIN_FIRMWARE_VERSION_FOR_RESERVAS)
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Esta maquina esta com firmware {maquina.firmware_version or 'desconhecido'}. "
-                f"Atualize para a versao {minima} ou mais recente para usar redes reserva."
-            ),
-        )
-    if not maquina.ultimo_sinal or datetime.utcnow() - maquina.ultimo_sinal > ONLINE_SIGNAL_WINDOW:
-        raise HTTPException(status_code=409, detail="A maquina precisa estar online para isso")
 
     redes_in = payload.get("redes")
     if not isinstance(redes_in, list):
@@ -139,17 +123,16 @@ def salvar_reservas(machine_id: str, payload: dict, db: Session = Depends(get_db
                 updated_at=agora,
             )
         )
+    maquina.wifi_reservas_pendente = True
     nomes = ", ".join(repr(ssid) for ssid, _ in redes) or "nenhuma"
     registrar_auditoria(
         db, user, "wifi_reservas", "maquina", machine_id, f"Definiu as redes reserva da maquina {machine_id}: {nomes}"
     )
     db.commit()
 
-    command_id = str(uuid4())
     try:
-        publish_machine_wifi_reservas(machine_id, command_id, redes)
+        command_id = enviar_reservas_pendentes(db, maquina, em_segundo_plano=False)
     except Exception:
-        raise HTTPException(
-            status_code=502, detail="Lista salva no painel, mas nao foi possivel enviar para a maquina"
-        ) from None
-    return {"command_id": command_id}
+        # Continua pendente: o worker tenta de novo no proximo sinal da placa.
+        command_id = None
+    return {"command_id": command_id, "enviado_agora": command_id is not None}
