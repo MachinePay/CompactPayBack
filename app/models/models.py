@@ -404,6 +404,21 @@ class MaquinaWifiTentativa(Base):
     finished_at = Column(DateTime, nullable=True)
 
 
+class MaquinaWifiReserva(Base):
+    """Redes Wi-Fi reserva de cada maquina (rodizio do firmware 2.9.0+):
+    se a rede principal cair, a placa tenta estas em ordem. Senha
+    criptografada (services/wifi_credenciais.py)."""
+    __tablename__ = "maquinas_wifi_reservas"
+    __table_args__ = (UniqueConstraint("maquina_id", "ordem", name="uq_maquina_wifi_reserva_ordem"),)
+    id = Column(Integer, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    ordem = Column(Integer, nullable=False)
+    ssid = Column(String, nullable=False)
+    senha_cript = Column(String, nullable=False, default="")
+    atualizado_por = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
 class ComandoMaquina(Base):
     __tablename__ = "comandos_maquina"
     id = Column(Integer, primary_key=True)

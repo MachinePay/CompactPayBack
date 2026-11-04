@@ -234,6 +234,28 @@ def on_message(client, userdata, msg):
             update_command_from_device_status(status_fields.get("cmd"), "WIFI_LOCALIZACAO")
             localizar_por_wifi_em_segundo_plano(id_extraido, status_fields.get("aps"))
             return
+        if status == "WIFI_RODIZIO":
+            # Rodizio de redes reserva (firmware 2.9.0+): a placa conectou numa
+            # rede diferente da ultima avisada. ordem=0 e' a principal.
+            from app.services.wifi_credenciais import decodificar_hex
+
+            ordem = _parse_int_field(status_fields, "ordem")
+            ssid = decodificar_hex(status_fields.get("ssid_hex"), 32) or "?"
+            rede = "na rede principal" if ordem == 0 else f"na rede reserva {ordem}"
+            db.add(
+                HistoricoOperacao(
+                    maquina_id=id_extraido,
+                    categoria="DISPOSITIVO",
+                    descricao=f"Wi-Fi: conectou {rede} ({ssid})",
+                    valor=None,
+                    command_id=None,
+                    pulse_status=None,
+                    created_at=datetime.utcnow(),
+                )
+            )
+            db.commit()
+            db.close()
+            return
         if status == "WIFI_REDES":
             from app.services.wifi_credenciais import interpretar_redes
 

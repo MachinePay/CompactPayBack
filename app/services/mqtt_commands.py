@@ -177,6 +177,29 @@ def publish_machine_wifi(machine_id: str, command_id: str, ssid: str, senha: str
     logging.info("MQTT troca de Wi-Fi publicada machine_id=%s command_id=%s rede=%r", machine_id, command_id, ssid)
 
 
+def publish_machine_wifi_reservas(machine_id: str, command_id: str, redes: list[tuple[str, str]]) -> None:
+    """Lista inteira de redes reserva (firmware 2.9.0+), em hex como na troca.
+    A placa substitui a lista que tinha (lista vazia apaga todas)."""
+    topic = f"/TEF/{machine_id}/cmd"
+    campos = "".join(
+        f"|rs{i}={ssid.encode('utf-8').hex()}|rp{i}={senha.encode('utf-8').hex()}"
+        for i, (ssid, senha) in enumerate(redes, start=1)
+    )
+    payload = f"{machine_id}@wifi_reservas|cmd={command_id}|qtd={len(redes)}{campos}|"
+    nomes = ",".join(ssid for ssid, _ in redes)
+    from app.services.command_queue import track_and_publish_sensitive_command
+
+    track_and_publish_sensitive_command(
+        machine_id=machine_id,
+        command_id=command_id,
+        tipo="wifi_reservas",
+        topic=topic,
+        payload=payload,
+        payload_registrado=f"{machine_id}@wifi_reservas|cmd={command_id}|qtd={len(redes)}|redes={nomes}|senhas=***|",
+    )
+    logging.info("MQTT redes reserva publicadas machine_id=%s command_id=%s qtd=%s", machine_id, command_id, len(redes))
+
+
 def publish_machine_wifi_scan(machine_id: str, command_id: str) -> None:
     """Pede a lista de redes Wi-Fi perto da maquina (STATUS|WIFI_REDES)."""
     from app.services.command_queue import track_and_publish_command
