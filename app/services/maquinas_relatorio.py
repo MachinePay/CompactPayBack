@@ -91,12 +91,18 @@ def resolve_date_window(
     sumiria do periodo "hoje"/"ultimos X dias" que o usuario esperava ver -
     por isso toda a janela e' calculada em horario de Brasilia e so depois
     convertida para UTC no fim."""
-    if data_inicio and data_fim:
+    hoje = _brasilia_hoje()
+    if data_inicio or data_fim:
         # Aceita so a data ("2026-10-19", dia inteiro) ou data + hora
         # ("2026-10-19T14:30", filtro de horario da tela). Com hora, o fim
         # inclui o minuto inteiro (14:30 vai ate 14:30:59.999999).
-        start_local = datetime.fromisoformat(data_inicio)
-        if "T" in data_fim:
+        # So o "ate" preenchido = desde o ultimo fechamento ate ali (inicio
+        # sem limite, o clamp por ultimo fechamento da maquina corta - igual
+        # periodo="fechamento"). So o "de" preenchido = dali ate hoje.
+        start_local = datetime.fromisoformat(data_inicio) if data_inicio else datetime(2000, 1, 1)
+        if not data_fim:
+            end_local = datetime.combine(hoje, datetime.max.time())
+        elif "T" in data_fim:
             end_local = datetime.fromisoformat(data_fim).replace(second=0, microsecond=0)
             end_local += timedelta(minutes=1) - timedelta(microseconds=1)
         else:
@@ -108,7 +114,14 @@ def resolve_date_window(
             _brasilia_local_to_utc_naive(end_local),
         )
 
-    hoje = _brasilia_hoje()
+    if periodo == "30dias":
+        end_local = datetime.combine(hoje, datetime.max.time())
+        start_local = datetime.combine(hoje - timedelta(days=30), datetime.min.time())
+        return (
+            _brasilia_local_to_utc_naive(start_local),
+            _brasilia_local_to_utc_naive(end_local),
+        )
+
     if periodo == "dia":
         start_local = datetime.combine(hoje, datetime.min.time())
         end_local = datetime.combine(hoje, datetime.max.time())
