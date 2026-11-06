@@ -225,3 +225,32 @@ def test_aviso_de_rodizio_vai_para_o_historico():
         assert "Wi-Fi: conectou na rede reserva 2 (Vizinho)" in descricoes
     finally:
         db.close()
+
+
+def test_testar_rede_reserva_nao_troca_e_registra_resultado(monkeypatch):
+    machine_id = "CPM-RES-5"
+    _create_maquina(machine_id, firmware_version="version_2.9.2-testar-wifi", ultimo_sinal=datetime.utcnow())
+    enviados = []
+    monkeypatch.setattr(mqtt_commands, "publish_machine_wifi_teste", lambda *a: enviados.append(a))
+
+    with TestClient(app) as client:
+        headers = _admin_headers(client, "admin-res-5@test.local")
+        resposta = client.post(
+            f"/api/v1/maquinas/{machine_id}/wifi/reservas/testar",
+            json={"ssid": "Vizinho", "senha": "senha-vizinho"},
+            headers=headers,
+        )
+        assert resposta.status_code == 200, resposta.text
+        command_id = resposta.json()["command_id"]
+        assert enviados == [(machine_id, command_id, "Vizinho", "senha-vizinho")]
+
+        on_message(None, None, FakeMsg(f"/TEF/{machine_id}/attrs", f"STATUS|WIFI_TESTE_OK|cmd={command_id}|voltou=rede_antiga"))
+        status = client.get(f"/api/v1/maquinas/{machine_id}/wifi/troca/{command_id}", headers=headers).json()
+        assert status["resultado"] == "testado"
+
+        # Firmware sem @wifi_testar: recusa no painel.
+        _create_maquina("CPM-RES-6", firmware_version=FW_OK, ultimo_sinal=datetime.utcnow())
+        resposta = client.post(
+            "/api/v1/maquinas/CPM-RES-6/wifi/reservas/testar", json={"ssid": "X", "senha": "12345678"}, headers=headers
+        )
+        assert resposta.status_code == 409

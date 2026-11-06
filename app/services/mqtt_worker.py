@@ -394,7 +394,7 @@ def on_message(client, userdata, msg):
                 # ativado (ver processamento de pulso mais abaixo).
                 maquina.credito_liberado_em = datetime.utcnow()
             pulse_status = _status_to_pulse_status(status)
-            if status.startswith("WIFI_TROCA") or status == "WIFI_TROCADO":
+            if status.startswith("WIFI_TROCA") or status.startswith("WIFI_TESTE") or status == "WIFI_TROCADO":
                 from app.services.wifi_credenciais import atualizar_tentativa
 
                 atualizar_tentativa(db, command_id, status, status_fields)

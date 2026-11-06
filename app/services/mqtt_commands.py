@@ -177,6 +177,28 @@ def publish_machine_wifi(machine_id: str, command_id: str, ssid: str, senha: str
     logging.info("MQTT troca de Wi-Fi publicada machine_id=%s command_id=%s rede=%r", machine_id, command_id, ssid)
 
 
+def publish_machine_wifi_teste(machine_id: str, command_id: str, ssid: str, senha: str) -> None:
+    """Testa uma rede sem trocar (firmware 2.9.2+): mesmo teste da troca
+    (Wi-Fi + servidor), mas a placa sempre volta para a rede atual e responde
+    WIFI_TESTE_OK ou WIFI_TESTE_FALHOU."""
+    topic = f"/TEF/{machine_id}/cmd"
+    payload = (
+        f"{machine_id}@wifi_testar|cmd={command_id}|ssid_hex={ssid.encode('utf-8').hex()}"
+        f"|pass_hex={senha.encode('utf-8').hex()}|"
+    )
+    from app.services.command_queue import track_and_publish_sensitive_command
+
+    track_and_publish_sensitive_command(
+        machine_id=machine_id,
+        command_id=command_id,
+        tipo="wifi_teste",
+        topic=topic,
+        payload=payload,
+        payload_registrado=f"{machine_id}@wifi_testar|cmd={command_id}|ssid={ssid}|senha=***|",
+    )
+    logging.info("MQTT teste de Wi-Fi publicado machine_id=%s command_id=%s rede=%r", machine_id, command_id, ssid)
+
+
 def publish_machine_wifi_reservas(machine_id: str, command_id: str, redes: list[tuple[str, str]]) -> None:
     """Lista inteira de redes reserva (firmware 2.9.0+), em hex como na troca.
     A placa substitui a lista que tinha (lista vazia apaga todas)."""

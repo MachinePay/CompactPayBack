@@ -115,6 +115,7 @@ def _confirmar_tentativa_pela_rede(db, machine_id: str, ssid: str, agora: dateti
             MaquinaWifiTentativa.maquina_id == machine_id,
             MaquinaWifiTentativa.resultado.in_(["testando", "sem_confirmacao"]),
             MaquinaWifiTentativa.ssid == ssid,
+            MaquinaWifiTentativa.origem != "teste",  # teste nunca troca a rede
             MaquinaWifiTentativa.created_at >= agora - TENTATIVA_CONFIRMADA_POR_INFO_JANELA,
         )
         .all()
@@ -208,6 +209,9 @@ RESULTADO_POR_STATUS = {
     "WIFI_TROCADO": "trocado",
     "WIFI_TROCA_FALHOU": "falhou",
     "WIFI_TROCA_RECUSADA": "recusado",
+    # @wifi_testar (rede reserva): testa e volta para a rede atual.
+    "WIFI_TESTE_OK": "testado",
+    "WIFI_TESTE_FALHOU": "falhou",
 }
 
 MOTIVOS_LEGIVEIS = {

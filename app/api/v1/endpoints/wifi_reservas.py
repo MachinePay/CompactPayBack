@@ -8,6 +8,7 @@ apaga) e aqui, com a senha criptografada, para o painel mostrar e editar.
 Mesmo acesso de wifi.py: admin ve todas, cliente so as proprias maquinas.
 """
 from datetime import datetime
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
@@ -15,7 +16,10 @@ from sqlalchemy.orm import Session
 from app.api.v1.endpoints.wifi import _email_usuario, get_db
 from app.core.dependencies import get_current_user
 from app.core.escopo import obter_maquina_do_usuario
-from app.models.models import Maquina, MaquinaWifiReserva
+from app.api.v1.endpoints.maquinas_operacoes import _firmware_version_tuple
+from app.models.models import Maquina, MaquinaWifiReserva, MaquinaWifiTentativa
+from app.services import mqtt_commands
+from app.services.maquinas_relatorio import ONLINE_SIGNAL_WINDOW
 from app.services.auditoria import registrar_auditoria
 from app.services.wifi_credenciais import criptografar_senha, descriptografar_senha, validar_rede
 from app.services.wifi_reservas import (
@@ -28,6 +32,8 @@ from app.services.wifi_reservas import (
 router = APIRouter()
 
 RESERVAS_MAX = 4
+# @wifi_testar (testa sem trocar) chegou depois do rodizio.
+MIN_FIRMWARE_VERSION_FOR_TESTE = (2, 9, 2)
 
 
 def _situacao_na_placa(db: Session, maquina: Maquina) -> dict | None:
@@ -64,6 +70,7 @@ def listar_reservas(machine_id: str, db: Session = Depends(get_db), user=Depends
         "redes": [{"ordem": r.ordem, "ssid": r.ssid, "tem_senha": bool(r.senha_cript)} for r in reservas],
         "max": RESERVAS_MAX,
         "suporta": suporta_reservas(maquina.firmware_version),
+        "suporta_teste": (_firmware_version_tuple(maquina.firmware_version) or (0, 0, 0)) >= MIN_FIRMWARE_VERSION_FOR_TESTE,
         "versao_minima": ".".join(str(parte) for parte in MIN_FIRMWARE_VERSION_FOR_RESERVAS),
         "na_placa": _situacao_na_placa(db, maquina),
         "atualizado_por": reservas[0].atualizado_por if reservas else None,
@@ -136,3 +143,72 @@ def salvar_reservas(machine_id: str, payload: dict, db: Session = Depends(get_db
         # Continua pendente: o worker tenta de novo no proximo sinal da placa.
         command_id = None
     return {"command_id": command_id, "enviado_agora": command_id is not None}
+
+
+@router.post("/maquinas/{machine_id}/wifi/reservas/testar")
+def testar_rede_reserva(machine_id: str, payload: dict, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Testa uma rede (Wi-Fi + servidor) sem trocar: a placa sempre volta para
+    a rede atual. Senha null = a senha ja salva dessa rede reserva. O resultado
+    chega em GET /maquinas/{id}/wifi/troca/{cmd} ("testado" ou "falhou")."""
+    ssid = str(payload.get("ssid") or "")
+    if payload.get("senha") is None:
+        salva = (
+            db.query(MaquinaWifiReserva)
+            .filter(MaquinaWifiReserva.maquina_id == machine_id, MaquinaWifiReserva.ssid == ssid)
+            .first()
+        )
+        senha = descriptografar_senha(salva.senha_cript) if salva else ""
+        if senha is None:
+            raise HTTPException(status_code=422, detail="Nao foi possivel ler a senha salva, digite de novo")
+    else:
+        senha = str(payload.get("senha"))
+    erro = validar_rede(ssid, senha)
+    if erro:
+        raise HTTPException(status_code=422, detail=erro)
+
+    maquina = obter_maquina_do_usuario(db, user, machine_id)
+    versao = _firmware_version_tuple(maquina.firmware_version)
+    if versao is None or versao < MIN_FIRMWARE_VERSION_FOR_TESTE:
+        minima = ".".join(str(parte) for parte in MIN_FIRMWARE_VERSION_FOR_TESTE)
+        raise HTTPException(
+            status_code=409,
+            detail=f"Para testar a rede a maquina precisa do firmware {minima} ou mais novo. Da para salvar sem testar.",
+        )
+    if not maquina.ultimo_sinal or datetime.utcnow() - maquina.ultimo_sinal > ONLINE_SIGNAL_WINDOW:
+        raise HTTPException(status_code=409, detail="A maquina precisa estar online para testar a rede")
+    em_andamento = (
+        db.query(MaquinaWifiTentativa)
+        .filter(MaquinaWifiTentativa.maquina_id == machine_id, MaquinaWifiTentativa.resultado == "testando")
+        .order_by(MaquinaWifiTentativa.created_at.desc())
+        .first()
+    )
+    if em_andamento and (datetime.utcnow() - em_andamento.created_at).total_seconds() < 180:
+        raise HTTPException(status_code=409, detail="Ja existe um teste ou troca de Wi-Fi em andamento nesta maquina")
+
+    command_id = str(uuid4())
+    db.add(
+        MaquinaWifiTentativa(
+            maquina_id=machine_id,
+            command_id=command_id,
+            ssid=ssid,
+            senha_cript=criptografar_senha(senha) if senha else "",
+            origem="teste",
+            resultado="testando",
+            solicitado_por=_email_usuario(user),
+            created_at=datetime.utcnow(),
+        )
+    )
+    registrar_auditoria(
+        db, user, "testar_wifi", "maquina", machine_id, f"Pediu teste da rede {ssid!r} na maquina {machine_id}"
+    )
+    db.commit()
+    try:
+        mqtt_commands.publish_machine_wifi_teste(machine_id, command_id, ssid, senha)
+    except Exception:
+        tentativa = db.query(MaquinaWifiTentativa).filter(MaquinaWifiTentativa.command_id == command_id).first()
+        tentativa.resultado = "falhou"
+        tentativa.motivo = "falha_publicacao"
+        tentativa.finished_at = datetime.utcnow()
+        db.commit()
+        raise HTTPException(status_code=502, detail="Nao foi possivel enviar o comando para a maquina") from None
+    return {"command_id": command_id}
