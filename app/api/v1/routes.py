@@ -9,6 +9,7 @@ from app.api.v1.endpoints import (
     clientes,
     comandos_maquinas,
     dashboard,
+    fechamentos_lote,
     firmware_versions,
     health,
     maquinas,
@@ -41,6 +42,7 @@ router.include_router(maquinas.router)
 router.include_router(maquinas_horario.router)
 router.include_router(maquinas_operacoes.router)
 router.include_router(maquinas_relatorios.router)
+router.include_router(fechamentos_lote.router)
 router.include_router(produtos.router)
 router.include_router(relatorios.router)
 router.include_router(pagamentos.router)
