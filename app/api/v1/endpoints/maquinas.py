@@ -371,16 +371,10 @@ def criar_maquina(
                 status_code=422,
                 detail="O usuario escolhido ainda nao tem SUMUP_API_KEY/SUMUP_MERCHANT_CODE cadastrados",
             )
+        # Reader/codigo agora e' opcional: a maquininha e' identificada pelo
+        # usuario logado nela (sumup_usuario), que o painel cria logo apos salvar.
         reader_id = (maquina.sumup_reader_id or "").strip()
         device_code = (maquina.sumup_device_code or "").strip()
-        if not reader_id and not device_code:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    "Escolha qual reader (maquininha) SumUp ja pareado fica vinculado a esta maquina, "
-                    "ou informe o codigo do reader (descoberto por um pagamento teste)"
-                ),
-            )
         db_maquina.sumup_reader_id = reader_id or None
         db_maquina.sumup_device_code = device_code or None
         db_maquina.sumup_usuario = _sumup_usuario_validado(db, maquina.sumup_usuario, maquina.cliente_id, None)

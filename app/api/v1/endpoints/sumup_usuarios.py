@@ -6,6 +6,7 @@ Aqui o sistema cria um usuario gerenciado por maquininha na conta SumUp do
 cliente (API de membros, sem convite por e-mail), grava na maquina e mostra o
 login/senha para logar a maquininha. So admin; tudo vai para a auditoria.
 """
+import re
 import secrets
 import string
 from datetime import datetime
@@ -15,6 +16,7 @@ from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
 from app.core.escopo import eh_admin, obter_maquina_do_usuario
+from app.api.v1.endpoints.maquinas import _sumup_usuario_validado
 from app.db.session import SessionLocal
 from app.models.models import Cliente
 from app.services.auditoria import registrar_auditoria
@@ -48,6 +50,39 @@ def gerar_senha(tamanho: int = 14) -> str:
             return senha
 
 
+# Parte antes do @ digitada pelo operador: letras minusculas, numeros, ponto,
+# hifen e underline; comeca e termina com letra/numero; sem ".." seguidos.
+_PREFIXO_RE = re.compile(r"^[a-z0-9](?:[a-z0-9._-]{0,62}[a-z0-9])?$")
+SENHA_MIN = 8
+SENHA_MAX = 64
+
+
+def validar_prefixo_email(prefixo: str) -> str:
+    prefixo = (prefixo or "").strip().lower()
+    if prefixo.endswith("@" + DOMINIO_USUARIOS):
+        prefixo = prefixo[: -len("@" + DOMINIO_USUARIOS)]
+    if not _PREFIXO_RE.match(prefixo) or ".." in prefixo:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Email invalido: use so letras minusculas, numeros, ponto, hifen ou underline antes do "
+                f"@{DOMINIO_USUARIOS} (comecando e terminando com letra ou numero, ate 64 caracteres)."
+            ),
+        )
+    return prefixo
+
+
+def validar_senha(senha: str) -> str:
+    senha = senha or ""
+    if not (SENHA_MIN <= len(senha) <= SENHA_MAX):
+        raise HTTPException(status_code=422, detail=f"A senha precisa ter de {SENHA_MIN} a {SENHA_MAX} caracteres.")
+    if any(c.isspace() for c in senha):
+        raise HTTPException(status_code=422, detail="A senha nao pode ter espacos.")
+    if not (any(c.isalpha() for c in senha) and any(c.isdigit() for c in senha)):
+        raise HTTPException(status_code=422, detail="A senha precisa ter pelo menos uma letra e um numero.")
+    return senha
+
+
 @router.post("/maquinas/{machine_id}/sumup/usuario")
 def criar_usuario_da_maquininha(
     machine_id: str,
@@ -56,7 +91,9 @@ def criar_usuario_da_maquininha(
     user=Depends(get_current_user),
 ):
     """Cria o usuario da maquininha na conta SumUp do cliente. Se a maquina ja
-    tem um usuario criado aqui, so recria com {"recriar": true}."""
+    tem um usuario criado aqui, so recria com {"recriar": true}. Com
+    {"email_prefixo": "...", "senha": "..."} usa o login escolhido pelo
+    operador (email = prefixo@compactpay.com.br); sem eles, gera um aleatorio."""
     _exigir_admin(user)
     maquina = obter_maquina_do_usuario(db, user, machine_id)
     if (maquina.banco_pagamento or "") != "sumup":
@@ -70,8 +107,15 @@ def criar_usuario_da_maquininha(
             detail="Esta maquina ja tem um usuario SumUp criado pelo sistema. Use 'Ver login' ou recrie.",
         )
 
-    email = f"maquina{machine_id}.{secrets.token_hex(3)}@{DOMINIO_USUARIOS}".lower()
-    senha = gerar_senha()
+    dados = payload or {}
+    if dados.get("email_prefixo") or dados.get("senha"):
+        email = f"{validar_prefixo_email(dados.get('email_prefixo') or '')}@{DOMINIO_USUARIOS}"
+        senha = validar_senha(dados.get("senha") or "")
+        # Mesmo usuario em duas maquinas do cliente: o Pix nao saberia para qual ir.
+        _sumup_usuario_validado(db, email, maquina.cliente_id, machine_id)
+    else:
+        email = f"maquina{machine_id}.{secrets.token_hex(3)}@{DOMINIO_USUARIOS}".lower()
+        senha = gerar_senha()
     try:
         membro = create_managed_member(
             cliente.sumup_api_key.strip(),

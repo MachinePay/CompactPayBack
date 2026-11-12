@@ -42,8 +42,10 @@ def _resolve_maquina(
        que o reader esteja "Cloud-paired") -> credita essa maquina.
     2. device_identifier bate com o serial de um reader Cloud-paired vinculado
        a uma maquina conhecida (sumup_reader_id) -> credita essa maquina.
-    3. device_identifier veio mas NAO bate com nada conhecido -> e' sinal de
-       reader fora do CompactPay na mesma conta - ignora (ver process_cliente).
+    3. device_identifier veio mas NAO bate com nada conhecido: se o "user" da
+       transacao e' o login de uma maquina que NAO tem reader/codigo cadastrado
+       (vinculada so pelo login da maquininha), credita essa maquina. Senao e'
+       sinal de reader fora do CompactPay na mesma conta - ignora (ver process_cliente).
     4. Sem device_info (Pix): credita a maquina cujo sumup_usuario bate com o
        "user" da transacao. Se nao bate com nenhuma, NAO credita - nem quando o
        cliente tem uma maquina so: um Pix qualquer recebido na conta SumUp
@@ -57,6 +59,11 @@ def _resolve_maquina(
         reader_id = reader_device_map.get(device_identifier)
         if reader_id and reader_id in maquina_by_reader_id:
             return maquina_by_reader_id[reader_id], "verificado_por_device"
+        # Maquina cadastrada so com o login da maquininha (sem reader): o cartao
+        # traz o codigo do reader, que ela nao tem - vale o usuario logado.
+        maquina_login = (maquina_by_usuario or {}).get((usuario or "").strip().lower())
+        if maquina_login and not (maquina_login.sumup_reader_id or maquina_login.sumup_device_code):
+            return maquina_login, "verificado_por_usuario"
         return None, "device_sem_reader_correspondente"
     # Pix feito na maquininha: a SumUp nao manda o codigo do reader, mas manda
     # o usuario (operador) logado nela. Funciona se cada maquininha estiver
