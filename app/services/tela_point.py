@@ -23,7 +23,8 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.models.models import Cliente, EscutaTerminal, HistoricoOperacao, Maquina, VendaPagamento
+from app.core.config import settings
+from app.models.models import Cliente, EscutaTerminal, HistoricoOperacao, Maquina, Usuario, VendaPagamento
 from app.models.produto import Produto
 from app.models.tela_point import TelaPoint
 from app.services.command_queue import get_command_status
@@ -103,6 +104,74 @@ def _recusado_pelo_mp(exc: HTTPException) -> bool:
     return "erro 403" in detalhe or "erro 401" in detalhe or "UNAUTHORIZED" in detalhe
 
 
+# ---- Tokens da conta Mercado Pago do cliente -------------------------------------
+# O token salvo do cliente (OAuth do "Conectar Mercado Pago") as vezes le a Point
+# mas e' recusado ao operar a maquininha (403 PA_UNAUTHORIZED_RESULT_FROM_POLICIES).
+# Nesse caso tenta os outros tokens que o sistema ja guarda (o principal do
+# backend e os dos usuarios do cliente), MAS so os que forem da MESMA conta MP
+# do cliente (conferido em /users/me) - nunca mexe na Point com a conta de outro.
+
+_conta_por_token: dict[str, str] = {}
+
+
+def _conta_do_token(token: str) -> str:
+    chave = hash_chave(token)
+    if chave not in _conta_por_token:
+        try:
+            _conta_por_token[chave] = str(mp_request("GET", f"{MP_API}/users/me", token).get("id") or "")
+        except HTTPException:
+            return ""  # nao guarda falha: pode ter sido instabilidade
+    return _conta_por_token[chave]
+
+
+def _tokens_extras(db: Session, cliente: Cliente) -> list[str]:
+    candidatos = [settings.MP_ACCESS_TOKEN]
+    candidatos += [
+        u[0] for u in db.query(Usuario.mp_access_token)
+        .filter(Usuario.cliente_id == cliente.id, Usuario.mp_access_token.isnot(None))
+        .all()
+    ]
+    vistos = {(cliente.mp_access_token or "").strip()}
+    extras = []
+    for token in candidatos:
+        token = (token or "").strip()
+        if token and token not in vistos:
+            vistos.add(token)
+            extras.append(token)
+    return extras
+
+
+def chamar_mp(db: Session, cliente_id: int, method: str, url: str, body: dict | None = None,
+              headers: dict | None = None) -> dict:
+    """mp_request com o token do cliente; se o MP recusar por permissao, repete
+    com outro token salvo da mesma conta MP. Outros erros sobem na hora."""
+    principal = token_do_cliente(db, cliente_id)
+    try:
+        return mp_request(method, url, principal, body=body, headers=headers)
+    except HTTPException as exc:
+        if not _recusado_pelo_mp(exc):
+            raise
+        ultimo = exc
+    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+    conta = (cliente.mp_user_id or "").strip() or _conta_do_token(principal)
+    if not conta:
+        raise ultimo
+    for token in _tokens_extras(db, cliente):
+        if _conta_do_token(token) != conta:
+            continue
+        try:
+            resposta = mp_request(method, url, token, body=body, headers=headers)
+            caminho = url.split(".com", 1)[-1]
+            print(f"[Tela Point] {method} {caminho} recusado com o token do cliente {cliente_id}; "
+                  f"feito com outro token da mesma conta MP {conta}")
+            return resposta
+        except HTTPException as exc:
+            if not _recusado_pelo_mp(exc):
+                raise
+            ultimo = exc
+    raise ultimo
+
+
 def _normalizar_terminais(lista) -> list[dict]:
     return [
         {
@@ -117,20 +186,20 @@ def _normalizar_terminais(lista) -> list[dict]:
     ]
 
 
-def listar_terminais_point(token: str) -> list[dict]:
+def listar_terminais_point(db: Session, cliente_id: int) -> list[dict]:
     """Points da conta do cliente, com o modo de operacao (PDV = integrado).
 
     Tenta a API nova (/terminals/v1) e, se o MP recusar por permissao, a antiga
     (/point/integration-api/devices), que algumas contas/aplicacoes ainda usam."""
     try:
-        data = mp_request("GET", f"{MP_API}/terminals/v1/list?limit=50", token)
+        data = chamar_mp(db, cliente_id, "GET", f"{MP_API}/terminals/v1/list?limit=50")
         return _normalizar_terminais(((data.get("data") or {}).get("terminals")) if isinstance(data, dict) else None)
     except HTTPException as exc:
         if not _recusado_pelo_mp(exc):
             raise
         print(f"[Tela Point] /terminals/v1/list recusado, tentando API antiga: {exc.detail}")
     try:
-        data = mp_request("GET", f"{MP_API}/point/integration-api/devices?limit=50", token)
+        data = chamar_mp(db, cliente_id, "GET", f"{MP_API}/point/integration-api/devices?limit=50")
     except HTTPException as exc:
         if _recusado_pelo_mp(exc):
             raise HTTPException(status_code=403, detail=MSG_SEM_PERMISSAO_POINT) from exc
@@ -138,24 +207,24 @@ def listar_terminais_point(token: str) -> list[dict]:
     return _normalizar_terminais(data.get("devices") if isinstance(data, dict) else None)
 
 
-def ativar_modo_pdv(token: str, terminal_id: str) -> dict:
+def ativar_modo_pdv(db: Session, cliente_id: int, terminal_id: str) -> dict:
     """Coloca a Point em modo integrado. Depois disso ela so cobra o que vier da
     API (precisa reiniciar a Point para aplicar). Mesma ordem: API nova, depois a antiga."""
     try:
-        return mp_request(
+        return chamar_mp(
+            db, cliente_id,
             "PATCH",
             f"{MP_API}/terminals/v1/setup",
-            token,
             body={"terminals": [{"id": terminal_id, "operating_mode": "PDV"}]},
         )
     except HTTPException as exc:
         if not _recusado_pelo_mp(exc):
             raise
     try:
-        return mp_request(
+        return chamar_mp(
+            db, cliente_id,
             "PATCH",
             f"{MP_API}/point/integration-api/devices/{urllib.parse.quote(terminal_id)}",
-            token,
             body={"operating_mode": "PDV"},
         )
     except HTTPException as exc:
@@ -215,7 +284,7 @@ def _variantes_terminal(terminal_id: str) -> set[str]:
     return {v for v in variantes if v}
 
 
-def validar_point_livre(db: Session, token: str, maquina: Maquina, terminal_id: str) -> None:
+def validar_point_livre(db: Session, maquina: Maquina, terminal_id: str) -> None:
     """Barra a Point que tambem dispararia o aviso de "payment" do webhook antigo
     para uma maquina - senao o mesmo pagamento liberaria credito duas vezes
     (uma pela order, outra pelo payment). O webhook nao foi alterado; a
@@ -232,7 +301,7 @@ def validar_point_livre(db: Session, token: str, maquina: Maquina, terminal_id: 
             detail=f"Esta Point esta com escuta ativa na maquina {escuta.maquina_id}. Desative a escuta antes de usar com a tela.",
         )
 
-    point = next((t for t in listar_terminais_point(token) if t.get("id") == terminal_id), None)
+    point = next((t for t in listar_terminais_point(db, maquina.cliente_id) if t.get("id") == terminal_id), None)
     if not point:
         raise HTTPException(status_code=404, detail="Point nao encontrada na conta Mercado Pago deste cliente")
     pos_id = str(point.get("pos_id") or "").strip()
@@ -272,7 +341,6 @@ def produto_da_maquina(db: Session, maquina: Maquina, produto_id: int) -> Produt
 
 
 def criar_cobranca(db: Session, tela: TelaPoint, maquina: Maquina, produto: Produto) -> dict:
-    token = token_do_cliente(db, tela.cliente_id)
     valor = round(float(produto.valor), 2)
     # Mesmo formato que o webhook ja sabe ler: MACHINE_ID:timestamp.
     external_reference = f"{maquina.id_hardware}:{int(time.time() * 1000)}"
@@ -288,10 +356,10 @@ def criar_cobranca(db: Session, tela: TelaPoint, maquina: Maquina, produto: Prod
             }
         },
     }
-    order = mp_request(
+    order = chamar_mp(
+        db, tela.cliente_id,
         "POST",
         f"{MP_API}/v1/orders",
-        token,
         body=body,
         headers={"X-Idempotency-Key": str(uuid4())},
     )
@@ -317,8 +385,8 @@ def criar_cobranca(db: Session, tela: TelaPoint, maquina: Maquina, produto: Prod
     return {"order_id": order_id, "status": order.get("status") or "created", "valor": valor}
 
 
-def _order_da_maquina(token: str, maquina: Maquina, order_id: str) -> dict:
-    order = mp_request("GET", f"{MP_API}/v1/orders/{urllib.parse.quote(order_id)}", token)
+def _order_da_maquina(db: Session, cliente_id: int, maquina: Maquina, order_id: str) -> dict:
+    order = chamar_mp(db, cliente_id, "GET", f"{MP_API}/v1/orders/{urllib.parse.quote(order_id)}")
     if parse_machine_id_from_external_reference(order.get("external_reference")) != maquina.id_hardware:
         # Nao revela que a order existe se ela for de outra maquina.
         raise HTTPException(status_code=404, detail="Cobranca nao encontrada")
@@ -334,8 +402,7 @@ def _venda_da_order(db: Session, order_id: str) -> VendaPagamento | None:
 
 
 def consultar_cobranca(db: Session, tela: TelaPoint, maquina: Maquina, order_id: str) -> dict:
-    token = token_do_cliente(db, tela.cliente_id)
-    order = _order_da_maquina(token, maquina, order_id)
+    order = _order_da_maquina(db, tela.cliente_id, maquina, order_id)
     status_mp = (order.get("status") or "").lower()
 
     if status_mp in STATUS_PAGO:
@@ -367,12 +434,11 @@ def consultar_cobranca(db: Session, tela: TelaPoint, maquina: Maquina, order_id:
 def cancelar_cobranca(db: Session, tela: TelaPoint, maquina: Maquina, order_id: str) -> dict:
     """Cliente desistiu ou a tela deu timeout. O MP so cancela pela API antes de a
     Point mostrar a cobranca; depois disso ela tem que ser cancelada na propria Point."""
-    token = token_do_cliente(db, tela.cliente_id)
-    _order_da_maquina(token, maquina, order_id)
-    order = mp_request(
+    _order_da_maquina(db, tela.cliente_id, maquina, order_id)
+    order = chamar_mp(
+        db, tela.cliente_id,
         "POST",
         f"{MP_API}/v1/orders/{urllib.parse.quote(order_id)}/cancel",
-        token,
         headers={"X-Idempotency-Key": str(uuid4())},
     )
     return {"order_id": order_id, "status_mp": (order.get("status") or "").lower()}

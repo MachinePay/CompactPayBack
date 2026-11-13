@@ -87,7 +87,7 @@ def listar_points(
         cliente_id = maquina.cliente_id
     else:
         cliente_id = _cliente_do_painel(db, user, cliente_id)
-    points = svc.listar_terminais_point(svc.token_do_cliente(db, cliente_id))
+    points = svc.listar_terminais_point(db, cliente_id)
     for point in points:
         point["neste_caixa"] = bool(maquina and svc.point_no_caixa(point, maquina))
     return points
@@ -134,7 +134,7 @@ def ativar_modo_integrado(
     user=Depends(get_current_user),
 ):
     cliente_id = _cliente_do_painel(db, user, cliente_id)
-    resultado = svc.ativar_modo_pdv(svc.token_do_cliente(db, cliente_id), terminal_id)
+    resultado = svc.ativar_modo_pdv(db, cliente_id, terminal_id)
     registrar_auditoria(
         db,
         user,
@@ -157,7 +157,7 @@ def criar_tela(dados: TelaCreate, db: Session = Depends(get_db), user=Depends(ge
     if not maquina.cliente_id:
         raise HTTPException(status_code=422, detail="Maquina sem cliente")
     point_terminal_id = dados.point_terminal_id.strip()
-    svc.validar_point_livre(db, svc.token_do_cliente(db, maquina.cliente_id), maquina, point_terminal_id)
+    svc.validar_point_livre(db, maquina, point_terminal_id)
 
     # Uma tela ativa por maquina: cadastrar de novo troca a chave (tela perdida/trocada).
     anteriores = (

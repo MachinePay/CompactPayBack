@@ -97,6 +97,9 @@ def mp(monkeypatch):
     fake.placa_online = True
     fake.recusar_api_nova = fake.recusar_api_antiga = False
     fake.pdv = []
+    fake.contas = {TOKEN_A: "conta-a"}
+    fake.tokens_recusados = set()
+    svc._conta_por_token.clear()
     fake.terminais = [
         {"id": POINT_A, "operating_mode": "PDV", "pos_id": 111, "store_id": 1, "external_pos_id": "CAIXA-TELA"},
         {"id": POINT_ESCUTA, "operating_mode": "PDV", "pos_id": 222},
@@ -106,7 +109,11 @@ def mp(monkeypatch):
     recusa = HTTPException(status_code=502, detail="Mercado Pago retornou erro 403: PA_UNAUTHORIZED_RESULT_FROM_POLICIES")
 
     def mp_request(method, url, token, body=None, headers=None, **kw):
+        if url.endswith("/users/me"):
+            return {"id": fake.contas.get(token, "conta-desconhecida")}
         fake.tokens.append(token)
+        if token in fake.tokens_recusados:
+            raise recusa
         if "/terminals/v1/" in url and fake.recusar_api_nova:
             raise recusa
         if "/point/integration-api/devices" in url and fake.recusar_api_antiga:
@@ -398,3 +405,33 @@ def test_lista_marca_a_point_vinculada_ao_caixa_da_maquina(mp):
         points = client.get("/api/v1/tela/point/terminais", params={"maquina_id": "TP-1"},
                             headers=_login(client, "admin@tela.test")).json()
     assert {p["id"]: p["neste_caixa"] for p in points} == {POINT_A: True, POINT_ESCUTA: False, POINT_CAIXA_OCUPADO: False}
+
+
+# ---- Token do cliente recusado: outro token salvo da MESMA conta MP ----------------------
+
+def test_token_do_cliente_recusado_usa_outro_token_da_mesma_conta(mp, monkeypatch):
+    monkeypatch.setattr(svc.settings, "MP_ACCESS_TOKEN", "APP_USR-principal-mesma-conta")
+    mp.contas["APP_USR-principal-mesma-conta"] = "conta-a"
+    mp.tokens_recusados = {TOKEN_A}
+    with TestClient(app) as client:
+        ativar = client.post(f"/api/v1/tela/point/terminais/{POINT_A}/modo-integrado",
+                             params={"cliente_id": IDS["a"]}, headers=_login(client, "admin@tela.test"))
+        assert ativar.status_code == 200, ativar.text
+        assert mp.pdv and mp.pdv[0][0].endswith("/terminals/v1/setup")
+        # A cobranca da tela tambem sai com o token que funciona.
+        headers = _chave(client)
+        resp = client.post("/api/v1/tela/cobrancas", json={"produto_id": IDS["p1"]}, headers=headers)
+        assert resp.status_code == 200, resp.text
+    assert mp.tokens[-1] == "APP_USR-principal-mesma-conta"
+
+
+def test_token_de_outra_conta_nunca_e_usado(mp, monkeypatch):
+    monkeypatch.setattr(svc.settings, "MP_ACCESS_TOKEN", "APP_USR-de-outra-conta")
+    mp.contas["APP_USR-de-outra-conta"] = "conta-z"
+    mp.tokens_recusados = {TOKEN_A}
+    with TestClient(app) as client:
+        ativar = client.post(f"/api/v1/tela/point/terminais/{POINT_A}/modo-integrado",
+                             params={"cliente_id": IDS["a"]}, headers=_login(client, "admin@tela.test"))
+        assert ativar.status_code == 403
+    assert "APP_USR-de-outra-conta" not in mp.tokens
+    assert mp.pdv == []
