@@ -327,7 +327,7 @@ def criar_maquina(
     if not cliente:
         raise HTTPException(status_code=422, detail="Escolha um usuario/cliente valido para criar a maquina")
     banco_pagamento = (maquina.banco_pagamento or "mercado_pago").strip().lower()
-    bancos_validos = {"mercado_pago", "pagbank", "s6pay", "token_play", "sumup", "stone", "mercado_pago_apk"}
+    bancos_validos = {"mercado_pago", "pagbank", "s6pay", "token_play", "sumup", "stone", "mercado_pago_apk", "mercado_pago_point"}
     if banco_pagamento not in bancos_validos:
         raise HTTPException(status_code=422, detail="Banco de pagamento invalido")
     banco_habilitado = {
@@ -339,10 +339,12 @@ def criar_maquina(
         "stone": bool(cliente.cliente_stone or cliente.stone_secret_key),
         # App CompactPay na Point Smart (android-point/, rotas /smartapp).
         "mercado_pago_apk": bool(cliente.mp_access_token),
+        # Tela touch + Point em modo integrado (rotas /tela, app/services/tela_point.py).
+        "mercado_pago_point": bool(cliente.mp_access_token),
     }[banco_pagamento]
     if not banco_habilitado:
         raise HTTPException(status_code=422, detail="O banco escolhido nao esta habilitado para este cliente")
-    if banco_pagamento not in {"mercado_pago", "token_play", "sumup", "stone", "mercado_pago_apk"}:
+    if banco_pagamento not in {"mercado_pago", "token_play", "sumup", "stone", "mercado_pago_apk", "mercado_pago_point"}:
         raise HTTPException(status_code=501, detail="Integracao deste banco ainda nao foi implementada")
 
     db_maquina = Maquina(

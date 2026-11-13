@@ -22,6 +22,7 @@ from app.api.v1.endpoints import (
     produtos,
     relatorios,
     smartapp,
+    tela_point,
     usuarios,
     whatsapp,
     wifi,
@@ -54,4 +55,5 @@ router.include_router(ao_vivo.router)
 router.include_router(mapa.router)
 router.include_router(sumup_usuarios.router)
 router.include_router(smartapp.router)
+router.include_router(tela_point.router)
 router.include_router(whatsapp.router)
