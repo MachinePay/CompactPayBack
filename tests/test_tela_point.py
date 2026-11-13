@@ -95,16 +95,29 @@ def mp(monkeypatch):
     fake = Fake()
     fake.orders, fake.criadas, fake.canceladas, fake.pulsos, fake.tokens = {}, [], [], [], []
     fake.placa_online = True
+    fake.recusar_api_nova = fake.recusar_api_antiga = False
+    fake.pdv = []
     fake.terminais = [
         {"id": POINT_A, "operating_mode": "PDV", "pos_id": 111, "store_id": 1, "external_pos_id": "CAIXA-TELA"},
         {"id": POINT_ESCUTA, "operating_mode": "PDV", "pos_id": 222},
         {"id": POINT_CAIXA_OCUPADO, "operating_mode": "PDV", "pos_id": "POS-OCUPADO"},
     ]
 
+    recusa = HTTPException(status_code=502, detail="Mercado Pago retornou erro 403: PA_UNAUTHORIZED_RESULT_FROM_POLICIES")
+
     def mp_request(method, url, token, body=None, headers=None, **kw):
         fake.tokens.append(token)
+        if "/terminals/v1/" in url and fake.recusar_api_nova:
+            raise recusa
+        if "/point/integration-api/devices" in url and fake.recusar_api_antiga:
+            raise recusa
         if url.endswith("/terminals/v1/list?limit=50"):
             return {"data": {"terminals": fake.terminais}}
+        if url.endswith("/point/integration-api/devices?limit=50"):
+            return {"devices": fake.terminais, "paging": {"total": len(fake.terminais)}}
+        if method == "PATCH":
+            fake.pdv.append((url, body))
+            return {"ok": True}
         if method == "POST" and url.endswith("/v1/orders"):
             assert headers and headers.get("X-Idempotency-Key")
             order_id = f"ORD{len(fake.criadas) + 1:03d}"
@@ -295,3 +308,29 @@ def test_tela_para_de_cobrar_se_a_maquina_mudar_de_banco(mp):
             db.query(Maquina).filter(Maquina.id_hardware == "TP-2").update({Maquina.banco_pagamento: "mercado_pago_point"})
             db.commit()
             db.close()
+
+
+# ---- Permissao do Mercado Pago para as Points ----------------------------------------
+
+def test_api_nova_de_terminais_recusada_usa_a_api_antiga(mp):
+    mp.recusar_api_nova = True
+    with TestClient(app) as client:
+        admin = _login(client, "admin@tela.test")
+        resp = client.get("/api/v1/tela/point/terminais", params={"cliente_id": IDS["a"]}, headers=admin)
+        assert resp.status_code == 200, resp.text
+        assert POINT_A in [t["id"] for t in resp.json()]
+        # Cadastro da tela (validacao da Point) e modo integrado tambem caem para a API antiga.
+        assert _tela(client).status_code == 200
+        ativar = client.post(f"/api/v1/tela/point/terminais/{POINT_A}/modo-integrado",
+                             params={"cliente_id": IDS["a"]}, headers=admin)
+        assert ativar.status_code == 200, ativar.text
+        assert mp.pdv == [(f"https://api.mercadopago.com/point/integration-api/devices/{POINT_A}", {"operating_mode": "PDV"})]
+
+
+def test_sem_permissao_em_nenhuma_api_explica_o_que_fazer(mp):
+    mp.recusar_api_nova = mp.recusar_api_antiga = True
+    with TestClient(app) as client:
+        admin = _login(client, "admin@tela.test")
+        resp = client.get("/api/v1/tela/point/terminais", params={"cliente_id": IDS["a"]}, headers=admin)
+        assert resp.status_code == 403
+        assert "Point" in resp.json()["detail"] and "aplicacao do Mercado Pago" in resp.json()["detail"]

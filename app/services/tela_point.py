@@ -91,10 +91,19 @@ def token_do_cliente(db: Session, cliente_id: int) -> str:
 
 # ---- Point (modo integrado) -----------------------------------------------
 
-def listar_terminais_point(token: str) -> list[dict]:
-    """Points da conta do cliente, com o modo de operacao (PDV = integrado)."""
-    data = mp_request("GET", f"{MP_API}/terminals/v1/list?limit=50", token)
-    terminais = ((data.get("data") or {}).get("terminals")) if isinstance(data, dict) else None
+MSG_SEM_PERMISSAO_POINT = (
+    "O Mercado Pago recusou o acesso as maquininhas Point desta conta (403). "
+    "Confira se a credencial do cliente e' a de producao da propria conta dona da Point "
+    "e se a aplicacao do Mercado Pago tem o produto Point / pagamentos presenciais habilitado."
+)
+
+
+def _recusado_pelo_mp(exc: HTTPException) -> bool:
+    detalhe = str(exc.detail or "")
+    return "erro 403" in detalhe or "erro 401" in detalhe or "UNAUTHORIZED" in detalhe
+
+
+def _normalizar_terminais(lista) -> list[dict]:
     return [
         {
             "id": t.get("id"),
@@ -103,20 +112,56 @@ def listar_terminais_point(token: str) -> list[dict]:
             "store_id": t.get("store_id"),
             "external_pos_id": t.get("external_pos_id"),
         }
-        for t in (terminais or [])
-        if isinstance(t, dict)
+        for t in (lista or [])
+        if isinstance(t, dict) and t.get("id")
     ]
+
+
+def listar_terminais_point(token: str) -> list[dict]:
+    """Points da conta do cliente, com o modo de operacao (PDV = integrado).
+
+    Tenta a API nova (/terminals/v1) e, se o MP recusar por permissao, a antiga
+    (/point/integration-api/devices), que algumas contas/aplicacoes ainda usam."""
+    try:
+        data = mp_request("GET", f"{MP_API}/terminals/v1/list?limit=50", token)
+        return _normalizar_terminais(((data.get("data") or {}).get("terminals")) if isinstance(data, dict) else None)
+    except HTTPException as exc:
+        if not _recusado_pelo_mp(exc):
+            raise
+        print(f"[Tela Point] /terminals/v1/list recusado, tentando API antiga: {exc.detail}")
+    try:
+        data = mp_request("GET", f"{MP_API}/point/integration-api/devices?limit=50", token)
+    except HTTPException as exc:
+        if _recusado_pelo_mp(exc):
+            raise HTTPException(status_code=403, detail=MSG_SEM_PERMISSAO_POINT) from exc
+        raise
+    return _normalizar_terminais(data.get("devices") if isinstance(data, dict) else None)
 
 
 def ativar_modo_pdv(token: str, terminal_id: str) -> dict:
     """Coloca a Point em modo integrado. Depois disso ela so cobra o que vier da
-    API (precisa reiniciar a Point para aplicar)."""
-    return mp_request(
-        "PATCH",
-        f"{MP_API}/terminals/v1/setup",
-        token,
-        body={"terminals": [{"id": terminal_id, "operating_mode": "PDV"}]},
-    )
+    API (precisa reiniciar a Point para aplicar). Mesma ordem: API nova, depois a antiga."""
+    try:
+        return mp_request(
+            "PATCH",
+            f"{MP_API}/terminals/v1/setup",
+            token,
+            body={"terminals": [{"id": terminal_id, "operating_mode": "PDV"}]},
+        )
+    except HTTPException as exc:
+        if not _recusado_pelo_mp(exc):
+            raise
+    try:
+        return mp_request(
+            "PATCH",
+            f"{MP_API}/point/integration-api/devices/{urllib.parse.quote(terminal_id)}",
+            token,
+            body={"operating_mode": "PDV"},
+        )
+    except HTTPException as exc:
+        if _recusado_pelo_mp(exc):
+            raise HTTPException(status_code=403, detail=MSG_SEM_PERMISSAO_POINT) from exc
+        raise
 
 
 def _variantes_terminal(terminal_id: str) -> set[str]:
