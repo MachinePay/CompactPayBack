@@ -334,3 +334,67 @@ def test_sem_permissao_em_nenhuma_api_explica_o_que_fazer(mp):
         resp = client.get("/api/v1/tela/point/terminais", params={"cliente_id": IDS["a"]}, headers=admin)
         assert resp.status_code == 403
         assert "Point" in resp.json()["detail"] and "aplicacao do Mercado Pago" in resp.json()["detail"]
+
+
+# ---- Caixa Mercado Pago (a Point fica vinculada ao caixa da maquina) --------------------
+
+def _pos_fake(chamadas):
+    def create_pos_for_machine(cliente, maquina):
+        chamadas.append(maquina.id_hardware)
+        return {
+            "mp_store_id": "STORE-1",
+            "mp_store_external_id": "LOJA1",
+            "mp_pos_id": f"POS-{maquina.id_hardware}",
+            "mp_pos_external_id": maquina.id_hardware,
+            "mp_qr_image": "https://qr",
+        }
+    return create_pos_for_machine
+
+
+def test_criar_maquina_com_banco_de_tela_cria_o_caixa_igual_ao_mercado_pago(mp, monkeypatch):
+    import app.api.v1.endpoints.maquinas as maquinas_endpoint
+
+    chamadas = []
+    monkeypatch.setattr(maquinas_endpoint, "create_pos_for_machine", _pos_fake(chamadas))
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/maquinas",
+            json={"id_hardware": "TP-NOVA", "nome": "Grua nova", "cliente_id": IDS["a"],
+                  "banco_pagamento": "mercado_pago_point"},
+            headers=_login(client, "admin@tela.test"),
+        )
+        assert resp.status_code == 200, resp.text
+    assert chamadas == ["TP-NOVA"]
+    db = SessionLocal()
+    try:
+        assert db.query(Maquina).filter(Maquina.id_hardware == "TP-NOVA").one().mp_pos_id == "POS-TP-NOVA"
+    finally:
+        db.close()
+
+
+def test_maquina_existente_sem_caixa_cria_o_caixa_uma_vez(mp, monkeypatch):
+    chamadas = []
+    monkeypatch.setattr(svc, "create_pos_for_machine", _pos_fake(chamadas))
+    with TestClient(app) as client:
+        admin = _login(client, "admin@tela.test")
+        assert client.get("/api/v1/tela/maquinas/TP-2/caixa", headers=admin).json()["caixa"] is None
+        primeiro = client.post("/api/v1/tela/maquinas/TP-2/caixa", headers=admin)
+        segundo = client.post("/api/v1/tela/maquinas/TP-2/caixa", headers=admin)
+        assert primeiro.status_code == segundo.status_code == 200
+        assert segundo.json()["caixa"]["pos_id"] == "POS-TP-2"
+        assert client.post("/api/v1/tela/maquinas/TP-QR/caixa", headers=admin).status_code == 422
+        assert client.post("/api/v1/tela/maquinas/TP-2/caixa", headers=_login(client, "dono-b@tela.test")).status_code == 404
+    assert chamadas == ["TP-2"]
+
+
+def test_lista_marca_a_point_vinculada_ao_caixa_da_maquina(mp):
+    db = SessionLocal()
+    try:
+        db.query(Maquina).filter(Maquina.id_hardware == "TP-1").update({Maquina.mp_pos_id: "111"})
+        db.commit()
+    finally:
+        db.close()
+    with TestClient(app) as client:
+        points = client.get("/api/v1/tela/point/terminais", params={"maquina_id": "TP-1"},
+                            headers=_login(client, "admin@tela.test")).json()
+    assert {p["id"]: p["neste_caixa"] for p in points} == {POINT_A: True, POINT_ESCUTA: False, POINT_CAIXA_OCUPADO: False}

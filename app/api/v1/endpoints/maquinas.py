@@ -355,7 +355,8 @@ def criar_maquina(
         localizacao=maquina.localizacao,
         ultimo_sinal=None,
     )
-    if banco_pagamento == "mercado_pago":
+    # mercado_pago_point (tela + Point) tambem nasce com caixa: a Point fica vinculada a ele.
+    if banco_pagamento in {"mercado_pago", "mercado_pago_point"}:
         if not cliente.mp_access_token:
             raise HTTPException(
                 status_code=422,

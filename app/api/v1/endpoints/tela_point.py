@@ -75,9 +75,55 @@ def _cliente_do_painel(db: Session, user, cliente_id: int | None) -> int:
 # ---- Painel: Points da conta ----------------------------------------------
 
 @router.get("/point/terminais")
-def listar_points(cliente_id: int | None = None, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    cliente_id = _cliente_do_painel(db, user, cliente_id)
-    return svc.listar_terminais_point(svc.token_do_cliente(db, cliente_id))
+def listar_points(
+    cliente_id: int | None = None,
+    maquina_id: str | None = None,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Com maquina_id, marca em "neste_caixa" a Point vinculada ao caixa dessa maquina."""
+    maquina = obter_maquina_do_usuario(db, user, maquina_id) if maquina_id else None
+    if maquina and maquina.cliente_id:
+        cliente_id = maquina.cliente_id
+    else:
+        cliente_id = _cliente_do_painel(db, user, cliente_id)
+    points = svc.listar_terminais_point(svc.token_do_cliente(db, cliente_id))
+    for point in points:
+        point["neste_caixa"] = bool(maquina and svc.point_no_caixa(point, maquina))
+    return points
+
+
+# ---- Painel: caixa Mercado Pago da maquina ----------------------------------------
+
+def _maquina_de_tela(db: Session, user, machine_id: str):
+    maquina = obter_maquina_do_usuario(db, user, machine_id)
+    if maquina.banco_pagamento != svc.BANCO_TELA_POINT:
+        raise HTTPException(status_code=422, detail="A maquina precisa estar com o banco Mercado Pago Point (tela)")
+    return maquina
+
+
+@router.get("/maquinas/{machine_id}/caixa")
+def caixa_da_maquina(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    maquina = _maquina_de_tela(db, user, machine_id)
+    return {"maquina_id": maquina.id_hardware, "caixa": svc.caixa_da_maquina(maquina)}
+
+
+@router.post("/maquinas/{machine_id}/caixa")
+def criar_caixa(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    maquina = _maquina_de_tela(db, user, machine_id)
+    tinha = svc.caixa_da_maquina(maquina) is not None
+    caixa = svc.criar_caixa(db, maquina)
+    if not tinha:
+        registrar_auditoria(
+            db,
+            user,
+            acao="TELA_POINT_CAIXA_CRIADO",
+            entidade_tipo="maquina",
+            entidade_id=maquina.id_hardware,
+            descricao=f"Caixa Mercado Pago criado para a maquina de tela pos_id={caixa['pos_id']}",
+        )
+        db.commit()
+    return {"maquina_id": maquina.id_hardware, "caixa": caixa}
 
 
 @router.post("/point/terminais/{terminal_id}/modo-integrado")

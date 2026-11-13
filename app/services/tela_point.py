@@ -27,7 +27,7 @@ from app.models.models import Cliente, EscutaTerminal, HistoricoOperacao, Maquin
 from app.models.produto import Produto
 from app.models.tela_point import TelaPoint
 from app.services.command_queue import get_command_status
-from app.services.mercado_pago import mp_request
+from app.services.mercado_pago import create_pos_for_machine, mp_request
 from app.services.pagamentos_helpers import parse_machine_id_from_external_reference
 
 BANCO_TELA_POINT = "mercado_pago_point"
@@ -162,6 +162,47 @@ def ativar_modo_pdv(token: str, terminal_id: str) -> dict:
         if _recusado_pelo_mp(exc):
             raise HTTPException(status_code=403, detail=MSG_SEM_PERMISSAO_POINT) from exc
         raise
+
+
+def caixa_da_maquina(maquina: Maquina) -> dict | None:
+    if not (maquina.mp_pos_id or "").strip():
+        return None
+    return {
+        "pos_id": maquina.mp_pos_id,
+        "pos_external_id": maquina.mp_pos_external_id,
+        "store_id": maquina.mp_store_id,
+        "store_external_id": maquina.mp_store_external_id,
+    }
+
+
+def criar_caixa(db: Session, maquina: Maquina) -> dict:
+    """Mesmo caixa (loja + POS) que o banco "mercado_pago" cria ao cadastrar a
+    maquina. Serve para maquinas com banco de tela que nasceram sem caixa.
+    create_pos_for_machine reaproveita o caixa se ele ja existir no MP."""
+    existente = caixa_da_maquina(maquina)
+    if existente:
+        return existente
+    cliente = db.query(Cliente).filter(Cliente.id == maquina.cliente_id).first()
+    if not cliente or not (cliente.mp_access_token or "").strip():
+        raise HTTPException(status_code=422, detail="Cliente sem credencial Mercado Pago")
+    pos = create_pos_for_machine(cliente, maquina)
+    maquina.mp_store_id = pos["mp_store_id"]
+    maquina.mp_store_external_id = pos["mp_store_external_id"]
+    maquina.mp_pos_id = pos["mp_pos_id"]
+    maquina.mp_pos_external_id = pos["mp_pos_external_id"]
+    maquina.mp_qr_image = pos["mp_qr_image"]
+    db.commit()
+    return caixa_da_maquina(maquina)
+
+
+def point_no_caixa(point: dict, maquina: Maquina) -> bool:
+    """A Point esta vinculada ao caixa desta maquina?"""
+    pos_id = str(point.get("pos_id") or "").strip()
+    external_pos_id = str(point.get("external_pos_id") or "").strip()
+    return bool(
+        (pos_id and pos_id == str(maquina.mp_pos_id or "").strip())
+        or (external_pos_id and external_pos_id == str(maquina.mp_pos_external_id or "").strip())
+    )
 
 
 def _variantes_terminal(terminal_id: str) -> set[str]:
