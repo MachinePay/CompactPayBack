@@ -23,8 +23,7 @@ from fastapi import HTTPException
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
-from app.models.models import Cliente, EscutaTerminal, HistoricoOperacao, Maquina, Usuario, VendaPagamento
+from app.models.models import Cliente, EscutaTerminal, HistoricoOperacao, Maquina, VendaPagamento
 from app.models.produto import Produto
 from app.models.tela_point import TelaPoint
 from app.services.command_queue import get_command_status
@@ -104,72 +103,12 @@ def _recusado_pelo_mp(exc: HTTPException) -> bool:
     return "erro 403" in detalhe or "erro 401" in detalhe or "UNAUTHORIZED" in detalhe
 
 
-# ---- Tokens da conta Mercado Pago do cliente -------------------------------------
-# O token salvo do cliente (OAuth do "Conectar Mercado Pago") as vezes le a Point
-# mas e' recusado ao operar a maquininha (403 PA_UNAUTHORIZED_RESULT_FROM_POLICIES).
-# Nesse caso tenta os outros tokens que o sistema ja guarda (o principal do
-# backend e os dos usuarios do cliente), MAS so os que forem da MESMA conta MP
-# do cliente (conferido em /users/me) - nunca mexe na Point com a conta de outro.
-
-_conta_por_token: dict[str, str] = {}
-
-
-def _conta_do_token(token: str) -> str:
-    chave = hash_chave(token)
-    if chave not in _conta_por_token:
-        try:
-            _conta_por_token[chave] = str(mp_request("GET", f"{MP_API}/users/me", token).get("id") or "")
-        except HTTPException:
-            return ""  # nao guarda falha: pode ter sido instabilidade
-    return _conta_por_token[chave]
-
-
-def _tokens_extras(db: Session, cliente: Cliente) -> list[str]:
-    candidatos = [settings.MP_ACCESS_TOKEN]
-    candidatos += [
-        u[0] for u in db.query(Usuario.mp_access_token)
-        .filter(Usuario.cliente_id == cliente.id, Usuario.mp_access_token.isnot(None))
-        .all()
-    ]
-    vistos = {(cliente.mp_access_token or "").strip()}
-    extras = []
-    for token in candidatos:
-        token = (token or "").strip()
-        if token and token not in vistos:
-            vistos.add(token)
-            extras.append(token)
-    return extras
-
-
 def chamar_mp(db: Session, cliente_id: int, method: str, url: str, body: dict | None = None,
               headers: dict | None = None) -> dict:
-    """mp_request com o token do cliente; se o MP recusar por permissao, repete
-    com outro token salvo da mesma conta MP. Outros erros sobem na hora."""
-    principal = token_do_cliente(db, cliente_id)
-    try:
-        return mp_request(method, url, principal, body=body, headers=headers)
-    except HTTPException as exc:
-        if not _recusado_pelo_mp(exc):
-            raise
-        ultimo = exc
-    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
-    conta = (cliente.mp_user_id or "").strip() or _conta_do_token(principal)
-    if not conta:
-        raise ultimo
-    for token in _tokens_extras(db, cliente):
-        if _conta_do_token(token) != conta:
-            continue
-        try:
-            resposta = mp_request(method, url, token, body=body, headers=headers)
-            caminho = url.split(".com", 1)[-1]
-            print(f"[Tela Point] {method} {caminho} recusado com o token do cliente {cliente_id}; "
-                  f"feito com outro token da mesma conta MP {conta}")
-            return resposta
-        except HTTPException as exc:
-            if not _recusado_pelo_mp(exc):
-                raise
-            ultimo = exc
-    raise ultimo
+    """Toda chamada da Point usa SO o token Mercado Pago cadastrado no proprio
+    cliente. Nunca tenta outro token (do backend, de usuarios ou de outro cliente)."""
+    token = token_do_cliente(db, cliente_id)
+    return mp_request(method, url, token, body=body, headers=headers)
 
 
 def _normalizar_terminais(lista) -> list[dict]:
@@ -412,7 +351,14 @@ def consultar_cobranca(db: Session, tela: TelaPoint, maquina: Maquina, order_id:
             # Import local: o webhook importa muita coisa e so e' preciso neste caso.
             from app.services.mercado_pago_webhook import processar_callback_mercado_pago
 
-            processar_callback_mercado_pago({"type": "order", "action": "order.processed", "data": {"id": order_id}})
+            # user_id da conta do cliente: o webhook consulta a order com o token dele.
+            cliente = db.query(Cliente).filter(Cliente.id == tela.cliente_id).first()
+            processar_callback_mercado_pago({
+                "type": "order",
+                "action": "order.processed",
+                "data": {"id": order_id},
+                "user_id": (cliente.mp_user_id if cliente else None) or None,
+            })
             db.expire_all()
             venda = _venda_da_order(db, order_id)
         command_id = venda.command_id if venda else None
