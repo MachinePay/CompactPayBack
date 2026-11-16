@@ -343,7 +343,7 @@ def criar_maquina(
         "mercado_pago_point": bool(cliente.mp_access_token),
         # Maquininha PAX com o SDK ConfraPag (android-confrapag/, rotas /confrapag).
         # Sem token: o CNPJ do estabelecimento fica na chave de cada terminal.
-        "confrapag_sdk": True,
+        "confrapag_sdk": bool(cliente.cliente_confrapag),
     }[banco_pagamento]
     if not banco_habilitado:
         raise HTTPException(status_code=422, detail="O banco escolhido nao esta habilitado para este cliente")

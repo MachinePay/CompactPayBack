@@ -74,6 +74,7 @@ def create_cliente_for_user(db: Session, usuario: UsuarioCreate | UsuarioUpdate)
         cliente_pagbank=bool(usuario.cliente_pagbank),
         cliente_s6pay=bool(usuario.cliente_s6pay),
         cliente_token_play=bool(usuario.cliente_token_play),
+        cliente_confrapag=bool(usuario.cliente_confrapag),
         mp_public_key=usuario.mp_public_key,
         mp_access_token=usuario.mp_access_token,
         mp_client_id=usuario.mp_client_id,
@@ -113,6 +114,7 @@ def sync_cliente_from_usuario(db: Session, usuario: UsuarioCreate | UsuarioUpdat
     cliente.cliente_pagbank = bool(usuario.cliente_pagbank)
     cliente.cliente_s6pay = bool(usuario.cliente_s6pay)
     cliente.cliente_token_play = bool(usuario.cliente_token_play)
+    cliente.cliente_confrapag = bool(usuario.cliente_confrapag)
 
     cliente.cliente_sumup = bool(usuario.cliente_sumup)
     if not usuario.cliente_sumup:
@@ -163,6 +165,7 @@ def sync_db_usuario_fields(db_usuario: Usuario, usuario: UsuarioCreate | Usuario
     db_usuario.cliente_pagbank = bool(usuario.cliente_pagbank)
     db_usuario.cliente_s6pay = bool(usuario.cliente_s6pay)
     db_usuario.cliente_token_play = bool(usuario.cliente_token_play)
+    db_usuario.cliente_confrapag = bool(usuario.cliente_confrapag)
 
     db_usuario.cliente_sumup = bool(usuario.cliente_sumup)
     if not usuario.cliente_sumup:
@@ -218,6 +221,7 @@ def serialize_usuario(db_usuario: Usuario) -> dict:
         "cliente_pagbank": bool(db_usuario.cliente_pagbank or (cliente and cliente.cliente_pagbank)),
         "cliente_s6pay": bool(db_usuario.cliente_s6pay or (cliente and cliente.cliente_s6pay)),
         "cliente_token_play": bool(db_usuario.cliente_token_play or (cliente and cliente.cliente_token_play)),
+        "cliente_confrapag": bool(db_usuario.cliente_confrapag or (cliente and cliente.cliente_confrapag)),
         "mp_public_key": db_usuario.mp_public_key or (cliente.mp_public_key if cliente else None),
         "mp_access_token": "********" if db_usuario.mp_access_token or (cliente and cliente.mp_access_token) else None,
         "mp_client_id": db_usuario.mp_client_id or (cliente.mp_client_id if cliente else None),

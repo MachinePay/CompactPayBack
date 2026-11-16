@@ -35,6 +35,8 @@ class Cliente(Base):
     cliente_pagbank = Column(Boolean, nullable=True)
     cliente_s6pay = Column(Boolean, nullable=True)
     cliente_token_play = Column(Boolean, nullable=True)
+    # Maquininha PAX com o SDK ConfraPag (banco confrapag_sdk). Sem credencial: o CNPJ vai na chave do terminal.
+    cliente_confrapag = Column(Boolean, nullable=True)
     mp_public_key = Column(String, nullable=True)
     mp_access_token = Column(String, nullable=True)
     mp_client_id = Column(String, nullable=True)
@@ -86,6 +88,8 @@ class Usuario(Base):
     cliente_pagbank = Column(Boolean, nullable=True)
     cliente_s6pay = Column(Boolean, nullable=True)
     cliente_token_play = Column(Boolean, nullable=True)
+    # Maquininha PAX com o SDK ConfraPag (banco confrapag_sdk). Sem credencial: o CNPJ vai na chave do terminal.
+    cliente_confrapag = Column(Boolean, nullable=True)
     mp_public_key = Column(String, nullable=True)
     mp_access_token = Column(String, nullable=True)
     mp_client_id = Column(String, nullable=True)

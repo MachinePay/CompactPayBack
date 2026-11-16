@@ -161,6 +161,7 @@ def startup_event():
             "cliente_pagbank",
             "cliente_s6pay",
             "cliente_token_play",
+            "cliente_confrapag",
             "mp_public_key",
             "mp_access_token",
             "mp_client_id",
@@ -183,7 +184,7 @@ def startup_event():
             "stone_last_sync_at",
         ]:
             if column_name not in cliente_columns:
-                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup", "cliente_stone"} else "TIMESTAMP" if column_name in {"mp_token_expires_at", "sumup_last_sync_at", "stone_last_sync_at"} else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
+                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup", "cliente_stone", "cliente_confrapag"} else "TIMESTAMP" if column_name in {"mp_token_expires_at", "sumup_last_sync_at", "stone_last_sync_at"} else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
                 connection.execute(text(f"ALTER TABLE clientes ADD COLUMN {column_name} {column_type}"))
 
         usuario_columns = {column["name"] for column in inspector.get_columns("usuarios")}
@@ -202,6 +203,7 @@ def startup_event():
             "cliente_pagbank",
             "cliente_s6pay",
             "cliente_token_play",
+            "cliente_confrapag",
             "mp_public_key",
             "mp_access_token",
             "mp_client_id",
@@ -222,7 +224,7 @@ def startup_event():
             "stone_service_referer_name",
         ]:
             if column_name not in usuario_columns:
-                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup", "cliente_stone"} else "TIMESTAMP" if column_name == "mp_token_expires_at" else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
+                column_type = "BOOLEAN" if column_name in {"mp_live_mode", "cliente_mercado_pago", "cliente_pagbank", "cliente_s6pay", "cliente_token_play", "cliente_sumup", "cliente_stone", "cliente_confrapag"} else "TIMESTAMP" if column_name == "mp_token_expires_at" else "FLOAT" if column_name in {"endereco_latitude", "endereco_longitude"} else "INTEGER" if column_name == "mp_pos_category" else "VARCHAR"
                 connection.execute(text(f"ALTER TABLE usuarios ADD COLUMN {column_name} {column_type}"))
 
         maquina_columns = {column["name"] for column in inspector.get_columns("maquinas")}

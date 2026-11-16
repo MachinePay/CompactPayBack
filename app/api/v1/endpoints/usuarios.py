@@ -140,7 +140,7 @@ def atualizar_usuario(
             f"cliente_id={cliente_id} senha_alterada={bool(usuario.password)} "
             f"mp_habilitado={bool(usuario.cliente_mercado_pago)} pagbank={bool(usuario.cliente_pagbank)} "
             f"s6pay={bool(usuario.cliente_s6pay)} token_play={bool(usuario.cliente_token_play)} "
-            f"sumup={bool(usuario.cliente_sumup)} stone={bool(usuario.cliente_stone)}"
+            f"sumup={bool(usuario.cliente_sumup)} stone={bool(usuario.cliente_stone)} confrapag={bool(usuario.cliente_confrapag)}"
         ),
     )
 

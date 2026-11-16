@@ -41,7 +41,8 @@ def _setup():
     db = SessionLocal()
     try:
         a = Cliente(nome_empresa="Loja A", email_contato="a@confrapag.test", api_key="k-cf-a", cnpj="12.345.678/0001-90")
-        b = Cliente(nome_empresa="Loja B", email_contato="b@confrapag.test", api_key="k-cf-b")
+        b = Cliente(nome_empresa="Loja B", email_contato="b@confrapag.test", api_key="k-cf-b",
+                    cliente_confrapag=True)
         db.add_all([a, b])
         db.commit()
         db.add_all([
@@ -225,3 +226,26 @@ def test_painel_cria_maquina_confrapag_sem_token_e_sem_caixa_mp(monkeypatch):
         )
         assert resp.status_code == 200, resp.text
         assert resp.json()["banco_pagamento"] == "confrapag_sdk"
+
+
+def test_banco_confrapag_so_para_cliente_marcado():
+    with TestClient(app) as client:
+        resp = client.post(
+            "/api/v1/maquinas",
+            json={"id_hardware": "CF-SEM-FLAG", "nome": "Sem flag", "cliente_id": CLIENTE_A, "banco_pagamento": "confrapag_sdk"},
+            headers=_login(client, "admin@confrapag.test"),
+        )
+        assert resp.status_code == 422
+
+
+def test_checkbox_cliente_confrapag_salva_no_cliente():
+    with TestClient(app) as client:
+        admin = _login(client, "admin@confrapag.test")
+        resp = client.post("/api/v1/usuarios", json={
+            "email": "novo-confrapag@example.com", "password": "Senha@12345", "role": "cliente",
+            "nome": "Novo", "cliente_confrapag": True,
+        }, headers=admin)
+        assert resp.status_code == 200, resp.text
+        clientes = client.get("/api/v1/clientes", headers=admin).json()
+        novo = next(c for c in clientes if c.get("cliente_confrapag"))
+        assert novo["cliente_confrapag"] is True
