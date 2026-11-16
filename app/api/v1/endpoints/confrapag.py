@@ -157,6 +157,19 @@ def obter_maquina(machine_id: str, db: Session = Depends(get_db), terminal=Depen
     }
 
 
+class ValoresConfrapag(BaseModel):
+    valores: list[float] = Field(min_length=1, max_length=12)
+
+
+@router.put("/maquinas/{machine_id}/valores")
+def salvar_valores(machine_id: str, dados: ValoresConfrapag, db: Session = Depends(get_db), terminal=Depends(get_terminal)):
+    """Valores cadastrados na maquininha (tela de configuracoes, protegida por PIN)."""
+    maquina = svc.maquina_do_terminal(db, terminal, machine_id)
+    produtos = svc.salvar_valores(db, maquina, dados.valores)
+    print(f"[ConfraPag] valores salvos pela maquininha terminal_app={terminal.id} machine={machine_id} valores={[p['valor'] for p in produtos]}")
+    return {"maquina_id": maquina.id_hardware, "produtos": produtos}
+
+
 @router.post("/maquinas/{machine_id}/verificar-online")
 def verificar_online(machine_id: str, db: Session = Depends(get_db), terminal=Depends(get_terminal)):
     maquina = svc.maquina_do_terminal(db, terminal, machine_id)

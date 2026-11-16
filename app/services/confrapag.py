@@ -91,6 +91,31 @@ def produtos_da_maquina(db: Session, maquina: Maquina) -> list[dict]:
     return [{"id": None, "nome": "", "valor": v} for v in VALORES_PADRAO]
 
 
+VALORES_MAXIMO = 12
+VALOR_MAXIMO = 1000.0
+
+
+def salvar_valores(db: Session, maquina: Maquina, valores: list[float]) -> list[dict]:
+    """Valores cadastrados na propria maquininha (configuracoes com PIN).
+
+    Viram os produtos da maquina no sistema: o painel mostra os mesmos valores e
+    o pagamento continua so aceitando eles."""
+    limpos = sorted({round(float(v), 2) for v in valores})
+    if not limpos:
+        raise HTTPException(status_code=422, detail="Informe pelo menos um valor")
+    if len(limpos) > VALORES_MAXIMO:
+        raise HTTPException(status_code=422, detail=f"No maximo {VALORES_MAXIMO} valores")
+    if any(v <= 0 or v > VALOR_MAXIMO for v in limpos):
+        raise HTTPException(status_code=422, detail=f"Cada valor precisa ser maior que zero e ate R$ {VALOR_MAXIMO:.0f}")
+
+    db.query(Produto).filter(Produto.maquina_id == maquina.id_hardware).delete(synchronize_session=False)
+    for valor in limpos:
+        nome = f"R$ {valor:.2f}".replace(".", ",")
+        db.add(Produto(nome=nome, valor=valor, maquina_id=maquina.id_hardware))
+    db.commit()
+    return produtos_da_maquina(db, maquina)
+
+
 # ---- Pagamento ------------------------------------------------------------
 
 def _validar_referencia(maquina: Maquina, referencia: str) -> None:

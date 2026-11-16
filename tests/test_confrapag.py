@@ -249,3 +249,19 @@ def test_checkbox_cliente_confrapag_salva_no_cliente():
         clientes = client.get("/api/v1/clientes", headers=admin).json()
         novo = next(c for c in clientes if c.get("cliente_confrapag"))
         assert novo["cliente_confrapag"] is True
+
+
+def test_valores_salvos_na_maquininha_viram_produtos_e_travam_o_pagamento(mqtt):
+    with TestClient(app) as client:
+        headers = _chave(client, cliente_id=CLIENTE_B, cnpj="98765432000110")
+        resp = client.put("/api/v1/confrapag/maquinas/CF-PAX-B/valores", json={"valores": [3, 1.5, 3]}, headers=headers)
+        assert resp.status_code == 200, resp.text
+        assert [p["valor"] for p in resp.json()["produtos"]] == [1.5, 3.0]
+        maquina = client.get("/api/v1/confrapag/maquinas/CF-PAX-B", headers=headers).json()
+        assert [p["valor"] for p in maquina["produtos"]] == [1.5, 3.0]
+        assert _pagar(client, headers, maquina="CF-PAX-B", tid="TID-V1", valor=5.0).status_code == 422
+        assert _pagar(client, headers, maquina="CF-PAX-B", tid="TID-V2", valor=3.0).status_code == 200
+        # Valor invalido nao apaga o que ja estava salvo.
+        assert client.put("/api/v1/confrapag/maquinas/CF-PAX-B/valores", json={"valores": [0]}, headers=headers).status_code == 422
+        # Outra maquina de outro cliente: 404.
+        assert client.put("/api/v1/confrapag/maquinas/CF-PAX/valores", json={"valores": [2]}, headers=headers).status_code == 404
