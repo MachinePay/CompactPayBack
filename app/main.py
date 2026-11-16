@@ -240,6 +240,11 @@ def startup_event():
         for column_name in ["wifi_ssid", "wifi_credencial_hash"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} VARCHAR"))
+        # Banco confrapag_sdk: chave de teste (app/models/confrapag.py).
+        if "terminais_confrapag" in inspector.get_table_names():
+            confrapag_columns = {c["name"] for c in inspector.get_columns("terminais_confrapag")}
+            if "modo_teste" not in confrapag_columns:
+                connection.execute(text("ALTER TABLE terminais_confrapag ADD COLUMN modo_teste BOOLEAN DEFAULT FALSE"))
         if "maquinas_wifi_tentativas" in inspector.get_table_names():
             tentativa_columns = {c["name"] for c in inspector.get_columns("maquinas_wifi_tentativas")}
             if "origem" not in tentativa_columns:

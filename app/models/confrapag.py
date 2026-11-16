@@ -20,5 +20,8 @@ class TerminalConfrapag(Base):
     chave_prefixo = Column(String, nullable=False)
     chave_hash = Column(String, unique=True, index=True, nullable=False)
     ativo = Column(Boolean, default=True, nullable=False)
+    # Chave de teste (marcada no painel): aceita "pagamento de teste" do app de teste,
+    # que libera o pulso sem cartao. Venda fica como teste, fora do faturamento.
+    modo_teste = Column(Boolean, default=False, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
     ultimo_uso_em = Column(DateTime, nullable=True)

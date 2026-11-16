@@ -265,3 +265,38 @@ def test_valores_salvos_na_maquininha_viram_produtos_e_travam_o_pagamento(mqtt):
         assert client.put("/api/v1/confrapag/maquinas/CF-PAX-B/valores", json={"valores": [0]}, headers=headers).status_code == 422
         # Outra maquina de outro cliente: 404.
         assert client.put("/api/v1/confrapag/maquinas/CF-PAX/valores", json={"valores": [2]}, headers=headers).status_code == 404
+
+
+def test_pagamento_de_teste_so_com_chave_em_modo_teste(mqtt):
+    with TestClient(app) as client:
+        admin = _login(client, "admin@confrapag.test")
+        resp = client.post("/api/v1/confrapag/terminais", json={"nome": "PAX teste", "cliente_id": CLIENTE_A}, headers=admin)
+        headers = {"X-Terminal-Key": resp.json()["chave"]}
+        terminal_id = resp.json()["id"]
+
+        def pagar_teste(tid):
+            return client.post("/api/v1/confrapag/pagamentos", json={
+                "maquina_id": "CF-PAX", "valor": 7.5, "tid": tid, "referencia": _ref("CF-PAX"),
+                "metodo": "teste", "teste": True}, headers=headers)
+
+        assert pagar_teste("REF-1").status_code == 403
+        assert mqtt == []
+        # Cliente comum nao liga o modo teste; admin liga.
+        dono = _login(client, "dono-b@confrapag.test")
+        assert client.patch(f"/api/v1/confrapag/terminais/{terminal_id}", json={"modo_teste": True}, headers=dono).status_code == 403
+        assert client.patch(f"/api/v1/confrapag/terminais/{terminal_id}", json={"modo_teste": True}, headers=admin).json()["modo_teste"] is True
+
+        resp = pagar_teste("REF-2")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["tid"] == "TESTE-REF-2" and resp.json()["pulsos"] == 7
+        assert len(mqtt) == 1
+        db = SessionLocal()
+        try:
+            venda = db.query(VendaPagamento).filter(VendaPagamento.provider_payment_id == "TESTE-REF-2").one()
+            assert venda.is_teste is True and venda.conta_faturamento is False
+        finally:
+            db.close()
+        # Mesmo em modo teste, valor fora da lista nao passa.
+        assert client.post("/api/v1/confrapag/pagamentos", json={
+            "maquina_id": "CF-PAX", "valor": 50, "tid": "REF-3", "referencia": _ref("CF-PAX"), "teste": True},
+            headers=headers).status_code == 422

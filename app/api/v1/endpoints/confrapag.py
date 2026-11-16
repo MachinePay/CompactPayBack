@@ -52,6 +52,7 @@ class PagamentoConfrapag(BaseModel):
     bandeira: str | None = Field(default=None, max_length=40)
     autorizacao: str | None = Field(default=None, max_length=40)
     sn_terminal: str | None = Field(default=None, max_length=80)
+    teste: bool = False  # so o app de teste manda; precisa da chave em modo teste
 
 
 def _serialize_terminal(terminal: TerminalConfrapag) -> dict:
@@ -62,6 +63,7 @@ def _serialize_terminal(terminal: TerminalConfrapag) -> dict:
         "cnpj": terminal.cnpj,
         "chave_prefixo": terminal.chave_prefixo,
         "ativo": terminal.ativo,
+        "modo_teste": bool(terminal.modo_teste),
         "created_at": terminal.created_at,
         "ultimo_uso_em": terminal.ultimo_uso_em,
     }
@@ -138,12 +140,37 @@ def revogar_terminal(terminal_id: int, db: Session = Depends(get_db), user=Depen
     return _serialize_terminal(terminal)
 
 
+class ModoTeste(BaseModel):
+    modo_teste: bool
+
+
+@router.patch("/terminais/{terminal_id}")
+def alterar_modo_teste(terminal_id: int, dados: ModoTeste, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Liga/desliga a chave de teste (pulso sem cartao). So admin."""
+    if not eh_admin(user):
+        raise HTTPException(status_code=403, detail="Apenas admin pode alterar o modo teste")
+    terminal = db.query(TerminalConfrapag).filter(TerminalConfrapag.id == terminal_id).first()
+    if not terminal:
+        raise HTTPException(status_code=404, detail="Terminal nao encontrado")
+    terminal.modo_teste = dados.modo_teste
+    registrar_auditoria(
+        db,
+        user,
+        acao="CONFRAPAG_TERMINAL_MODO_TESTE",
+        entidade_tipo="terminal_confrapag",
+        entidade_id=terminal.id,
+        descricao=f"Terminal ConfraPag nome={terminal.nome} modo_teste={dados.modo_teste}",
+    )
+    db.commit()
+    return _serialize_terminal(terminal)
+
+
 # ---- App da maquininha ----------------------------------------------------
 
 @router.get("/terminal")
 def dados_do_terminal(terminal=Depends(get_terminal)):
     """O app pega aqui o CNPJ que vai no User(identification, environment) do SDK."""
-    return {"id": terminal.id, "nome": terminal.nome, "cnpj": terminal.cnpj}
+    return {"id": terminal.id, "nome": terminal.nome, "cnpj": terminal.cnpj, "modo_teste": bool(terminal.modo_teste)}
 
 
 @router.get("/maquinas/{machine_id}")
@@ -191,6 +218,7 @@ def confirmar_pagamento(dados: PagamentoConfrapag, db: Session = Depends(get_db)
         bandeira=dados.bandeira,
         autorizacao=dados.autorizacao,
         sn_terminal=dados.sn_terminal,
+        teste=dados.teste,
     )
 
 

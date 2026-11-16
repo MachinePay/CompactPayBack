@@ -150,14 +150,21 @@ def registrar_pagamento_e_liberar(
     bandeira: str | None,
     autorizacao: str | None,
     sn_terminal: str | None,
+    teste: bool = False,
 ) -> dict:
     tid = (tid or "").strip()
     if not tid:
         raise HTTPException(status_code=422, detail="Venda sem TID")
+    if teste:
+        # Pulso sem cartao: so com a chave marcada como teste no painel.
+        if not terminal.modo_teste:
+            raise HTTPException(status_code=403, detail="Esta chave nao esta liberada para pagamento de teste")
+        if not tid.startswith("TESTE-"):
+            tid = f"TESTE-{tid}"
     _validar_referencia(maquina, referencia)
     amount = _validar_valor(db, maquina, valor)
     metodo = (metodo or "").strip().lower()
-    metodo = metodo if metodo in METODOS else None
+    metodo = metodo if metodo in METODOS or (teste and metodo == "teste") else None
     machine_id = maquina.id_hardware
 
     _acquire_payment_lock(db, f"confrapag_tid_{tid}")
@@ -183,7 +190,7 @@ def registrar_pagamento_e_liberar(
 
     command_id = str(uuid4())
     agora = datetime.utcnow()
-    tipo_pagamento = {"credito": "credit_card", "debito": "debit_card"}.get(metodo or "")
+    tipo_pagamento = {"credito": "credit_card", "debito": "debit_card", "teste": "teste"}.get(metodo or "")
     transacao = Transacao(
         maquina_id=machine_id,
         tipo=EventoTipo.in_flux,
@@ -196,7 +203,7 @@ def registrar_pagamento_e_liberar(
         maquina_id=machine_id,
         categoria="PAGAMENTO",
         descricao=(
-            f"Pagamento ConfraPag SDK aprovado (tid={tid}, nsu={nsu or 'n/a'}, aut={autorizacao or 'n/a'}, "
+            f"{'TESTE sem cartao ConfraPag' if teste else 'Pagamento ConfraPag SDK aprovado'} (tid={tid}, nsu={nsu or 'n/a'}, aut={autorizacao or 'n/a'}, "
             f"terminal_id={sn_terminal or 'n/a'}, terminal_app={terminal.nome}, metodo={metodo or 'n/a'}, "
             f"ref={referencia})"
         ),
@@ -224,6 +231,9 @@ def registrar_pagamento_e_liberar(
         banco="ConfraPag",
         status_pulso="pendente",
         command_id=command_id,
+        conta_faturamento=not teste,
+        conta_ticket_medio=not teste,
+        is_teste=teste,
         created_at=agora,
     )
     db.commit()
