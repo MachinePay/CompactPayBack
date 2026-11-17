@@ -561,3 +561,135 @@ def test_numero_de_manutencao_vai_para_a_tela_com_o_do_cliente_como_reserva(mp):
         assert client.put("/api/v1/tela/maquinas/TP-1/manutencao", json={"telefone": ""}, headers=admin).json()["telefone"] is None
         assert client.put("/api/v1/tela/maquinas/TP-1/manutencao", json={"telefone": "1"},
                           headers=_login(client, "dono-b@tela.test")).status_code == 404
+
+
+# ---- Tela com maquininha SumUp (Cloud API, sem webhook) --------------------------------
+
+@pytest.fixture
+def sumup(mp, monkeypatch):
+    """Maquina SumUp do cliente A com a maquininha pareada; Cloud API simulada."""
+    import app.services.sumup_webhook as sw
+    from app.services import tela_sumup
+
+    db = SessionLocal()
+    try:
+        db.query(Cliente).filter(Cliente.id == IDS["a"]).update(
+            {Cliente.sumup_api_key: "sup_sk_cliente_a", Cliente.sumup_merchant_code: "MCA"})
+        if not db.query(Maquina).filter(Maquina.id_hardware == "TP-SU").first():
+            db.add(Maquina(id_hardware="TP-SU", nome_local="Grua SumUp", cliente_id=IDS["a"],
+                           banco_pagamento="sumup", sumup_reader_id="rdr_123", ultimo_sinal=datetime.utcnow()))
+            db.commit()
+            p = Produto(nome="1 jogada", valor=4.0, maquina_id="TP-SU")
+            db.add(p)
+            db.commit()
+            IDS["p_su"] = p.id
+    finally:
+        db.close()
+
+    class Fake:
+        pass
+
+    fake = Fake()
+    fake.checkouts, fake.terminados, fake.pulsos, fake.tokens = {}, [], [], []
+
+    def create_reader_checkout(token, merchant, reader_id, amount, client_transaction_id, description=None, **kw):
+        fake.tokens.append(token)
+        import uuid
+
+        cid = f"chk_{uuid.uuid4().hex[:10]}"
+        fake.checkouts[cid] = {"status": "PENDING", "amount": amount, "reader": reader_id}
+        return {"checkout_id": cid, "client_transaction_id": client_transaction_id}
+
+    def get_reader_checkout(token, merchant, reader_id, checkout_id):
+        fake.tokens.append(token)
+        c = fake.checkouts[checkout_id]
+        return {"status": c["status"], "transaction_id": f"tx_{checkout_id}", "card_type": "VISA"}
+
+    monkeypatch.setattr(tela_sumup, "create_reader_checkout", create_reader_checkout)
+    monkeypatch.setattr(tela_sumup, "get_reader_checkout", get_reader_checkout)
+    monkeypatch.setattr(tela_sumup, "terminate_reader_checkout",
+                        lambda token, merchant, reader_id: fake.terminados.append(reader_id))
+    monkeypatch.setattr(tela_sumup, "create_reader", lambda token, merchant, code, name=None: {
+        "id": "rdr_novo", "name": name, "status": "processing", "device_identifier": "SN999"})
+    # Processamento de cobranca SumUp que ja existia (sem alteracao).
+    monkeypatch.setattr(sw, "get_reader_checkout", get_reader_checkout)
+    monkeypatch.setattr(sw, "_acquire_payment_lock", lambda db, key: None)
+    monkeypatch.setattr(sw, "publish_machine_credit_pulses", lambda machine_id, **kw: fake.pulsos.append((machine_id, kw)))
+    monkeypatch.setattr(sw, "get_command_status", lambda command_id: "enviado")
+    return fake
+
+
+def test_tela_sumup_cobra_na_maquininha_e_credita_uma_vez_sem_webhook(sumup, monkeypatch):
+    import app.services.sumup_poller as poller
+
+    with TestClient(app) as client:
+        headers = _chave(client, maquina="TP-SU", point=None, nome="Tela SumUp")
+        criada = client.post("/api/v1/tela/cobrancas", json={"produto_id": IDS["p_su"]}, headers=headers)
+        assert criada.status_code == 200, criada.text
+        cid = criada.json()["order_id"]
+        assert sumup.checkouts[cid] == {"status": "PENDING", "amount": 4.0, "reader": "rdr_123"}
+
+        assert client.get(f"/api/v1/tela/cobrancas/{cid}", headers=headers).json()["situacao"] == "aguardando"
+        assert sumup.pulsos == []
+
+        sumup.checkouts[cid]["status"] = "SUCCESSFUL"
+        pago = client.get(f"/api/v1/tela/cobrancas/{cid}", headers=headers).json()
+        assert pago["situacao"] == "pago" and pago["command_id"]
+        client.get(f"/api/v1/tela/cobrancas/{cid}", headers=headers)  # tela consulta de novo
+
+    assert [m for m, _ in sumup.pulsos] == ["TP-SU"]
+    db = SessionLocal()
+    try:
+        vendas = db.query(VendaPagamento).filter(VendaPagamento.provider_payment_id == f"tx_{cid}").all()
+        assert len(vendas) == 1 and vendas[0].provider == "sumup"
+        # O poller da SumUp pula essa transacao: mesmo transaction_id ja registrado.
+        assert poller._ja_processada(db, f"tx_{cid}")
+    finally:
+        db.close()
+    # So a credencial do proprio cliente.
+    assert set(sumup.tokens) == {"sup_sk_cliente_a"}
+
+
+def test_tela_sumup_cancela_e_nao_ve_checkout_de_outra_maquina(sumup):
+    with TestClient(app) as client:
+        headers = _chave(client, maquina="TP-SU", point=None, nome="Tela SumUp 2")
+        cid = client.post("/api/v1/tela/cobrancas", json={"produto_id": IDS["p_su"]}, headers=headers).json()["order_id"]
+        outra = _chave(client, maquina="TP-1", nome="Tela Point")
+        assert client.get(f"/api/v1/tela/cobrancas/{cid}", headers=outra).status_code in (404, 502)
+        assert client.post(f"/api/v1/tela/cobrancas/{cid}/cancelar", headers=headers).status_code == 200
+        assert sumup.terminados == ["rdr_123"]
+        sumup.checkouts[cid]["status"] = "FAILED"
+        assert client.get(f"/api/v1/tela/cobrancas/{cid}", headers=headers).json()["situacao"] == "cancelado"
+    assert sumup.pulsos == []
+
+
+def test_painel_pareia_maquininha_sumup_pela_cloud_api(sumup):
+    with TestClient(app) as client:
+        admin = _login(client, "admin@tela.test")
+        resp = client.post("/api/v1/tela/maquinas/TP-SU/sumup/parear", json={"pairing_code": "AB12CD"}, headers=admin)
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["reader"]["id"] == "rdr_novo"
+        # Rotas de caixa sao so do Mercado Pago.
+        assert client.get("/api/v1/tela/maquinas/TP-SU/caixa", headers=admin).status_code == 422
+    db = SessionLocal()
+    try:
+        m = db.query(Maquina).filter(Maquina.id_hardware == "TP-SU").one()
+        assert m.sumup_reader_id == "rdr_novo" and m.sumup_device_code == "SN999"
+        m.sumup_reader_id = "rdr_123"
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_tela_sumup_sem_maquininha_pareada_nao_gera_chave(sumup):
+    db = SessionLocal()
+    try:
+        db.query(Maquina).filter(Maquina.id_hardware == "TP-SU").update({Maquina.sumup_reader_id: None})
+        db.commit()
+        with TestClient(app) as client:
+            resp = _tela(client, maquina="TP-SU", point=None, nome="Sem reader")
+            assert resp.status_code == 422 and "Cloud API" in resp.json()["detail"]
+    finally:
+        db.query(Maquina).filter(Maquina.id_hardware == "TP-SU").update({Maquina.sumup_reader_id: "rdr_123"})
+        db.commit()
+        db.close()

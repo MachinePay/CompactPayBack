@@ -21,6 +21,7 @@ from app.models.models import Cliente
 from app.models.produto import Produto
 from app.models.tela_point import TelaPoint, VideoTela
 from app.services import tela_point as svc
+from app.services import tela_sumup
 from app.services import tela_video
 from app.services.auditoria import registrar_auditoria
 from app.services.smartapp import maquina_online, verificar_placa_online
@@ -46,11 +47,16 @@ def get_tela(
 class TelaCreate(BaseModel):
     maquina_id: str = Field(min_length=1)
     nome: str = Field(min_length=1, max_length=80)
-    point_terminal_id: str = Field(min_length=3, max_length=120)
+    # Point: id da Point no MP. SumUp: nao precisa (usa a maquininha pareada na maquina).
+    point_terminal_id: str | None = Field(default=None, max_length=120)
 
 
 class ManutencaoUpdate(BaseModel):
     telefone: str | None = Field(default=None, max_length=40)
+
+
+class PareamentoSumup(BaseModel):
+    pairing_code: str = Field(min_length=4, max_length=20)
 
 
 class CobrancaCreate(BaseModel):
@@ -103,22 +109,31 @@ def listar_points(
 
 # ---- Painel: caixa Mercado Pago da maquina ----------------------------------------
 
-def _maquina_de_tela(db: Session, user, machine_id: str):
+def _maquina_de_tela(db: Session, user, machine_id: str, bancos: set[str] | None = None):
+    """Maquina do usuario com um banco que aceita a tela (Point ou SumUp). As rotas
+    de caixa do Mercado Pago passam bancos={Point}."""
     maquina = obter_maquina_do_usuario(db, user, machine_id)
-    if maquina.banco_pagamento != svc.BANCO_TELA_POINT:
-        raise HTTPException(status_code=422, detail="A maquina precisa estar com o banco Mercado Pago Point (tela)")
+    if maquina.banco_pagamento not in (bancos or svc.BANCOS_TELA):
+        raise HTTPException(
+            status_code=422,
+            detail="A maquina precisa estar com o banco Mercado Pago Point (tela) ou SumUp",
+        )
     return maquina
+
+
+def _so_point(db: Session, user, machine_id: str):
+    return _maquina_de_tela(db, user, machine_id, {svc.BANCO_TELA_POINT})
 
 
 @router.get("/maquinas/{machine_id}/caixa")
 def caixa_da_maquina(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    maquina = _maquina_de_tela(db, user, machine_id)
+    maquina = _so_point(db, user, machine_id)
     return {"maquina_id": maquina.id_hardware, "caixa": svc.caixa_da_maquina(maquina)}
 
 
 @router.post("/maquinas/{machine_id}/caixa")
 def criar_caixa(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    maquina = _maquina_de_tela(db, user, machine_id)
+    maquina = _so_point(db, user, machine_id)
     tinha = svc.caixa_da_maquina(maquina) is not None
     caixa = svc.criar_caixa(db, maquina)
     if not tinha:
@@ -132,6 +147,38 @@ def criar_caixa(machine_id: str, db: Session = Depends(get_db), user=Depends(get
         )
         db.commit()
     return {"maquina_id": maquina.id_hardware, "caixa": caixa}
+
+
+# ---- Painel: maquininha SumUp pela Cloud API -------------------------------------
+
+@router.get("/maquinas/{machine_id}/sumup")
+def ver_maquininha_sumup(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    maquina = _maquina_de_tela(db, user, machine_id, {tela_sumup.BANCO_TELA_SUMUP})
+    return {"maquina_id": maquina.id_hardware, **tela_sumup.situacao_reader(db, maquina)}
+
+
+@router.post("/maquinas/{machine_id}/sumup/parear")
+def parear_maquininha_sumup(
+    machine_id: str,
+    dados: PareamentoSumup,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Vincula a maquininha SumUp a esta maquina pela Cloud API, com o codigo que
+    aparece nela (Conexoes > API > Conectar; vale 5 minutos)."""
+    maquina = _maquina_de_tela(db, user, machine_id, {tela_sumup.BANCO_TELA_SUMUP})
+    anterior = maquina.sumup_reader_id
+    reader = tela_sumup.parear(db, maquina, dados.pairing_code.strip())
+    registrar_auditoria(
+        db,
+        user,
+        acao="TELA_SUMUP_PAREADA",
+        entidade_tipo="maquina",
+        entidade_id=maquina.id_hardware,
+        descricao=f"Maquininha SumUp pareada pela Cloud API reader {anterior} -> {reader['id']}",
+    )
+    db.commit()
+    return {"maquina_id": maquina.id_hardware, "reader": reader}
 
 
 # ---- Painel: numero de manutencao ---------------------------------------------
@@ -291,13 +338,17 @@ def ativar_modo_integrado(
 
 @router.post("/telas")
 def criar_tela(dados: TelaCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
-    maquina = obter_maquina_do_usuario(db, user, dados.maquina_id.strip())
-    if maquina.banco_pagamento != svc.BANCO_TELA_POINT:
-        raise HTTPException(status_code=422, detail="A maquina precisa estar com o banco Mercado Pago Point (tela)")
+    maquina = _maquina_de_tela(db, user, dados.maquina_id.strip())
     if not maquina.cliente_id:
         raise HTTPException(status_code=422, detail="Maquina sem cliente")
-    point_terminal_id = dados.point_terminal_id.strip()
-    svc.validar_point_livre(db, maquina, point_terminal_id)
+    if maquina.banco_pagamento == tela_sumup.BANCO_TELA_SUMUP:
+        # SumUp: a cobranca vai para a maquininha pareada na maquina (Cloud API).
+        point_terminal_id = tela_sumup.reader_da_maquina(maquina)
+    else:
+        point_terminal_id = (dados.point_terminal_id or "").strip()
+        if len(point_terminal_id) < 3:
+            raise HTTPException(status_code=422, detail="Escolha a Point desta maquina")
+        svc.validar_point_livre(db, maquina, point_terminal_id)
 
     # Uma tela ativa por maquina: cadastrar de novo troca a chave (tela perdida/trocada).
     anteriores = (
@@ -408,6 +459,11 @@ def baixar_video(db: Session = Depends(get_db), tela=Depends(get_tela)):
     )
 
 
+def _servico(maquina):
+    """Cobranca na Point (Mercado Pago) ou na maquininha SumUp, pelo banco da maquina."""
+    return tela_sumup if maquina.banco_pagamento == tela_sumup.BANCO_TELA_SUMUP else svc
+
+
 @router.post("/cobrancas")
 def criar_cobranca(dados: CobrancaCreate, db: Session = Depends(get_db), tela=Depends(get_tela)):
     maquina = svc.maquina_da_tela(db, tela)
@@ -415,16 +471,16 @@ def criar_cobranca(dados: CobrancaCreate, db: Session = Depends(get_db), tela=De
     # Nao cobra se a placa nao responder: o cliente pagaria e nao receberia o credito.
     if not verificar_placa_online(db, maquina):
         raise HTTPException(status_code=409, detail="Maquina indisponivel no momento")
-    return svc.criar_cobranca(db, tela, maquina, produto)
+    return _servico(maquina).criar_cobranca(db, tela, maquina, produto)
 
 
 @router.get("/cobrancas/{order_id}")
 def consultar_cobranca(order_id: str, db: Session = Depends(get_db), tela=Depends(get_tela)):
     maquina = svc.maquina_da_tela(db, tela)
-    return svc.consultar_cobranca(db, tela, maquina, order_id)
+    return _servico(maquina).consultar_cobranca(db, tela, maquina, order_id)
 
 
 @router.post("/cobrancas/{order_id}/cancelar")
 def cancelar_cobranca(order_id: str, db: Session = Depends(get_db), tela=Depends(get_tela)):
     maquina = svc.maquina_da_tela(db, tela)
-    return svc.cancelar_cobranca(db, tela, maquina, order_id)
+    return _servico(maquina).cancelar_cobranca(db, tela, maquina, order_id)

@@ -31,6 +31,9 @@ from app.services.mercado_pago import create_pos_for_machine, mp_request
 from app.services.pagamentos_helpers import parse_machine_id_from_external_reference
 
 BANCO_TELA_POINT = "mercado_pago_point"
+# Bancos que aceitam a tela touch: Point em modo integrado e SumUp pela Cloud API
+# (a parte SumUp fica em app/services/tela_sumup.py).
+BANCOS_TELA = {BANCO_TELA_POINT, "sumup"}
 MP_API = "https://api.mercadopago.com"
 
 # Status da order (API de Orders) -> o que a tela precisa saber.
@@ -72,7 +75,7 @@ def maquina_da_tela(db: Session, tela: TelaPoint) -> Maquina:
         .filter(
             Maquina.id_hardware == tela.maquina_id,
             Maquina.cliente_id == tela.cliente_id,
-            Maquina.banco_pagamento == BANCO_TELA_POINT,
+            Maquina.banco_pagamento.in_(BANCOS_TELA),
         )
         .first()
     )

@@ -178,6 +178,7 @@ def processar_callback_sumup(dados: dict):
         db.close()
 
     command_status = liberar_pulso_sumup(machine_id, amount, command_id)
+    pulsos = calcular_pulsos_por_valor(amount)  # faltava: o log abaixo quebrava com NameError
     print(
         f"[SumUp webhook] checkout processado checkout_id={checkout_id} reader={reader_id} "
         f"machine={machine_id} amount={amount} pulsos={pulsos} command_status={command_status}"
