@@ -54,6 +54,9 @@ class PagamentoConfrapag(BaseModel):
     autorizacao: str | None = Field(default=None, max_length=40)
     sn_terminal: str | None = Field(default=None, max_length=80)
     teste: bool = False  # so o app de teste manda; precisa da chave em modo teste
+    # Split feito pela maquininha depois de aprovar: ok | falhou (None = sem split).
+    split_status: str | None = Field(default=None, max_length=20)
+    split_centavos: int | None = Field(default=None, ge=0)
 
 
 def _serialize_terminal(terminal: TerminalConfrapag) -> dict:
@@ -233,6 +236,52 @@ def alterar_modo_teste(terminal_id: int, dados: ModoTeste, db: Session = Depends
     return _serialize_terminal(terminal)
 
 
+class SplitConfig(BaseModel):
+    ativo: bool = False
+    tipo: str = "percentual"
+    valor: float = 0.0
+    documento_destino: str | None = None
+    afiliador: str | None = Field(default=None, max_length=40)
+
+
+def _maquina_confrapag_admin(db: Session, user, machine_id: str) -> Maquina:
+    if not eh_admin(user):
+        raise HTTPException(status_code=403, detail="Apenas admin configura split")
+    maquina = (
+        db.query(Maquina)
+        .filter(Maquina.id_hardware == machine_id, Maquina.banco_pagamento == svc.BANCO_CONFRAPAG)
+        .first()
+    )
+    if not maquina:
+        raise HTTPException(status_code=404, detail="Maquina ConfraPag nao encontrada")
+    return maquina
+
+
+@router.get("/maquinas/{machine_id}/split")
+def obter_split(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    maquina = _maquina_confrapag_admin(db, user, machine_id)
+    return svc.serializar_split(svc.split_da_maquina(db, maquina.id_hardware))
+
+
+@router.put("/maquinas/{machine_id}/split")
+def salvar_split(machine_id: str, dados: SplitConfig, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    maquina = _maquina_confrapag_admin(db, user, machine_id)
+    split = svc.salvar_split(db, maquina, dados.ativo, dados.tipo, dados.valor, dados.documento_destino, dados.afiliador)
+    registrar_auditoria(
+        db,
+        user,
+        acao="CONFRAPAG_SPLIT_ALTERADO",
+        entidade_tipo="maquina",
+        entidade_id=maquina.id_hardware,
+        descricao=(
+            f"Split ConfraPag maquina={maquina.id_hardware} ativo={split.ativo} tipo={split.tipo} "
+            f"valor={split.valor} destino={split.documento_destino}"
+        ),
+    )
+    db.commit()
+    return svc.serializar_split(split)
+
+
 # ---- App da maquininha ----------------------------------------------------
 
 @router.get("/terminal")
@@ -251,6 +300,10 @@ def obter_maquina(machine_id: str, db: Session = Depends(get_db), terminal=Depen
         "produtos": svc.produtos_da_maquina(db, maquina),
         # Pix so aparece na maquininha quando o cliente tem token Confrapix.
         "pix_habilitado": svc.pix_habilitado(db, terminal),
+        # Split (so cartao, pelo SDK): a maquininha divide depois de aprovar.
+        "split": svc.serializar_split(svc.split_da_maquina(db, maquina.id_hardware)),
+        # Documento do dono (vai como primeiro estabelecimento no split).
+        "documento_cliente": terminal.cnpj,
     }
 
 
@@ -299,6 +352,8 @@ def confirmar_pagamento(dados: PagamentoConfrapag, db: Session = Depends(get_db)
         autorizacao=dados.autorizacao,
         sn_terminal=dados.sn_terminal,
         teste=dados.teste,
+        split_status=dados.split_status,
+        split_centavos=dados.split_centavos,
     )
 
 

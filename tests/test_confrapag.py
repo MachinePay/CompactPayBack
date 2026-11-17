@@ -507,3 +507,58 @@ def test_cliente_so_com_cpf_usa_o_cpf():
             db.close()
         codigo = _gerar_codigo(client, maquina="CF-PF", cliente_id=pf_id).json()["codigo"]
         assert client.post("/api/v1/confrapag/vincular", json={"codigo": codigo}).json()["cnpj"] == "12345678909"
+
+
+def test_pix_failed_encerra_sem_liberar(confrapix):
+    with TestClient(app) as client:
+        _token_confrapix(CLIENTE_A, "TOKEN-CONFRAPIX-A")
+        headers = _chave(client)
+        cid = client.post("/api/v1/confrapag/pix", json={"maquina_id": "CF-PAX", "valor": 7.5, "referencia": _ref("CF-PAX")}, headers=headers).json()["id"]
+        confrapix.transacoes[str(confrapix.proximo)]["status"] = "failed"
+        assert client.get(f"/api/v1/confrapag/pix/{cid}", headers=headers).json()["status"] == "failed"
+        consultas = len(confrapix.tokens)
+        # Final: nao reconsulta mais nem libera.
+        assert client.get(f"/api/v1/confrapag/pix/{cid}", headers=headers).json()["pago"] is False
+        assert len(confrapix.tokens) == consultas and confrapix.pulsos == []
+
+
+# ---- Split (admin) -----------------------------------------------------------
+
+def test_split_so_admin_configura_e_maquininha_recebe(mqtt):
+    with TestClient(app) as client:
+        admin = _login(client, "admin@confrapag.test")
+        dono_b = _login(client, "dono-b@confrapag.test")
+        corpo = {"ativo": True, "tipo": "percentual", "valor": 10, "documento_destino": "11.222.333/0001-81", "afiliador": "AF1"}
+        assert client.put("/api/v1/confrapag/maquinas/CF-PAX-B/split", json=corpo, headers=dono_b).status_code == 403
+        resp = client.put("/api/v1/confrapag/maquinas/CF-PAX/split", json=corpo, headers=admin)
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"ativo": True, "tipo": "percentual", "valor": 10.0, "documento_destino": "11222333000181", "afiliador": "AF1"}
+        headers = _chave(client)
+        maquina = client.get("/api/v1/confrapag/maquinas/CF-PAX", headers=headers).json()
+        assert maquina["split"]["ativo"] is True and maquina["documento_cliente"] == "12345678000190"
+        # Venda registra o resultado do split.
+        r = client.post("/api/v1/confrapag/pagamentos", json={
+            "maquina_id": "CF-PAX", "valor": 7.5, "tid": "TID-SPLIT", "referencia": _ref("CF-PAX"),
+            "metodo": "credito", "split_status": "ok", "split_centavos": 75}, headers=headers)
+        assert r.status_code == 200, r.text
+        db = SessionLocal()
+        try:
+            from app.models.models import HistoricoOperacao
+            h = db.query(HistoricoOperacao).filter(HistoricoOperacao.provider_payment_id == "TID-SPLIT").one()
+            assert "split=ok parte_destino_centavos=75" in h.descricao
+        finally:
+            db.close()
+        # Desligar.
+        off = client.put("/api/v1/confrapag/maquinas/CF-PAX/split", json={"ativo": False, "tipo": "valor", "valor": 0}, headers=admin)
+        assert off.json()["ativo"] is False
+
+
+def test_split_valida_valores():
+    with TestClient(app) as client:
+        admin = _login(client, "admin@confrapag.test")
+        base = {"ativo": True, "documento_destino": "11222333000181"}
+        assert client.put("/api/v1/confrapag/maquinas/CF-PAX/split", json={**base, "tipo": "percentual", "valor": 100}, headers=admin).status_code == 422
+        assert client.put("/api/v1/confrapag/maquinas/CF-PAX/split", json={**base, "tipo": "valor", "valor": 0}, headers=admin).status_code == 422
+        assert client.put("/api/v1/confrapag/maquinas/CF-PAX/split", json={"ativo": True, "tipo": "valor", "valor": 1}, headers=admin).status_code == 422
+        assert client.put("/api/v1/confrapag/maquinas/CF-PAX/split", json={**base, "tipo": "xyz", "valor": 1}, headers=admin).status_code == 422
+        assert client.put("/api/v1/confrapag/maquinas/CF-APK/split", json={**base, "tipo": "valor", "valor": 1}, headers=admin).status_code == 404

@@ -62,3 +62,20 @@ class VinculoConfrapag(Base):
     usado_em = Column(DateTime, nullable=True)
     terminal_id = Column(Integer, ForeignKey("terminais_confrapag.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class SplitConfrapag(Base):
+    """Split de pagamento da maquina (banco confrapag_sdk), configurado so pelo admin.
+
+    Na venda com cartao (SDK), a parte do destinatario sai por "percentual" (0-100 do
+    valor) ou "valor" (R$ fixo por venda); o restante fica com o dono da maquina.
+    Os dois estabelecimentos precisam ser do mesmo afiliador na ConfraPag."""
+    __tablename__ = "splits_confrapag"
+    id = Column(Integer, primary_key=True)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), unique=True, index=True, nullable=False)
+    ativo = Column(Boolean, default=False, nullable=False)
+    tipo = Column(String, default="percentual", nullable=False)  # percentual | valor
+    valor = Column(Float, default=0.0, nullable=False)
+    documento_destino = Column(String, nullable=True)  # CNPJ/CPF de quem recebe a parte
+    afiliador = Column(String, nullable=True)  # codigo do afiliador na ConfraPag
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)

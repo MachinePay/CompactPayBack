@@ -23,7 +23,7 @@ from uuid import uuid4
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.confrapag import CobrancaPixConfrapag, TerminalConfrapag, VinculoConfrapag
+from app.models.confrapag import CobrancaPixConfrapag, SplitConfrapag, TerminalConfrapag, VinculoConfrapag
 from app.models.models import Cliente, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao, VendaPagamento
 from app.models.produto import Produto
 from app.services import confrapix
@@ -169,6 +169,8 @@ def registrar_pagamento_e_liberar(
     autorizacao: str | None,
     sn_terminal: str | None,
     teste: bool = False,
+    split_status: str | None = None,
+    split_centavos: int | None = None,
 ) -> dict:
     tid = (tid or "").strip()
     if not tid:
@@ -223,7 +225,9 @@ def registrar_pagamento_e_liberar(
         descricao=(
             f"{'TESTE sem cartao ConfraPag' if teste else 'Pagamento ConfraPag SDK aprovado'} (tid={tid}, nsu={nsu or 'n/a'}, aut={autorizacao or 'n/a'}, "
             f"terminal_id={sn_terminal or 'n/a'}, terminal_app={terminal.nome}, metodo={metodo or 'n/a'}, "
-            f"ref={referencia})"
+            f"ref={referencia}"
+            + (f", split={split_status} parte_destino_centavos={split_centavos or 0}" if split_status else "")
+            + ")"
         ),
         valor=amount,
         provider=PROVIDER,
@@ -482,3 +486,52 @@ def resgatar_vinculo(db: Session, codigo: str, sn_terminal: str | None, origem: 
     db.refresh(terminal)
     print(f"[ConfraPag] maquininha vinculada terminal={terminal.id} cliente={vinculo.cliente_id} machine={vinculo.maquina_id}")
     return terminal, chave, vinculo
+
+
+# ---- Split de pagamento (admin) --------------------------------------------
+
+SPLIT_TIPOS = {"percentual", "valor"}
+
+
+def split_da_maquina(db: Session, maquina_id: str) -> SplitConfrapag | None:
+    return db.query(SplitConfrapag).filter(SplitConfrapag.maquina_id == maquina_id).first()
+
+
+def serializar_split(split: SplitConfrapag | None) -> dict:
+    if not split:
+        return {"ativo": False, "tipo": "percentual", "valor": 0.0, "documento_destino": None, "afiliador": None}
+    return {
+        "ativo": bool(split.ativo),
+        "tipo": split.tipo,
+        "valor": float(split.valor or 0),
+        "documento_destino": split.documento_destino,
+        "afiliador": split.afiliador,
+    }
+
+
+def salvar_split(db: Session, maquina: Maquina, ativo: bool, tipo: str, valor: float,
+                 documento_destino: str | None, afiliador: str | None) -> SplitConfrapag:
+    tipo = (tipo or "").strip().lower()
+    if tipo not in SPLIT_TIPOS:
+        raise HTTPException(status_code=422, detail="Tipo de split invalido (percentual ou valor)")
+    valor = round(float(valor or 0), 2)
+    documento = so_digitos(documento_destino)
+    afiliador = (afiliador or "").strip() or None
+    if ativo:
+        if valor <= 0:
+            raise HTTPException(status_code=422, detail="Informe o valor do split")
+        if tipo == "percentual" and valor >= 100:
+            raise HTTPException(status_code=422, detail="Percentual do split precisa ser menor que 100")
+        if not cnpj_valido(documento):
+            raise HTTPException(status_code=422, detail="Informe o CNPJ ou CPF de quem recebe o split")
+    split = split_da_maquina(db, maquina.id_hardware) or SplitConfrapag(maquina_id=maquina.id_hardware)
+    split.ativo = bool(ativo)
+    split.tipo = tipo
+    split.valor = valor
+    split.documento_destino = documento or None
+    split.afiliador = afiliador
+    split.updated_at = datetime.utcnow()
+    db.add(split)
+    db.commit()
+    db.refresh(split)
+    return split

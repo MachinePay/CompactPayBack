@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from app.core.config import settings
 
 STATUS_PAGO = {"succeeded"}
-STATUS_FINAIS_SEM_PAGAMENTO = {"canceled", "cancelled", "expired"}
+STATUS_FINAIS_SEM_PAGAMENTO = {"canceled", "cancelled", "expired", "failed", "refunded"}  # doc: processing, succeeded, canceled, failed, expired, refunded
 
 
 def _url(caminho: str) -> str:
