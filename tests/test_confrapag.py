@@ -300,3 +300,16 @@ def test_pagamento_de_teste_so_com_chave_em_modo_teste(mqtt):
         assert client.post("/api/v1/confrapag/pagamentos", json={
             "maquina_id": "CF-PAX", "valor": 50, "tid": "REF-3", "referencia": _ref("CF-PAX"), "teste": True},
             headers=headers).status_code == 422
+
+
+def test_produtos_com_nome_salvos_na_maquininha(mqtt):
+    with TestClient(app) as client:
+        headers = _chave(client, cliente_id=CLIENTE_B, cnpj="98765432000110")
+        resp = client.put("/api/v1/confrapag/maquinas/CF-PAX-B/valores", json={"produtos": [
+            {"nome": "3 JOGADAS", "valor": 5}, {"nome": "1 JOGADA", "valor": 2}, {"nome": "", "valor": 10}]}, headers=headers)
+        assert resp.status_code == 200, resp.text
+        assert [(p["nome"], p["valor"]) for p in resp.json()["produtos"]] == [("1 JOGADA", 2.0), ("3 JOGADAS", 5.0), ("R$ 10,00", 10.0)]
+        assert client.put("/api/v1/confrapag/maquinas/CF-PAX-B/valores", json={"produtos": []}, headers=headers).status_code == 422
+        r = client.post("/api/v1/confrapag/pagamentos", json={
+            "maquina_id": "CF-PAX-B", "valor": 2, "tid": "TID-PIX-1", "referencia": _ref("CF-PAX-B"), "metodo": "pix"}, headers=headers)
+        assert r.status_code == 200, r.text

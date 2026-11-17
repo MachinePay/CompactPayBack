@@ -184,15 +184,25 @@ def obter_maquina(machine_id: str, db: Session = Depends(get_db), terminal=Depen
     }
 
 
+class ProdutoConfrapag(BaseModel):
+    nome: str = Field(default="", max_length=40)
+    valor: float
+
+
 class ValoresConfrapag(BaseModel):
-    valores: list[float] = Field(min_length=1, max_length=12)
+    # Versao antiga do app manda so "valores"; a atual manda "produtos" (nome + valor).
+    valores: list[float] | None = Field(default=None, max_length=12)
+    produtos: list[ProdutoConfrapag] | None = Field(default=None, max_length=12)
 
 
 @router.put("/maquinas/{machine_id}/valores")
 def salvar_valores(machine_id: str, dados: ValoresConfrapag, db: Session = Depends(get_db), terminal=Depends(get_terminal)):
     """Valores cadastrados na maquininha (tela de configuracoes, protegida por PIN)."""
     maquina = svc.maquina_do_terminal(db, terminal, machine_id)
-    produtos = svc.salvar_valores(db, maquina, dados.valores)
+    if dados.produtos is not None:
+        produtos = svc.salvar_produtos(db, maquina, [(p.nome, p.valor) for p in dados.produtos])
+    else:
+        produtos = svc.salvar_valores(db, maquina, dados.valores or [])
     print(f"[ConfraPag] valores salvos pela maquininha terminal_app={terminal.id} machine={machine_id} valores={[p['valor'] for p in produtos]}")
     return {"maquina_id": maquina.id_hardware, "produtos": produtos}
 

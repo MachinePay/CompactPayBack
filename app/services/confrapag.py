@@ -38,7 +38,7 @@ REFERENCIA_IDADE_MAXIMA = timedelta(hours=2)
 REFERENCIA_FUTURO_TOLERANCIA = timedelta(minutes=10)  # relogio do terminal adiantado
 # Mesmos valores que o app da Point mostra quando a placa nao tem produto cadastrado.
 VALORES_PADRAO = (2.0, 5.0, 10.0, 20.0)
-METODOS = {"credito", "debito"}
+METODOS = {"credito", "debito", "pix"}
 
 
 def so_digitos(valor: str | None) -> str:
@@ -96,21 +96,31 @@ VALOR_MAXIMO = 1000.0
 
 
 def salvar_valores(db: Session, maquina: Maquina, valores: list[float]) -> list[dict]:
-    """Valores cadastrados na propria maquininha (configuracoes com PIN).
+    """Compatibilidade: so valores, sem nome."""
+    return salvar_produtos(db, maquina, [("", v) for v in valores])
 
-    Viram os produtos da maquina no sistema: o painel mostra os mesmos valores e
-    o pagamento continua so aceitando eles."""
-    limpos = sorted({round(float(v), 2) for v in valores})
+
+def salvar_produtos(db: Session, maquina: Maquina, itens: list[tuple[str, float]]) -> list[dict]:
+    """Produtos (nome + valor) cadastrados na propria maquininha (configuracoes com PIN).
+
+    Viram os produtos da maquina no sistema: o painel mostra os mesmos produtos e
+    o pagamento continua so aceitando esses valores."""
+    vistos: dict[tuple[str, float], tuple[str, float]] = {}
+    for nome, valor in itens:
+        nome = (nome or "").strip()[:40]
+        valor = round(float(valor), 2)
+        vistos.setdefault((nome.lower(), valor), (nome, valor))
+    limpos = sorted(vistos.values(), key=lambda item: (item[1], item[0]))
     if not limpos:
         raise HTTPException(status_code=422, detail="Informe pelo menos um valor")
     if len(limpos) > VALORES_MAXIMO:
         raise HTTPException(status_code=422, detail=f"No maximo {VALORES_MAXIMO} valores")
-    if any(v <= 0 or v > VALOR_MAXIMO for v in limpos):
+    if any(v <= 0 or v > VALOR_MAXIMO for _, v in limpos):
         raise HTTPException(status_code=422, detail=f"Cada valor precisa ser maior que zero e ate R$ {VALOR_MAXIMO:.0f}")
 
     db.query(Produto).filter(Produto.maquina_id == maquina.id_hardware).delete(synchronize_session=False)
-    for valor in limpos:
-        nome = f"R$ {valor:.2f}".replace(".", ",")
+    for nome, valor in limpos:
+        nome = nome or f"R$ {valor:.2f}".replace(".", ",")
         db.add(Produto(nome=nome, valor=valor, maquina_id=maquina.id_hardware))
     db.commit()
     return produtos_da_maquina(db, maquina)
@@ -190,7 +200,7 @@ def registrar_pagamento_e_liberar(
 
     command_id = str(uuid4())
     agora = datetime.utcnow()
-    tipo_pagamento = {"credito": "credit_card", "debito": "debit_card", "teste": "teste"}.get(metodo or "")
+    tipo_pagamento = {"credito": "credit_card", "debito": "debit_card", "pix": "pix", "teste": "teste"}.get(metodo or "")
     transacao = Transacao(
         maquina_id=machine_id,
         tipo=EventoTipo.in_flux,
