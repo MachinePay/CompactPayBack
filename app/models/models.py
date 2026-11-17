@@ -158,6 +158,8 @@ class Maquina(Base):
     # charge.paid com metadata.terminal_serial_number - e' por ele que achamos
     # qual maquina creditar.
     stone_serial_number = Column(String, nullable=True)
+    # Tela touch / app de maquininha: numero que aparece na tela vermelha de maquina offline.
+    telefone_manutencao = Column(String, nullable=True)
     ultimo_sinal = Column(DateTime, nullable=True)
     wifi_rssi = Column(Integer, nullable=True)
     wifi_quality = Column(Integer, nullable=True)

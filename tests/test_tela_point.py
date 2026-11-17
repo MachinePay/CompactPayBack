@@ -536,3 +536,28 @@ def test_erro_da_api_de_orders_mostra_o_motivo():
     msg = _mp_error_message(400, corpo)
     assert "property_value" in msg and "external_reference has invalid characters" in msg
     assert "erro sem detalhe" not in msg
+
+
+# ---- Numero de manutencao (tela vermelha de maquina offline) ----------------------------
+
+def test_numero_de_manutencao_vai_para_a_tela_com_o_do_cliente_como_reserva(mp):
+    db = SessionLocal()
+    try:
+        db.query(Cliente).filter(Cliente.id == IDS["a"]).update({Cliente.telefone: "11 4000-0000"})
+        db.commit()
+    finally:
+        db.close()
+    with TestClient(app) as client:
+        admin = _login(client, "admin@tela.test")
+        headers = _chave(client)
+        cfg = client.get("/api/v1/tela/config", headers=headers).json()
+        assert cfg["telefone_manutencao"] == "11 4000-0000"  # sem numero na maquina: o do cliente
+
+        resp = client.put("/api/v1/tela/maquinas/TP-1/manutencao", json={"telefone": " 11 99999-0000 "}, headers=admin)
+        assert resp.status_code == 200 and resp.json()["telefone"] == "11 99999-0000"
+        assert client.get("/api/v1/tela/maquinas/TP-1/manutencao", headers=admin).json()["telefone"] == "11 99999-0000"
+        assert client.get("/api/v1/tela/config", headers=headers).json()["telefone_manutencao"] == "11 99999-0000"
+
+        assert client.put("/api/v1/tela/maquinas/TP-1/manutencao", json={"telefone": ""}, headers=admin).json()["telefone"] is None
+        assert client.put("/api/v1/tela/maquinas/TP-1/manutencao", json={"telefone": "1"},
+                          headers=_login(client, "dono-b@tela.test")).status_code == 404

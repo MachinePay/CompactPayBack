@@ -49,6 +49,10 @@ class TelaCreate(BaseModel):
     point_terminal_id: str = Field(min_length=3, max_length=120)
 
 
+class ManutencaoUpdate(BaseModel):
+    telefone: str | None = Field(default=None, max_length=40)
+
+
 class CobrancaCreate(BaseModel):
     produto_id: int
 
@@ -128,6 +132,37 @@ def criar_caixa(machine_id: str, db: Session = Depends(get_db), user=Depends(get
         )
         db.commit()
     return {"maquina_id": maquina.id_hardware, "caixa": caixa}
+
+
+# ---- Painel: numero de manutencao ---------------------------------------------
+
+@router.get("/maquinas/{machine_id}/manutencao")
+def ver_manutencao(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    maquina = _maquina_de_tela(db, user, machine_id)
+    return {"maquina_id": maquina.id_hardware, "telefone": maquina.telefone_manutencao}
+
+
+@router.put("/maquinas/{machine_id}/manutencao")
+def salvar_manutencao(
+    machine_id: str,
+    dados: ManutencaoUpdate,
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Numero que a tela mostra quando a maquina fica offline."""
+    maquina = _maquina_de_tela(db, user, machine_id)
+    anterior = maquina.telefone_manutencao
+    maquina.telefone_manutencao = (dados.telefone or "").strip() or None
+    registrar_auditoria(
+        db,
+        user,
+        acao="TELA_MANUTENCAO_ATUALIZADA",
+        entidade_tipo="maquina",
+        entidade_id=maquina.id_hardware,
+        descricao=f"Numero de manutencao da tela {anterior} -> {maquina.telefone_manutencao}",
+    )
+    db.commit()
+    return {"maquina_id": maquina.id_hardware, "telefone": maquina.telefone_manutencao}
 
 
 # ---- Painel: video da tela ----------------------------------------------------
@@ -341,10 +376,17 @@ def config_da_tela(db: Session = Depends(get_db), tela=Depends(get_tela)):
         "maquina_id": maquina.id_hardware,
         "nome": maquina.nome_local or maquina.id_hardware,
         "online": maquina_online(maquina),
+        # Aparece na tela vermelha de maquina offline. Sem numero na maquina, usa o do cliente.
+        "telefone_manutencao": maquina.telefone_manutencao or _telefone_do_cliente(db, maquina.cliente_id),
         "produtos": [{"id": p.id, "nome": p.nome, "valor": p.valor} for p in produtos if p.valor and p.valor > 0],
         # A tela compara "versao" com a do video que ja tem e baixa em /tela/video se mudou.
         "video": _video_resumo(_video_da_maquina(db, maquina.id_hardware)),
     }
+
+
+def _telefone_do_cliente(db: Session, cliente_id: int | None) -> str | None:
+    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first() if cliente_id else None
+    return (cliente.telefone or "").strip() or None if cliente else None
 
 
 def _video_resumo(video: VideoTela | None) -> dict | None:

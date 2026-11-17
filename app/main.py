@@ -322,6 +322,7 @@ def startup_event():
             "sumup_reader_id",
             "sumup_device_code",
             "stone_serial_number",
+            "telefone_manutencao",
             "firmware_version",
             "firmware_target_version",
             "firmware_update_status",
