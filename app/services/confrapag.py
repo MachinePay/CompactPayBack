@@ -15,13 +15,15 @@ pode pedir:
 Nada aqui altera webhooks, rotas ou fluxos que ja existem.
 """
 import re
+import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.confrapag import CobrancaPixConfrapag, TerminalConfrapag
+from app.models.confrapag import CobrancaPixConfrapag, TerminalConfrapag, VinculoConfrapag
 from app.models.models import Cliente, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao, VendaPagamento
 from app.models.produto import Produto
 from app.services import confrapix
@@ -44,6 +46,11 @@ METODOS = {"credito", "debito", "pix"}
 
 def so_digitos(valor: str | None) -> str:
     return re.sub(r"\D", "", valor or "")
+
+
+def documento_do_cliente(cliente, informado: str | None = None) -> str:
+    """CNPJ informado, senao o CNPJ do cliente, senao o CPF (pessoa fisica). So digitos."""
+    return so_digitos(informado) or so_digitos(getattr(cliente, "cnpj", None)) or so_digitos(getattr(cliente, "cpf", None))
 
 
 def cnpj_valido(cnpj: str) -> bool:
@@ -398,3 +405,80 @@ def cancelar_pix(db: Session, cobranca: CobrancaPixConfrapag) -> CobrancaPixConf
         except HTTPException:
             pass
     return atualizar_pix(db, cobranca)
+
+
+# ---- Vinculacao da maquininha por codigo ----------------------------------
+# O APK e' o mesmo para todos os clientes: a PAX digita um codigo curto gerado no
+# painel e recebe a chave do terminal daquele cliente, ja apontando para a placa.
+
+VINCULO_VALIDADE = timedelta(minutes=10)
+VINCULO_ALFABETO = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # sem 0/O, 1/I
+VINCULO_TAMANHO = 6
+_tentativas_vinculo: dict[str, list[float]] = {}
+
+
+def normalizar_codigo(codigo: str | None) -> str:
+    return "".join(ch for ch in (codigo or "").upper() if ch in VINCULO_ALFABETO)
+
+
+def formatar_codigo(codigo: str) -> str:
+    return f"{codigo[:3]}-{codigo[3:]}"
+
+
+def gerar_vinculo(db: Session, cliente_id: int, maquina: Maquina, cnpj: str) -> VinculoConfrapag:
+    for _ in range(10):
+        codigo = "".join(secrets.choice(VINCULO_ALFABETO) for _ in range(VINCULO_TAMANHO))
+        if not db.query(VinculoConfrapag).filter(VinculoConfrapag.codigo == codigo).first():
+            break
+    vinculo = VinculoConfrapag(
+        codigo=codigo,
+        cliente_id=cliente_id,
+        maquina_id=maquina.id_hardware,
+        cnpj=cnpj,
+        expira_em=datetime.utcnow() + VINCULO_VALIDADE,
+    )
+    db.add(vinculo)
+    db.commit()
+    db.refresh(vinculo)
+    return vinculo
+
+
+def _limitar_tentativas(origem: str) -> None:
+    """Freio contra adivinhar codigo: no maximo 10 tentativas erradas por minuto por origem."""
+    agora = time.monotonic()
+    recentes = [t for t in _tentativas_vinculo.get(origem, []) if agora - t < 60]
+    _tentativas_vinculo[origem] = recentes
+    if len(recentes) >= 10:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde um minuto.")
+
+
+def resgatar_vinculo(db: Session, codigo: str, sn_terminal: str | None, origem: str) -> tuple[TerminalConfrapag, str, VinculoConfrapag]:
+    _limitar_tentativas(origem)
+    vinculo = (
+        db.query(VinculoConfrapag)
+        .filter(VinculoConfrapag.codigo == normalizar_codigo(codigo))
+        .with_for_update()
+        .first()
+    )
+    if not vinculo or vinculo.usado_em or vinculo.expira_em < datetime.utcnow():
+        _tentativas_vinculo.setdefault(origem, []).append(time.monotonic())
+        raise HTTPException(status_code=404, detail="Codigo invalido ou expirado. Gere outro no painel.")
+
+    chave = gerar_chave()
+    nome = f"PAX {vinculo.maquina_id}" + (f" ({sn_terminal})" if sn_terminal else "")
+    terminal = TerminalConfrapag(
+        cliente_id=vinculo.cliente_id,
+        nome=nome[:80],
+        cnpj=vinculo.cnpj,
+        chave_prefixo=chave[:10],
+        chave_hash=hash_chave(chave),
+        ativo=True,
+    )
+    db.add(terminal)
+    db.flush()
+    vinculo.usado_em = datetime.utcnow()
+    vinculo.terminal_id = terminal.id
+    db.commit()
+    db.refresh(terminal)
+    print(f"[ConfraPag] maquininha vinculada terminal={terminal.id} cliente={vinculo.cliente_id} machine={vinculo.maquina_id}")
+    return terminal, chave, vinculo

@@ -439,3 +439,71 @@ def test_pix_cancelado_e_valor_divergente_nao_liberam(confrapix):
         # Outra chave (outro terminal) nao enxerga a cobranca.
         outra = _chave(client, nome="PAX outra")
         assert client.get(f"/api/v1/confrapag/pix/{cid2}", headers=outra).status_code == 404
+
+
+# ---- Vinculacao por codigo ---------------------------------------------------
+
+def _gerar_codigo(client, maquina="CF-PAX", cliente_id=None, headers=None):
+    headers = headers or _login(client, "admin@confrapag.test")
+    return client.post("/api/v1/confrapag/vinculos",
+                       json={"maquina_id": maquina, "cliente_id": cliente_id or CLIENTE_A}, headers=headers)
+
+
+def test_codigo_vincula_maquininha_uma_vez_e_aponta_para_a_placa():
+    with TestClient(app) as client:
+        resp = _gerar_codigo(client)
+        assert resp.status_code == 200, resp.text
+        codigo = resp.json()["codigo"]
+        assert len(codigo) == 7 and codigo[3] == "-"
+        # A PAX digita com ou sem traco, minusculo.
+        vinc = client.post("/api/v1/confrapag/vincular", json={"codigo": codigo.replace("-", "").lower(), "sn_terminal": "SN1"})
+        assert vinc.status_code == 200, vinc.text
+        dados = vinc.json()
+        assert dados["placa_id"] == "CF-PAX" and dados["cnpj"] == "12345678000190"
+        headers = {"X-Terminal-Key": dados["chave"]}
+        assert client.get("/api/v1/confrapag/maquinas/CF-PAX", headers=headers).status_code == 200
+        # Uso unico.
+        assert client.post("/api/v1/confrapag/vincular", json={"codigo": codigo}).status_code == 404
+
+
+def test_codigo_expirado_ou_inventado_nao_vincula():
+    from app.models.confrapag import VinculoConfrapag
+
+    with TestClient(app) as client:
+        codigo = _gerar_codigo(client).json()["codigo"]
+        db = SessionLocal()
+        try:
+            v = db.query(VinculoConfrapag).filter(VinculoConfrapag.codigo == codigo.replace("-", "")).one()
+            v.expira_em = datetime.utcnow() - timedelta(seconds=1)
+            db.commit()
+        finally:
+            db.close()
+        assert client.post("/api/v1/confrapag/vincular", json={"codigo": codigo}).status_code == 404
+        assert client.post("/api/v1/confrapag/vincular", json={"codigo": "ZZZ-ZZZ"}).status_code == 404
+
+
+def test_codigo_so_para_maquina_confrapag_do_proprio_cliente():
+    with TestClient(app) as client:
+        assert _gerar_codigo(client, maquina="CF-APK").status_code == 404
+        assert _gerar_codigo(client, maquina="CF-PAX-B").status_code == 404
+        dono_b = _login(client, "dono-b@confrapag.test")
+        # Cliente B tentando a maquina do A: usa o proprio cliente_id e nao acha.
+        assert _gerar_codigo(client, maquina="CF-PAX", cliente_id=CLIENTE_A, headers=dono_b).status_code == 404
+
+
+def test_cliente_so_com_cpf_usa_o_cpf():
+    with TestClient(app) as client:
+        db = SessionLocal()
+        try:
+            c = Cliente(nome_empresa="Pessoa Fisica", email_contato="pf@confrapag.test", api_key="k-cf-pf",
+                        cpf="123.456.789-09", cliente_confrapag=True)
+            db.add(c)
+            db.commit()
+            db.add(Maquina(id_hardware="CF-PF", nome_local="Grua PF", cliente_id=c.id,
+                           banco_pagamento="confrapag_sdk", ultimo_sinal=datetime.utcnow()))
+            db.commit()
+            pf_id = c.id
+        finally:
+            db.close()
+        codigo = _gerar_codigo(client, maquina="CF-PF", cliente_id=pf_id).json()["codigo"]
+        assert client.post("/api/v1/confrapag/vincular", json={"codigo": codigo}).json()["cnpj"] == "12345678909"

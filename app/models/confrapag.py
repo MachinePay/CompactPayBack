@@ -46,3 +46,19 @@ class CobrancaPixConfrapag(Base):
     pago_em = Column(DateTime, nullable=True)
     command_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+
+
+class VinculoConfrapag(Base):
+    """Codigo curto (ex.: 48K-29Q) gerado no painel para vincular uma maquininha PAX
+    a uma maquina/cliente. A PAX digita o codigo e recebe a chave do terminal: o mesmo
+    APK serve para todos os clientes. Uso unico, vale poucos minutos."""
+    __tablename__ = "vinculos_confrapag"
+    id = Column(Integer, primary_key=True)
+    codigo = Column(String, unique=True, index=True, nullable=False)
+    cliente_id = Column(Integer, ForeignKey("clientes.id"), index=True, nullable=False)
+    maquina_id = Column(String, ForeignKey("maquinas.id_hardware"), index=True, nullable=False)
+    cnpj = Column(String, nullable=False)
+    expira_em = Column(DateTime, nullable=False)
+    usado_em = Column(DateTime, nullable=True)
+    terminal_id = Column(Integer, ForeignKey("terminais_confrapag.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)

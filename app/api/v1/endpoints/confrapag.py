@@ -80,7 +80,7 @@ def criar_terminal(dados: TerminalCreate, db: Session = Depends(get_db), user=De
     cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
     if not cliente:
         raise HTTPException(status_code=404, detail="Cliente nao encontrado")
-    cnpj = svc.so_digitos(dados.cnpj) or svc.so_digitos(cliente.cnpj)
+    cnpj = svc.documento_do_cliente(cliente, dados.cnpj)
     if not svc.cnpj_valido(cnpj):
         raise HTTPException(
             status_code=422,
@@ -110,6 +110,73 @@ def criar_terminal(dados: TerminalCreate, db: Session = Depends(get_db), user=De
     db.refresh(terminal)
     # A chave so aparece aqui; no banco fica so o hash.
     return {**_serialize_terminal(terminal), "chave": chave}
+
+
+class VinculoCreate(BaseModel):
+    maquina_id: str
+    cliente_id: int | None = None  # so admin escolhe; cliente usa o proprio
+    cnpj: str | None = None  # vazio: CNPJ (ou CPF) do cliente
+
+
+class VinculoResgate(BaseModel):
+    codigo: str = Field(min_length=4, max_length=20)
+    sn_terminal: str | None = Field(default=None, max_length=80)
+
+
+@router.post("/vinculos")
+def gerar_vinculo(dados: VinculoCreate, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Painel: gera o codigo curto que a maquininha digita para se vincular a esta maquina."""
+    cliente_id = dados.cliente_id if eh_admin(user) else user[2]
+    if cliente_id is None:
+        raise HTTPException(status_code=422, detail="Informe o cliente")
+    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+    if not cliente:
+        raise HTTPException(status_code=404, detail="Cliente nao encontrado")
+    maquina = (
+        db.query(Maquina)
+        .filter(
+            Maquina.id_hardware == dados.maquina_id,
+            Maquina.cliente_id == cliente_id,
+            Maquina.banco_pagamento == svc.BANCO_CONFRAPAG,
+        )
+        .first()
+    )
+    if not maquina:
+        raise HTTPException(status_code=404, detail="Salve a maquina com o banco ConfraPag SDK antes de vincular")
+    cnpj = svc.documento_do_cliente(cliente, dados.cnpj)
+    if not svc.cnpj_valido(cnpj):
+        raise HTTPException(status_code=422, detail="Informe o CNPJ (ou CPF) do estabelecimento cadastrado na ConfraPag")
+    vinculo = svc.gerar_vinculo(db, cliente_id, maquina, cnpj)
+    registrar_auditoria(
+        db,
+        user,
+        acao="CONFRAPAG_VINCULO_GERADO",
+        entidade_tipo="maquina",
+        entidade_id=maquina.id_hardware,
+        descricao=f"Codigo de vinculacao ConfraPag gerado maquina={maquina.id_hardware} cliente_id={cliente_id}",
+    )
+    db.commit()
+    return {
+        "codigo": svc.formatar_codigo(vinculo.codigo),
+        "maquina_id": maquina.id_hardware,
+        "expira_em": vinculo.expira_em,
+        "validade_segundos": int(svc.VINCULO_VALIDADE.total_seconds()),
+    }
+
+
+@router.post("/vincular")
+def vincular(dados: VinculoResgate, request: Request, db: Session = Depends(get_db)):
+    """Maquininha: troca o codigo pela chave do terminal (uso unico). Sem login."""
+    origem = request.client.host if request.client else "?"
+    terminal, chave, vinculo = svc.resgatar_vinculo(db, dados.codigo, dados.sn_terminal, origem)
+    maquina = db.query(Maquina).filter(Maquina.id_hardware == vinculo.maquina_id).first()
+    return {
+        "chave": chave,
+        "placa_id": vinculo.maquina_id,
+        "maquina_nome": (maquina.nome_local if maquina else None) or vinculo.maquina_id,
+        "terminal_nome": terminal.nome,
+        "cnpj": terminal.cnpj,
+    }
 
 
 @router.get("/terminais")
