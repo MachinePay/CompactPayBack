@@ -421,3 +421,90 @@ def test_token_do_cliente_recusado_nao_tenta_nenhum_outro_token(mp, monkeypatch)
         assert ativar.status_code == 403
     assert set(mp.tokens) == {TOKEN_A}
     assert mp.pdv == []
+
+
+# ---- Video da tela ------------------------------------------------------------------
+
+QUADRO = b"\xff\xd8\xff\xe0" + b"x" * 96 + b"\xff\xd9"
+
+
+def test_painel_envia_video_e_a_tela_baixa_a_versao_nova(mp, monkeypatch):
+    from app.services import tela_video
+
+    convertidos = []
+
+    def converter(caminho):
+        with open(caminho, "rb") as f:
+            convertidos.append(f.read())
+        return QUADRO * 40, 40
+
+    monkeypatch.setattr(tela_video, "converter_para_tela", converter)
+    with TestClient(app) as client:
+        admin = _login(client, "admin@tela.test")
+        mp.terminais.append({"id": "NEWLAND_N950__LIVRE01", "operating_mode": "PDV"})
+        headers = _chave(client, maquina="TP-2", point="NEWLAND_N950__LIVRE01", nome="Tela video")
+        assert client.get("/api/v1/tela/config", headers=headers).json()["video"] is None
+        assert client.get("/api/v1/tela/video", headers=headers).status_code == 404
+
+        resp = client.post("/api/v1/tela/maquinas/TP-2/video", headers=admin,
+                           files={"arquivo": ("propaganda.mp4", b"mp4-falso", "video/mp4")})
+        assert resp.status_code == 200, resp.text
+        info = resp.json()["video"]
+        assert convertidos == [b"mp4-falso"]
+        assert info["quadros"] == 40 and info["duracao_s"] == 2.0 and info["tamanho"] == len(QUADRO) * 40
+
+        cfg = client.get("/api/v1/tela/config", headers=headers).json()
+        assert cfg["video"] == {"versao": info["versao"], "tamanho": info["tamanho"], "fps": 20}
+        baixado = client.get("/api/v1/tela/video", headers=headers)
+        assert baixado.status_code == 200
+        assert baixado.content == QUADRO * 40
+        assert baixado.headers["X-Video-Versao"] == info["versao"]
+
+        # Outra tela (outra maquina) nao recebe esse video.
+        outra = _chave(client, maquina="TP-1", nome="Tela sem video")
+        assert client.get("/api/v1/tela/video", headers=outra).status_code == 404
+
+        assert client.delete("/api/v1/tela/maquinas/TP-2/video", headers=admin).json()["video"] is None
+        assert client.get("/api/v1/tela/config", headers=headers).json()["video"] is None
+        # Video so em maquina do banco de tela, e cliente so mexe nas proprias.
+        assert client.post("/api/v1/tela/maquinas/TP-QR/video", headers=admin,
+                           files={"arquivo": ("a.mp4", b"x", "video/mp4")}).status_code == 422
+        assert client.post("/api/v1/tela/maquinas/TP-2/video", headers=_login(client, "dono-b@tela.test"),
+                           files={"arquivo": ("a.mp4", b"x", "video/mp4")}).status_code == 404
+
+
+def test_conversao_baixa_a_qualidade_e_depois_corta_o_fim(monkeypatch):
+    from app.services import tela_video
+
+    monkeypatch.setattr(tela_video, "caminho_ffmpeg", lambda: "ffmpeg")
+    monkeypatch.setattr(tela_video, "LIMITE_BYTES", 1000)
+    chamadas = []
+
+    def converter(ffmpeg, entrada, saida, qualidade, quadros=None):
+        chamadas.append((qualidade, quadros))
+        total = quadros or 30  # 30 quadros de 102 bytes = 3060 > limite em qualquer qualidade
+        return QUADRO * total
+
+    monkeypatch.setattr(tela_video, "_converter", converter)
+    monkeypatch.setattr(tela_video, "FPS", 2)
+    dados, quadros = tela_video.converter_para_tela("entrada")
+    assert [q for q, _ in chamadas[:-1]] == list(tela_video.QUALIDADES)
+    assert chamadas[-1][0] == tela_video.QUALIDADE_CORTE and chamadas[-1][1] == quadros
+    assert len(dados) <= 1000 and quadros == 9
+
+
+def test_conversao_para_na_primeira_qualidade_que_cabe(monkeypatch):
+    from app.services import tela_video
+
+    monkeypatch.setattr(tela_video, "caminho_ffmpeg", lambda: "ffmpeg")
+    tamanhos = {5: 50, 7: 5}  # quadros por qualidade
+    chamadas = []
+
+    def converter(ffmpeg, entrada, saida, qualidade, quadros=None):
+        chamadas.append(qualidade)
+        return QUADRO * tamanhos.get(qualidade, 1)
+
+    monkeypatch.setattr(tela_video, "_converter", converter)
+    monkeypatch.setattr(tela_video, "LIMITE_BYTES", len(QUADRO) * 10)
+    dados, quadros = tela_video.converter_para_tela("entrada")
+    assert chamadas == [5, 7] and quadros == 5

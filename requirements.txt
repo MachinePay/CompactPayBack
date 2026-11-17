@@ -13,3 +13,4 @@ python-multipart
 httpx
 cryptography
 pytest
+imageio-ffmpeg==0.6.0

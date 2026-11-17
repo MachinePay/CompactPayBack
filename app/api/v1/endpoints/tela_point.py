@@ -7,7 +7,10 @@
 Logica em app/services/tela_point.py. Nada aqui altera rotas/fluxos existentes;
 o pagamento aprovado segue pelo webhook de order que ja existe.
 """
-from fastapi import APIRouter, Depends, Header, HTTPException
+import os
+import tempfile
+
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -16,8 +19,9 @@ from app.core.escopo import eh_admin, obter_maquina_do_usuario
 from app.db.session import SessionLocal
 from app.models.models import Cliente
 from app.models.produto import Produto
-from app.models.tela_point import TelaPoint
+from app.models.tela_point import TelaPoint, VideoTela
 from app.services import tela_point as svc
+from app.services import tela_video
 from app.services.auditoria import registrar_auditoria
 from app.services.smartapp import maquina_online, verificar_placa_online
 
@@ -124,6 +128,107 @@ def criar_caixa(machine_id: str, db: Session = Depends(get_db), user=Depends(get
         )
         db.commit()
     return {"maquina_id": maquina.id_hardware, "caixa": caixa}
+
+
+# ---- Painel: video da tela ----------------------------------------------------
+
+UPLOAD_MAX_BYTES = 300 * 1024 * 1024
+
+
+def _video_da_maquina(db: Session, machine_id: str) -> VideoTela | None:
+    return db.query(VideoTela).filter(VideoTela.maquina_id == machine_id).order_by(VideoTela.id.desc()).first()
+
+
+def _video_info(video: VideoTela | None) -> dict | None:
+    if not video:
+        return None
+    return {
+        "versao": video.versao,
+        "tamanho": video.tamanho,
+        "quadros": video.quadros,
+        "fps": video.fps,
+        "duracao_s": round(video.quadros / max(video.fps, 1), 1),
+        "nome_original": video.nome_original,
+        "created_at": video.created_at,
+    }
+
+
+@router.get("/maquinas/{machine_id}/video")
+def ver_video(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    maquina = _maquina_de_tela(db, user, machine_id)
+    return {"maquina_id": maquina.id_hardware, "video": _video_info(_video_da_maquina(db, maquina.id_hardware))}
+
+
+@router.post("/maquinas/{machine_id}/video")
+def enviar_video(
+    machine_id: str,
+    arquivo: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    user=Depends(get_current_user),
+):
+    """Recebe o video (MP4, MOV...), converte para o formato da tela e troca o
+    video da maquina. A tela baixa sozinha na proxima verificacao."""
+    maquina = _maquina_de_tela(db, user, machine_id)
+    with tempfile.TemporaryDirectory() as pasta:
+        entrada = os.path.join(pasta, "entrada")
+        recebidos = 0
+        with open(entrada, "wb") as destino:
+            while True:
+                bloco = arquivo.file.read(1024 * 1024)
+                if not bloco:
+                    break
+                recebidos += len(bloco)
+                if recebidos > UPLOAD_MAX_BYTES:
+                    raise HTTPException(status_code=413, detail="Video muito grande (maximo 300 MB)")
+                destino.write(bloco)
+        if recebidos == 0:
+            raise HTTPException(status_code=422, detail="Arquivo de video vazio")
+        dados, quadros = tela_video.converter_para_tela(entrada)
+
+    db.query(VideoTela).filter(VideoTela.maquina_id == maquina.id_hardware).delete()
+    video = VideoTela(
+        cliente_id=maquina.cliente_id,
+        maquina_id=maquina.id_hardware,
+        nome_original=(arquivo.filename or "")[:120] or None,
+        versao=tela_video.versao_do_video(dados),
+        tamanho=len(dados),
+        quadros=quadros,
+        fps=tela_video.FPS,
+        arquivo=dados,
+    )
+    db.add(video)
+    db.flush()
+    registrar_auditoria(
+        db,
+        user,
+        acao="TELA_VIDEO_ENVIADO",
+        entidade_tipo="maquina",
+        entidade_id=maquina.id_hardware,
+        descricao=(
+            f"Video da tela trocado arquivo={video.nome_original} versao={video.versao} "
+            f"tamanho={video.tamanho} quadros={quadros}"
+        ),
+    )
+    db.commit()
+    db.refresh(video)
+    return {"maquina_id": maquina.id_hardware, "video": _video_info(video)}
+
+
+@router.delete("/maquinas/{machine_id}/video")
+def remover_video(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    maquina = _maquina_de_tela(db, user, machine_id)
+    apagados = db.query(VideoTela).filter(VideoTela.maquina_id == maquina.id_hardware).delete()
+    if apagados:
+        registrar_auditoria(
+            db,
+            user,
+            acao="TELA_VIDEO_REMOVIDO",
+            entidade_tipo="maquina",
+            entidade_id=maquina.id_hardware,
+            descricao="Video da tela removido",
+        )
+    db.commit()
+    return {"maquina_id": maquina.id_hardware, "video": None}
 
 
 @router.post("/point/terminais/{terminal_id}/modo-integrado")
@@ -237,7 +342,28 @@ def config_da_tela(db: Session = Depends(get_db), tela=Depends(get_tela)):
         "nome": maquina.nome_local or maquina.id_hardware,
         "online": maquina_online(maquina),
         "produtos": [{"id": p.id, "nome": p.nome, "valor": p.valor} for p in produtos if p.valor and p.valor > 0],
+        # A tela compara "versao" com a do video que ja tem e baixa em /tela/video se mudou.
+        "video": _video_resumo(_video_da_maquina(db, maquina.id_hardware)),
     }
+
+
+def _video_resumo(video: VideoTela | None) -> dict | None:
+    if not video:
+        return None
+    return {"versao": video.versao, "tamanho": video.tamanho, "fps": video.fps}
+
+
+@router.get("/video")
+def baixar_video(db: Session = Depends(get_db), tela=Depends(get_tela)):
+    maquina = svc.maquina_da_tela(db, tela)
+    video = _video_da_maquina(db, maquina.id_hardware)
+    if not video:
+        raise HTTPException(status_code=404, detail="Esta maquina nao tem video")
+    return Response(
+        content=bytes(video.arquivo),
+        media_type="application/octet-stream",
+        headers={"X-Video-Versao": video.versao},
+    )
 
 
 @router.post("/cobrancas")
