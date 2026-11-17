@@ -22,6 +22,7 @@ class UsuarioBase(BaseModel):
     cliente_s6pay: Optional[bool] = None
     cliente_token_play: Optional[bool] = None
     cliente_confrapag: Optional[bool] = None
+    confrapix_token: Optional[str] = None
     mp_public_key: Optional[str] = None
     mp_access_token: Optional[str] = None
     mp_client_id: Optional[str] = None

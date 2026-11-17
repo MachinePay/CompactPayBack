@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     OTA_FIRMWARE_URL: str = os.getenv("OTA_FIRMWARE_URL", "")
     FIRMWARE_UPLOAD_DIR: str = os.getenv("FIRMWARE_UPLOAD_DIR", "firmware_uploads")
     BACKEND_PUBLIC_URL: str = os.getenv("BACKEND_PUBLIC_URL", "")
+    # Pix da maquininha ConfraPag (banco confrapag_sdk). Sandbox: https://sandbox.confrapix.com.br
+    CONFRAPIX_BASE_URL: str = os.getenv("CONFRAPIX_BASE_URL", "https://api.confrapix.com.br")
     MP_ACCESS_TOKEN: str = os.getenv("MP_ACCESS_TOKEN", "")
     MP_WEBHOOK_SECRET: str = os.getenv("MP_WEBHOOK_SECRET", "")
     MP_APP_ID: str = os.getenv("MP_APP_ID", os.getenv("MP_CLIENT_ID", ""))

@@ -47,6 +47,16 @@ def _apply_stone_fields(target, usuario: UsuarioCreate | UsuarioUpdate) -> None:
         target.stone_secret_key = usuario.stone_secret_key.strip()
 
 
+def _apply_confrapix_fields(target, usuario: UsuarioCreate | UsuarioUpdate) -> None:
+    """Token Confrapix (Pix da maquininha ConfraPag). "********" = manter o atual."""
+    if not usuario.cliente_confrapag:
+        target.confrapix_token = None
+        return
+    token = (usuario.confrapix_token or "").strip()
+    if token and token != "********":
+        target.confrapix_token = token
+
+
 def resolve_user_role(role: str) -> UserRole:
     try:
         return UserRole(role)
@@ -88,6 +98,7 @@ def create_cliente_for_user(db: Session, usuario: UsuarioCreate | UsuarioUpdate)
         sumup_merchant_code=_resolve_sumup_merchant_code(usuario.sumup_api_key, usuario.sumup_merchant_code),
     )
     _apply_stone_fields(cliente, usuario)
+    _apply_confrapix_fields(cliente, usuario)
     db.add(cliente)
     db.flush()
     return cliente
@@ -126,6 +137,8 @@ def sync_cliente_from_usuario(db: Session, usuario: UsuarioCreate | UsuarioUpdat
         cliente.sumup_merchant_code = _resolve_sumup_merchant_code(cliente.sumup_api_key, usuario.sumup_merchant_code)
 
     _apply_stone_fields(cliente, usuario)
+
+    _apply_confrapix_fields(cliente, usuario)
 
     if not usuario.cliente_mercado_pago:
         cliente.mp_public_key = None
@@ -178,6 +191,8 @@ def sync_db_usuario_fields(db_usuario: Usuario, usuario: UsuarioCreate | Usuario
 
     _apply_stone_fields(db_usuario, usuario)
 
+    _apply_confrapix_fields(db_usuario, usuario)
+
     if not usuario.cliente_mercado_pago:
         db_usuario.mp_public_key = None
         db_usuario.mp_access_token = None
@@ -222,6 +237,7 @@ def serialize_usuario(db_usuario: Usuario) -> dict:
         "cliente_s6pay": bool(db_usuario.cliente_s6pay or (cliente and cliente.cliente_s6pay)),
         "cliente_token_play": bool(db_usuario.cliente_token_play or (cliente and cliente.cliente_token_play)),
         "cliente_confrapag": bool(db_usuario.cliente_confrapag or (cliente and cliente.cliente_confrapag)),
+        "confrapix_token": "********" if db_usuario.confrapix_token or (cliente and cliente.confrapix_token) else None,
         "mp_public_key": db_usuario.mp_public_key or (cliente.mp_public_key if cliente else None),
         "mp_access_token": "********" if db_usuario.mp_access_token or (cliente and cliente.mp_access_token) else None,
         "mp_client_id": db_usuario.mp_client_id or (cliente.mp_client_id if cliente else None),

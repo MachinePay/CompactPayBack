@@ -15,15 +15,16 @@ pode pedir:
 Nada aqui altera webhooks, rotas ou fluxos que ja existem.
 """
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.models.confrapag import TerminalConfrapag
-from app.models.models import EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao, VendaPagamento
+from app.models.confrapag import CobrancaPixConfrapag, TerminalConfrapag
+from app.models.models import Cliente, EventoTipo, HistoricoOperacao, Maquina, MetodoPagamento, Transacao, VendaPagamento
 from app.models.produto import Produto
+from app.services import confrapix
 from app.services.command_queue import get_command_status
 from app.services.mercado_pago_webhook import _acquire_payment_lock
 from app.services.mqtt_commands import publish_machine_credit_pulses
@@ -270,3 +271,130 @@ def registrar_pagamento_e_liberar(
         "command_id": command_id,
         "command_status": command_status,
     }
+
+
+# ---- Pix (API Confrapix) --------------------------------------------------
+# O SDK da maquininha nao faz Pix: a cobranca e' criada aqui na Confrapix com o
+# token do proprio cliente, a maquininha mostra o QR e o pulso so sai depois de
+# a cobranca ser reconsultada como paga (o webhook deles nao tem assinatura).
+
+PIX_VALIDADE = timedelta(minutes=5)
+# Horario de Brasilia (sem horario de verao desde 2019); expiration_date vai nesse fuso.
+FUSO_CONFRAPIX = timezone(timedelta(hours=-3))
+
+
+def token_confrapix(db: Session, cliente_id: int) -> str | None:
+    cliente = db.query(Cliente).filter(Cliente.id == cliente_id).first()
+    token = (cliente.confrapix_token or "").strip() if cliente else ""
+    return token or None
+
+
+def pix_habilitado(db: Session, terminal: TerminalConfrapag) -> bool:
+    return token_confrapix(db, terminal.cliente_id) is not None
+
+
+def serializar_pix(cobranca: CobrancaPixConfrapag) -> dict:
+    return {
+        "id": cobranca.id,
+        "status": cobranca.status,
+        "valor": cobranca.valor,
+        "codigo": cobranca.codigo,
+        "expira_em": cobranca.expira_em.isoformat() if cobranca.expira_em else None,
+        "pago": cobranca.status in confrapix.STATUS_PAGO,
+        "command_id": cobranca.command_id,
+        "command_status": (get_command_status(cobranca.command_id) or "pendente") if cobranca.command_id else None,
+    }
+
+
+def criar_pix(db: Session, terminal: TerminalConfrapag, maquina: Maquina, valor: float, referencia: str,
+              callback_url: str | None) -> CobrancaPixConfrapag:
+    _validar_referencia(maquina, referencia)
+    amount = _validar_valor(db, maquina, valor)
+    token = token_confrapix(db, terminal.cliente_id)
+    if not token:
+        raise HTTPException(status_code=422, detail="Pix nao configurado para este cliente (token Confrapix)")
+
+    expira_local = datetime.now(FUSO_CONFRAPIX) + PIX_VALIDADE
+    transacao = confrapix.criar_cobranca(
+        token,
+        amount,
+        descricao=f"CompactPay {maquina.id_hardware} {referencia}"[:120],
+        expiracao=expira_local.strftime("%Y-%m-%d %H:%M:%S"),
+        callback_url=callback_url,
+    )
+    pix = transacao.get("pix") or {}
+    cobranca = CobrancaPixConfrapag(
+        terminal_id=terminal.id,
+        cliente_id=terminal.cliente_id,
+        maquina_id=maquina.id_hardware,
+        referencia=referencia,
+        valor=amount,
+        confrapix_id=str(transacao["id"]),
+        txid=pix.get("txid"),
+        codigo=pix.get("code"),
+        status=(transacao.get("status") or "processing").lower(),
+        expira_em=datetime.utcnow() + PIX_VALIDADE,
+    )
+    db.add(cobranca)
+    db.commit()
+    db.refresh(cobranca)
+    print(f"[ConfraPag Pix] cobranca criada id={cobranca.id} confrapix_id={cobranca.confrapix_id} machine={maquina.id_hardware} valor={amount}")
+    return cobranca
+
+
+def atualizar_pix(db: Session, cobranca: CobrancaPixConfrapag) -> CobrancaPixConfrapag:
+    """Reconsulta na Confrapix e, se paga, libera o pulso (uma vez so: o TID e' PIX-<id>)."""
+    if cobranca.command_id or cobranca.status in confrapix.STATUS_FINAIS_SEM_PAGAMENTO:
+        return cobranca
+    token = token_confrapix(db, cobranca.cliente_id)
+    if not token:
+        return cobranca
+    transacao = confrapix.consultar(token, cobranca.confrapix_id)
+    status = (transacao.get("status") or cobranca.status).lower()
+    cobranca.status = status
+    if status not in confrapix.STATUS_PAGO:
+        db.commit()
+        return cobranca
+
+    valor_pago = float(transacao.get("amount") or 0)
+    if abs(valor_pago - cobranca.valor) > 0.01:
+        print(f"[ConfraPag Pix] valor divergente cobranca={cobranca.id} esperado={cobranca.valor} pago={valor_pago}")
+        cobranca.status = "valor_divergente"
+        db.commit()
+        return cobranca
+
+    terminal = db.query(TerminalConfrapag).filter(TerminalConfrapag.id == cobranca.terminal_id).first()
+    maquina = db.query(Maquina).filter(Maquina.id_hardware == cobranca.maquina_id).first()
+    resultado = registrar_pagamento_e_liberar(
+        db,
+        terminal,
+        maquina,
+        tid=f"PIX-{cobranca.confrapix_id}",
+        nsu=cobranca.txid or (transacao.get("pix") or {}).get("endtoend_id"),
+        referencia=cobranca.referencia,
+        valor=cobranca.valor,
+        metodo="pix",
+        bandeira=None,
+        autorizacao=None,
+        sn_terminal=None,
+    )
+    db.refresh(cobranca)
+    cobranca.status = status
+    cobranca.command_id = resultado["command_id"]
+    cobranca.pago_em = datetime.utcnow()
+    db.commit()
+    return cobranca
+
+
+def cancelar_pix(db: Session, cobranca: CobrancaPixConfrapag) -> CobrancaPixConfrapag:
+    """Cliente desistiu ou o tempo acabou. Se foi pago bem nessa hora, libera em vez de cancelar."""
+    cobranca = atualizar_pix(db, cobranca)
+    if cobranca.command_id or cobranca.status != "processing":
+        return cobranca
+    token = token_confrapix(db, cobranca.cliente_id)
+    if token:
+        try:
+            confrapix.cancelar(token, cobranca.confrapix_id)
+        except HTTPException:
+            pass
+    return atualizar_pix(db, cobranca)

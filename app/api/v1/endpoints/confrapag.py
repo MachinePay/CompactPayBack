@@ -5,14 +5,15 @@
 
 Logica em app/services/confrapag.py. Nada aqui altera as rotas/fluxos existentes.
 """
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.dependencies import get_current_user
 from app.core.escopo import eh_admin
 from app.db.session import SessionLocal
-from app.models.confrapag import TerminalConfrapag
+from app.core.config import settings
+from app.models.confrapag import CobrancaPixConfrapag, TerminalConfrapag
 from app.models.models import Cliente, ComandoMaquina, Maquina
 from app.services import confrapag as svc
 from app.services.auditoria import registrar_auditoria
@@ -181,6 +182,8 @@ def obter_maquina(machine_id: str, db: Session = Depends(get_db), terminal=Depen
         "nome": maquina.nome_local or maquina.id_hardware,
         "online": svc.maquina_online(maquina),
         "produtos": svc.produtos_da_maquina(db, maquina),
+        # Pix so aparece na maquininha quando o cliente tem token Confrapix.
+        "pix_habilitado": svc.pix_habilitado(db, terminal),
     }
 
 
@@ -230,6 +233,73 @@ def confirmar_pagamento(dados: PagamentoConfrapag, db: Session = Depends(get_db)
         sn_terminal=dados.sn_terminal,
         teste=dados.teste,
     )
+
+
+# ---- Pix (API Confrapix) -----------------------------------------------------
+
+class PixConfrapag(BaseModel):
+    maquina_id: str
+    valor: float = Field(gt=0)
+    referencia: str = Field(min_length=1, max_length=120)
+
+
+def _callback_pix(request: Request) -> str:
+    base = (settings.BACKEND_PUBLIC_URL or str(request.base_url)).rstrip("/")
+    if not base.endswith("/api/v1"):
+        base += "/api/v1"
+    return f"{base}/confrapag/pix/webhook"
+
+
+def _cobranca_do_terminal(db: Session, terminal: TerminalConfrapag, cobranca_id: int) -> CobrancaPixConfrapag:
+    cobranca = (
+        db.query(CobrancaPixConfrapag)
+        .filter(CobrancaPixConfrapag.id == cobranca_id, CobrancaPixConfrapag.terminal_id == terminal.id)
+        .first()
+    )
+    if not cobranca:
+        raise HTTPException(status_code=404, detail="Cobranca Pix nao encontrada")
+    return cobranca
+
+
+@router.post("/pix")
+def criar_pix(dados: PixConfrapag, request: Request, db: Session = Depends(get_db), terminal=Depends(get_terminal)):
+    """Cria a cobranca Pix na Confrapix; a maquininha mostra o QR com o "codigo"."""
+    maquina = svc.maquina_do_terminal(db, terminal, dados.maquina_id)
+    cobranca = svc.criar_pix(db, terminal, maquina, dados.valor, dados.referencia.strip(), _callback_pix(request))
+    return svc.serializar_pix(cobranca)
+
+
+@router.get("/pix/{cobranca_id}")
+def consultar_pix(cobranca_id: int, db: Session = Depends(get_db), terminal=Depends(get_terminal)):
+    """A maquininha consulta enquanto mostra o QR. Pago -> o pulso ja sai daqui."""
+    cobranca = svc.atualizar_pix(db, _cobranca_do_terminal(db, terminal, cobranca_id))
+    return svc.serializar_pix(cobranca)
+
+
+@router.delete("/pix/{cobranca_id}")
+def cancelar_pix(cobranca_id: int, db: Session = Depends(get_db), terminal=Depends(get_terminal)):
+    cobranca = svc.cancelar_pix(db, _cobranca_do_terminal(db, terminal, cobranca_id))
+    return svc.serializar_pix(cobranca)
+
+
+@router.post("/pix/webhook")
+async def webhook_pix(request: Request, db: Session = Depends(get_db)):
+    """Aviso da Confrapix. Sem assinatura: so serve de gatilho para reconsultar
+    pela API com o token do cliente. Sempre responde 200."""
+    try:
+        payload = await request.json()
+    except Exception:
+        return {"ok": True}
+    confrapix_id = str((payload or {}).get("id") or "").strip() if isinstance(payload, dict) else ""
+    if not confrapix_id:
+        return {"ok": True}
+    cobranca = db.query(CobrancaPixConfrapag).filter(CobrancaPixConfrapag.confrapix_id == confrapix_id).first()
+    if cobranca:
+        try:
+            svc.atualizar_pix(db, cobranca)
+        except Exception as exc:  # nunca devolver erro para a Confrapix
+            print(f"[ConfraPag Pix] webhook confrapix_id={confrapix_id} falhou: {exc}")
+    return {"ok": True}
 
 
 @router.get("/comandos/{command_id}")

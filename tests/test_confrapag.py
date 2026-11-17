@@ -313,3 +313,129 @@ def test_produtos_com_nome_salvos_na_maquininha(mqtt):
         r = client.post("/api/v1/confrapag/pagamentos", json={
             "maquina_id": "CF-PAX-B", "valor": 2, "tid": "TID-PIX-1", "referencia": _ref("CF-PAX-B"), "metodo": "pix"}, headers=headers)
         assert r.status_code == 200, r.text
+
+
+# ---- Pix (Confrapix simulada) ------------------------------------------------
+
+_PROXIMO_ID = 500
+
+@pytest.fixture
+def confrapix(monkeypatch, mqtt):
+    from app.services import confrapix as api
+
+    class Fake:
+        transacoes: dict = {}
+        tokens: list = []
+        canceladas: list = []
+        proximo = 500
+
+    fake = Fake()
+    fake.transacoes, fake.tokens, fake.canceladas = {}, [], []
+    global _PROXIMO_ID
+    _PROXIMO_ID += 100
+    fake.proximo = _PROXIMO_ID  # ids unicos entre testes (o banco SQLite e' compartilhado)
+
+    def criar_cobranca(token, valor, descricao, expiracao, callback_url):
+        fake.tokens.append(token)
+        fake.proximo += 1
+        t = {"id": fake.proximo, "status": "processing", "amount": valor,
+             "pix": {"code": f"000201PIX{fake.proximo}", "txid": f"tx{fake.proximo}"}, "callback": callback_url}
+        fake.transacoes[str(fake.proximo)] = t
+        return t
+
+    def consultar(token, transacao_id):
+        fake.tokens.append(token)
+        return fake.transacoes[str(transacao_id)]
+
+    def cancelar(token, transacao_id):
+        fake.canceladas.append(str(transacao_id))
+        fake.transacoes[str(transacao_id)]["status"] = "canceled"
+        return fake.transacoes[str(transacao_id)]
+
+    monkeypatch.setattr(api, "criar_cobranca", criar_cobranca)
+    monkeypatch.setattr(api, "consultar", consultar)
+    monkeypatch.setattr(api, "cancelar", cancelar)
+    fake.pulsos = mqtt
+    return fake
+
+
+def _token_confrapix(cliente_id, token):
+    db = SessionLocal()
+    try:
+        db.query(Cliente).filter(Cliente.id == cliente_id).update({Cliente.confrapix_token: token})
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_pix_sem_token_nao_aparece_nem_cria(confrapix):
+    with TestClient(app) as client:
+        _token_confrapix(CLIENTE_A, None)
+        headers = _chave(client)
+        assert client.get("/api/v1/confrapag/maquinas/CF-PAX", headers=headers).json()["pix_habilitado"] is False
+        resp = client.post("/api/v1/confrapag/pix", json={"maquina_id": "CF-PAX", "valor": 7.5, "referencia": _ref("CF-PAX")}, headers=headers)
+        assert resp.status_code == 422
+        assert confrapix.transacoes == {}
+
+
+def test_pix_pago_libera_pulso_uma_vez_com_token_do_cliente(confrapix):
+    with TestClient(app) as client:
+        _token_confrapix(CLIENTE_A, "TOKEN-CONFRAPIX-A")
+        headers = _chave(client)
+        assert client.get("/api/v1/confrapag/maquinas/CF-PAX", headers=headers).json()["pix_habilitado"] is True
+        criado = client.post("/api/v1/confrapag/pix", json={"maquina_id": "CF-PAX", "valor": 7.5, "referencia": _ref("CF-PAX")}, headers=headers)
+        assert criado.status_code == 200, criado.text
+        corpo = criado.json()
+        assert corpo["codigo"].startswith("000201") and corpo["pago"] is False
+        cid = corpo["id"]
+        assert client.get(f"/api/v1/confrapag/pix/{cid}", headers=headers).json()["pago"] is False
+        assert confrapix.pulsos == []
+
+        confrapix.transacoes[str(confrapix.proximo)]["status"] = "succeeded"
+        pago = client.get(f"/api/v1/confrapag/pix/{cid}", headers=headers).json()
+        assert pago["pago"] is True and pago["command_id"]
+        # Webhook e nova consulta nao liberam de novo.
+        assert client.post("/api/v1/confrapag/pix/webhook", json={"id": confrapix.proximo}).status_code == 200
+        assert client.get(f"/api/v1/confrapag/pix/{cid}", headers=headers).json()["command_id"] == pago["command_id"]
+        assert len(confrapix.pulsos) == 1
+        assert set(confrapix.tokens) == {"TOKEN-CONFRAPIX-A"}
+        db = SessionLocal()
+        try:
+            venda = db.query(VendaPagamento).filter(VendaPagamento.provider_payment_id == f"PIX-{confrapix.proximo}").one()
+            assert venda.tipo_pagamento == "pix" and venda.valor_bruto == 7.5
+        finally:
+            db.close()
+
+
+def test_pix_pago_pelo_webhook_sem_a_maquininha_consultar(confrapix):
+    with TestClient(app) as client:
+        _token_confrapix(CLIENTE_A, "TOKEN-CONFRAPIX-A")
+        headers = _chave(client)
+        cid = client.post("/api/v1/confrapag/pix", json={"maquina_id": "CF-PAX", "valor": 7.5, "referencia": _ref("CF-PAX")}, headers=headers).json()["id"]
+        # Webhook forjado dizendo "pago" nao libera: so a reconsulta vale.
+        client.post("/api/v1/confrapag/pix/webhook", json={"id": confrapix.proximo, "status": "succeeded"})
+        assert confrapix.pulsos == []
+        confrapix.transacoes[str(confrapix.proximo)]["status"] = "succeeded"
+        client.post("/api/v1/confrapag/pix/webhook", json={"id": confrapix.proximo})
+        assert len(confrapix.pulsos) == 1
+        # Id desconhecido ou corpo invalido: 200 sem quebrar.
+        assert client.post("/api/v1/confrapag/pix/webhook", json={"id": 999999}).status_code == 200
+        assert client.post("/api/v1/confrapag/pix/webhook", content=b"x").status_code == 200
+        assert client.get(f"/api/v1/confrapag/pix/{cid}", headers=headers).json()["pago"] is True
+
+
+def test_pix_cancelado_e_valor_divergente_nao_liberam(confrapix):
+    with TestClient(app) as client:
+        _token_confrapix(CLIENTE_A, "TOKEN-CONFRAPIX-A")
+        headers = _chave(client)
+        cid = client.post("/api/v1/confrapag/pix", json={"maquina_id": "CF-PAX", "valor": 7.5, "referencia": _ref("CF-PAX")}, headers=headers).json()["id"]
+        cancelado = client.delete(f"/api/v1/confrapag/pix/{cid}", headers=headers).json()
+        assert cancelado["status"] == "canceled" and str(confrapix.proximo) in confrapix.canceladas
+
+        cid2 = client.post("/api/v1/confrapag/pix", json={"maquina_id": "CF-PAX", "valor": 7.5, "referencia": _ref("CF-PAX")}, headers=headers).json()["id"]
+        confrapix.transacoes[str(confrapix.proximo)].update(status="succeeded", amount=1.0)
+        assert client.get(f"/api/v1/confrapag/pix/{cid2}", headers=headers).json()["pago"] is False
+        assert confrapix.pulsos == []
+        # Outra chave (outro terminal) nao enxerga a cobranca.
+        outra = _chave(client, nome="PAX outra")
+        assert client.get(f"/api/v1/confrapag/pix/{cid2}", headers=outra).status_code == 404
