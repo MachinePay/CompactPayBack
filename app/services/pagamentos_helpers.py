@@ -191,6 +191,9 @@ def parse_machine_id_from_external_reference(external_reference: str | None) -> 
     # Formato esperado: MACHINE_ID:timestamp
     if ":" in external_reference:
         return external_reference.split(":", 1)[0].strip() or None
+    # Orders da tela touch (a API de Orders nao aceita ":"): MACHINE_ID__timestamp
+    if "__" in external_reference:
+        return external_reference.split("__", 1)[0].strip() or None
     return external_reference.strip() or None
 
 

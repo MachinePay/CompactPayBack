@@ -281,8 +281,9 @@ def produto_da_maquina(db: Session, maquina: Maquina, produto_id: int) -> Produt
 
 def criar_cobranca(db: Session, tela: TelaPoint, maquina: Maquina, produto: Produto) -> dict:
     valor = round(float(produto.valor), 2)
-    # Mesmo formato que o webhook ja sabe ler: MACHINE_ID:timestamp.
-    external_reference = f"{maquina.id_hardware}:{int(time.time() * 1000)}"
+    # A API de Orders so aceita letras, numeros, "-" e "_" (sem ":"), max 64:
+    # MACHINE_ID__timestamp, que parse_machine_id_from_external_reference tambem le.
+    external_reference = f"{maquina.id_hardware}__{int(time.time() * 1000)}"
     body = {
         "type": "point",
         "external_reference": external_reference,

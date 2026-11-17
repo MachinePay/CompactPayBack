@@ -34,6 +34,14 @@ def _mp_error_message(status_code: int, error_body: str) -> str:
         for cause in causes
         if isinstance(cause, dict)
     ]
+    # API de Orders: {"errors": [{"code", "message", "details": [...]}]}
+    errors = data.get("errors") if isinstance(data.get("errors"), list) else []
+    if errors and isinstance(errors[0], dict):
+        error_code = error_code or str(errors[0].get("code") or "").strip()
+        if message == "erro sem detalhe":
+            message = str(errors[0].get("message") or message).strip()
+        details = errors[0].get("details") if isinstance(errors[0].get("details"), list) else []
+        cause_messages += [str(item).strip() for item in details]
     cause_detail = " | ".join([item for item in cause_messages if item])
 
     known_errors = {

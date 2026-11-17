@@ -508,3 +508,31 @@ def test_conversao_para_na_primeira_qualidade_que_cabe(monkeypatch):
     monkeypatch.setattr(tela_video, "LIMITE_BYTES", len(QUADRO) * 10)
     dados, quadros = tela_video.converter_para_tela("entrada")
     assert chamadas == [5, 7] and quadros == 5
+
+
+# ---- Formato aceito pela API de Orders ----------------------------------------------
+
+def test_referencia_da_order_so_tem_caracteres_aceitos_e_o_webhook_le(mp):
+    import re
+
+    with TestClient(app) as client:
+        headers = _chave(client)
+        assert client.post("/api/v1/tela/cobrancas", json={"produto_id": IDS["p1"]}, headers=headers).status_code == 200
+    ref = mp.criadas[-1]["external_reference"]
+    # A API de Orders so aceita letras, numeros, "-" e "_", ate 64 caracteres (":" da 400).
+    assert re.fullmatch(r"[A-Za-z0-9_-]{1,64}", ref), ref
+    assert webhook.parse_machine_id_from_external_reference(ref) == "TP-1"
+    # O formato antigo continua sendo lido do mesmo jeito.
+    assert webhook.parse_machine_id_from_external_reference("TP-1:1700000000") == "TP-1"
+
+
+def test_erro_da_api_de_orders_mostra_o_motivo():
+    import json
+
+    from app.services.mercado_pago import _mp_error_message
+
+    corpo = json.dumps({"errors": [{"code": "property_value", "message": "invalid property value",
+                                    "details": ["external_reference has invalid characters"]}]})
+    msg = _mp_error_message(400, corpo)
+    assert "property_value" in msg and "external_reference has invalid characters" in msg
+    assert "erro sem detalhe" not in msg
