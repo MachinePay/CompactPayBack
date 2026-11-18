@@ -17,11 +17,15 @@ from app.models.models import (
     FechamentoMaquina,
     HistoricoOperacao,
     Maquina,
+    MaquinaWifiCredencial,
+    MaquinaWifiReserva,
+    MaquinaWifiTentativa,
     SumupCheckout,
     SumupTransacaoPendente,
     Transacao,
     VendaPagamento,
 )
+from app.models.confrapag import CobrancaPixConfrapag, SplitConfrapag, VinculoConfrapag
 from app.models.produto import Produto
 from app.schemas.maquina import MaquinaCreate, MaquinaOut, MaquinaUpdate
 from app.services.auditoria import registrar_auditoria
@@ -544,6 +548,14 @@ def excluir_maquina_cascata(db: Session, db_maquina: Maquina, user) -> dict:
     db.query(AlertaNotificacao).filter(AlertaNotificacao.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(SumupCheckout).filter(SumupCheckout.maquina_id == machine_id).delete(synchronize_session=False)
     db.query(SumupTransacaoPendente).filter(SumupTransacaoPendente.maquina_id == machine_id).delete(synchronize_session=False)
+    # Tabelas com FK em maquinas.id_hardware que faltavam aqui (Wi-Fi e ConfraPag)
+    # e estouravam IntegrityError -> 500 ao excluir.
+    db.query(MaquinaWifiCredencial).filter(MaquinaWifiCredencial.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(MaquinaWifiTentativa).filter(MaquinaWifiTentativa.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(MaquinaWifiReserva).filter(MaquinaWifiReserva.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(CobrancaPixConfrapag).filter(CobrancaPixConfrapag.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(VinculoConfrapag).filter(VinculoConfrapag.maquina_id == machine_id).delete(synchronize_session=False)
+    db.query(SplitConfrapag).filter(SplitConfrapag.maquina_id == machine_id).delete(synchronize_session=False)
     db.delete(db_maquina)
     return contagens
 
