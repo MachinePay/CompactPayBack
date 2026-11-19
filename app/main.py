@@ -29,6 +29,7 @@ import app.models.models  # noqa: F401
 import app.models.produto  # noqa: F401
 import app.models.whatsapp  # noqa: F401
 import app.models.pontos  # noqa: F401
+import app.models.mensalidade  # noqa: F401
 import app.services.vending  # noqa: F401  (contagem de premios vending)
 from app.db.indices import criar_indices_em_segundo_plano
 
