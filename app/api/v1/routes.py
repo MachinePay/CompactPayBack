@@ -28,6 +28,7 @@ from app.api.v1.endpoints import (
     tela_point,
     confrapag,
     usuarios,
+    usuarios_resumo,
     whatsapp,
     wifi,
     wifi_reservas,
@@ -38,6 +39,7 @@ router = APIRouter()
 router.include_router(auth.router)
 router.include_router(health.router)
 router.include_router(usuarios.router)
+router.include_router(usuarios_resumo.router)
 router.include_router(mercado_pago.router)
 router.include_router(auditoria.router)
 router.include_router(clientes.router)
