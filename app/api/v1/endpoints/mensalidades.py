@@ -53,7 +53,12 @@ def _exigir_admin(user):
 
 
 def _montar(db: Session, cliente_ids: list[int] | None = None) -> list[dict]:
-    q_clientes = db.query(Cliente.id, Cliente.nome_empresa, Cliente.email_contato)
+    # Excluir o usuario no painel apaga o login e as maquinas, mas a linha em
+    # "clientes" fica. Cliente sem nenhum usuario = excluido: nao entra na
+    # cobranca nem vai pro GrupoGK.
+    q_clientes = db.query(Cliente.id, Cliente.nome_empresa, Cliente.email_contato).filter(
+        db.query(Usuario.id).filter(Usuario.cliente_id == Cliente.id).exists()
+    )
     if cliente_ids is not None:
         q_clientes = q_clientes.filter(Cliente.id.in_(cliente_ids))
     clientes = q_clientes.order_by(Cliente.id).all()
@@ -117,7 +122,7 @@ def salvar_mensalidade(
     user=Depends(get_current_user),
 ):
     _exigir_admin(user)
-    if not db.query(Cliente.id).filter(Cliente.id == cliente_id).first():
+    if not db.query(Usuario.id).filter(Usuario.cliente_id == cliente_id).first():
         raise HTTPException(status_code=404, detail="Cliente nao encontrado")
 
     padrao = db.query(MensalidadeCliente).filter(MensalidadeCliente.cliente_id == cliente_id).first()
