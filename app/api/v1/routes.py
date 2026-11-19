@@ -20,6 +20,7 @@ from app.api.v1.endpoints import (
     mercado_pago,
     pagamentos,
     pagamentos_escuta,
+    pontos_grupos,
     produtos,
     relatorios,
     smartapp,
@@ -44,6 +45,7 @@ router.include_router(firmware_versions.router)
 router.include_router(maquinas.router)
 router.include_router(maquinas_horario.router)
 router.include_router(maquinas_ponto.router)
+router.include_router(pontos_grupos.router)
 router.include_router(maquinas_operacoes.router)
 router.include_router(maquinas_relatorios.router)
 router.include_router(fechamentos_lote.router)

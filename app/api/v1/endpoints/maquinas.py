@@ -37,6 +37,7 @@ from app.services.maquinas_relatorio import (
 )
 from app.services.mercado_pago import create_pos_for_machine
 from app.services.stone import normalize_serial
+from app.services.vending import aplicar_vending
 
 router = APIRouter()
 
@@ -401,6 +402,7 @@ def criar_maquina(
                 detail="Informe o numero de serie da maquininha Stone desta maquina (etiqueta atras da maquininha)",
             )
     _aplicar_ficha(db_maquina, maquina.maquina_ficha, maquina.valor_ficha)
+    aplicar_vending(db_maquina, maquina.maquina_vending, maquina.vending_premios, maquina.vending_valor)
     if (maquina.localizacao_mapa or "").strip():
         db_maquina.latitude, db_maquina.longitude = _coordenadas_ou_422(maquina.localizacao_mapa)
         db_maquina.localizacao_origem = "manual"
@@ -447,6 +449,7 @@ def atualizar_maquina(
     db_maquina.nome_local = maquina.nome
     db_maquina.localizacao = maquina.localizacao
     _aplicar_ficha(db_maquina, maquina.maquina_ficha, maquina.valor_ficha)
+    aplicar_vending(db_maquina, maquina.maquina_vending, maquina.vending_premios, maquina.vending_valor)
     if maquina.localizacao_mapa is not None:
         anterior = (db_maquina.latitude, db_maquina.longitude)
         if maquina.localizacao_mapa.strip():

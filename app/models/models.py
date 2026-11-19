@@ -128,6 +128,8 @@ class Maquina(Base):
     banco_pagamento = Column(String, nullable=True)
     nome_local = Column(String)
     localizacao = Column(String, nullable=True)
+    # Ponto (grupo opcional, so visual) - app/models/pontos.py. Sem FK.
+    ponto_id = Column(Integer, nullable=True)
     mp_store_id = Column(String, nullable=True)
     mp_store_external_id = Column(String, nullable=True)
     mp_pos_id = Column(String, nullable=True)
@@ -181,6 +183,12 @@ class Maquina(Base):
     # com o valor da ficha (valor_ficha) em vez de R$ 1,00.
     maquina_ficha = Column(Boolean, default=False, nullable=False)
     valor_ficha = Column(Float, nullable=True)
+    # Maquina vending: vending_premios premio(s) a cada vending_valor reais que
+    # entram; o troco fica em vending_saldo (app/services/vending.py).
+    maquina_vending = Column(Boolean, default=False, nullable=False)
+    vending_premios = Column(Integer, nullable=True)
+    vending_valor = Column(Float, nullable=True)
+    vending_saldo = Column(Float, default=0.0, nullable=True)
     # Posicao no mapa (opcional). Sem ela o mapa usa o endereco do cliente.
     latitude = Column(Float, nullable=True)
     longitude = Column(Float, nullable=True)

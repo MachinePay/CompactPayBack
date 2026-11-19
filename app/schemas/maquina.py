@@ -27,6 +27,10 @@ class MaquinaCreate(BaseModel):
     # Maquina de ficha: cada entrada fisica vale valor_ficha (obrigatorio se marcada).
     maquina_ficha: Optional[bool] = None
     valor_ficha: Optional[float] = None
+    # Vending: vending_premios premio(s) a cada vending_valor reais. None = nao mexe.
+    maquina_vending: Optional[bool] = None
+    vending_premios: Optional[int] = None
+    vending_valor: Optional[float] = None
 
 
 class MaquinaUpdate(BaseModel):
@@ -43,6 +47,10 @@ class MaquinaUpdate(BaseModel):
     # None = nao mexe.
     maquina_ficha: Optional[bool] = None
     valor_ficha: Optional[float] = None
+    # Vending: vending_premios premio(s) a cada vending_valor reais. None = nao mexe.
+    maquina_vending: Optional[bool] = None
+    vending_premios: Optional[int] = None
+    vending_valor: Optional[float] = None
 
 
 class MaquinaOut(BaseModel):
@@ -80,6 +88,10 @@ class MaquinaOut(BaseModel):
     localizacao_atualizada_em: Optional[datetime] = None
     maquina_ficha: bool = False
     valor_ficha: Optional[float] = None
+    maquina_vending: bool = False
+    vending_premios: Optional[int] = None
+    vending_valor: Optional[float] = None
+    vending_saldo: Optional[float] = None
     faturamento_fisico: float = 0.0
     fisico_quantidade: int = 0
     wifi_ssid: Optional[str] = None

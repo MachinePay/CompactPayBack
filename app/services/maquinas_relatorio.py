@@ -20,6 +20,7 @@ from app.models.models import (
 from app.services.horario_fechado import maquina_fechada
 from app.services.mercado_pago import get_active_terminal_for_machine
 from app.services.pagamentos_helpers import should_allow_refund
+from app.services.vending import campos_vending
 
 OTA_TIMEOUT = timedelta(minutes=3)
 OTA_ACTIVE_STATUSES = {"sent", "downloading", "restarting"}
@@ -921,6 +922,7 @@ def serialize_health_machine(maquina: Maquina, now: datetime, ultimo_pagamento: 
         "longitude": maquina.longitude,
         "maquina_ficha": bool(maquina.maquina_ficha),
         "valor_ficha": maquina.valor_ficha,
+        **campos_vending(maquina),
         "localizacao_origem": maquina.localizacao_origem,
         "localizacao_atualizada_em": maquina.localizacao_atualizada_em,
         "wifi_ssid": maquina.wifi_ssid,
@@ -1675,6 +1677,7 @@ def serialize_machine_summary(
         "longitude": maquina.longitude,
         "maquina_ficha": bool(maquina.maquina_ficha),
         "valor_ficha": maquina.valor_ficha,
+        **campos_vending(maquina),
         "localizacao_origem": maquina.localizacao_origem,
         "localizacao_atualizada_em": maquina.localizacao_atualizada_em,
         "wifi_ssid": maquina.wifi_ssid,
@@ -1807,6 +1810,7 @@ def serialize_machines_summary_batch(
                 "longitude": maquina.longitude,
                 "maquina_ficha": bool(maquina.maquina_ficha),
                 "valor_ficha": maquina.valor_ficha,
+                **campos_vending(maquina),
                 "localizacao_origem": maquina.localizacao_origem,
                 "localizacao_atualizada_em": maquina.localizacao_atualizada_em,
                 "wifi_ssid": maquina.wifi_ssid,

@@ -28,6 +28,8 @@ from sqlalchemy import inspect, text
 import app.models.models  # noqa: F401
 import app.models.produto  # noqa: F401
 import app.models.whatsapp  # noqa: F401
+import app.models.pontos  # noqa: F401
+import app.services.vending  # noqa: F401  (contagem de premios vending)
 from app.db.indices import criar_indices_em_segundo_plano
 
 from app.core.ambiente import ORIGENS_DESENVOLVIMENTO, docs_da_api_visiveis, em_producao
@@ -260,6 +262,13 @@ def startup_event():
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN maquina_ficha BOOLEAN NOT NULL DEFAULT FALSE"))
         if "valor_ficha" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN valor_ficha FLOAT"))
+        if "maquina_vending" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN maquina_vending BOOLEAN NOT NULL DEFAULT FALSE"))
+        if "vending_premios" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN vending_premios INTEGER"))
+        for column_name in ["vending_valor", "vending_saldo"]:
+            if column_name not in maquina_columns:
+                connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} FLOAT"))
         for column_name in ["latitude", "longitude", "localizacao_precisao_m"]:
             if column_name not in maquina_columns:
                 connection.execute(text(f"ALTER TABLE maquinas ADD COLUMN {column_name} FLOAT"))
@@ -285,6 +294,8 @@ def startup_event():
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN horario_fechado_json TEXT"))
         if "fechamentos_pontuais_json" not in maquina_columns:
             connection.execute(text("ALTER TABLE maquinas ADD COLUMN fechamentos_pontuais_json TEXT"))
+        if "ponto_id" not in maquina_columns:
+            connection.execute(text("ALTER TABLE maquinas ADD COLUMN ponto_id INTEGER"))
         # Colunas novas das tabelas do WhatsApp (criadas antes delas existirem).
         tabelas = set(inspector.get_table_names())
         whatsapp_colunas = {

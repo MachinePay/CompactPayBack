@@ -8,6 +8,7 @@ from app.models.logs import Logs
 from app.services.command_queue import update_command_from_device_status
 from app.services.pulse_tracking import device_event_description, update_pulse_status
 from app.services.vendas import registrar_venda_pagamento
+from app.services.vending import eh_vending
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
 
@@ -475,7 +476,22 @@ def on_message(client, userdata, msg):
                 maquina.credito_liberado_em
                 and (datetime.utcnow() - maquina.credito_liberado_em) < OUT_POS_CREDITO_IGNORE_WINDOW
             )
-            if maquina.ignorar_saida_pos_credito and credito_recente:
+            if eh_vending(maquina):
+                # Vending: os premios saem pelo valor que entra (services/vending.py);
+                # o sensor nao conta, senao o premio seria contado duas vezes.
+                db.add(
+                    HistoricoOperacao(
+                        maquina_id=id_extraido,
+                        categoria="DISPOSITIVO",
+                        descricao="Saida fisica (OUT) nao contada: maquina vending conta os premios pelo valor que entra",
+                        valor=None,
+                        command_id=None,
+                        pulse_status=None,
+                        created_at=datetime.utcnow(),
+                    )
+                )
+                db.commit()
+            elif maquina.ignorar_saida_pos_credito and credito_recente:
                 db.add(
                     HistoricoOperacao(
                         maquina_id=id_extraido,
