@@ -157,8 +157,9 @@ def criar_usuario_da_maquininha(
 @router.get("/maquinas/{machine_id}/sumup/usuario")
 def ver_login_da_maquininha(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
     """Login/senha do usuario da maquininha criado pelo sistema (para logar a
-    maquininha de novo). Acesso fica na auditoria."""
-    _exigir_admin(user)
+    maquininha de novo). Admin ou o cliente dono da maquina (so leitura;
+    obter_maquina_do_usuario da 404 para maquina de outro cliente). Acesso
+    fica na auditoria."""
     maquina = obter_maquina_do_usuario(db, user, machine_id)
     if not maquina.sumup_usuario_senha_cript:
         return {"usuario": maquina.sumup_usuario, "senha": None, "criado_pelo_sistema": False}
