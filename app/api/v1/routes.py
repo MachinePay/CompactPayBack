@@ -15,6 +15,7 @@ from app.api.v1.endpoints import (
     maquinas,
     maquinas_horario,
     maquinas_ponto,
+    maquinas_vending,
     maquinas_operacoes,
     maquinas_relatorios,
     mercado_pago,
@@ -45,6 +46,7 @@ router.include_router(firmware_versions.router)
 router.include_router(maquinas.router)
 router.include_router(maquinas_horario.router)
 router.include_router(maquinas_ponto.router)
+router.include_router(maquinas_vending.router)
 router.include_router(pontos_grupos.router)
 router.include_router(maquinas_operacoes.router)
 router.include_router(maquinas_relatorios.router)
