@@ -332,7 +332,7 @@ def criar_maquina(
     if not cliente:
         raise HTTPException(status_code=422, detail="Escolha um usuario/cliente valido para criar a maquina")
     banco_pagamento = (maquina.banco_pagamento or "mercado_pago").strip().lower()
-    bancos_validos = {"mercado_pago", "pagbank", "s6pay", "token_play", "sumup", "stone", "mercado_pago_apk", "mercado_pago_point", "confrapag_sdk"}
+    bancos_validos = {"mercado_pago", "pagbank", "s6pay", "token_play", "sumup", "stone", "mercado_pago_apk", "mercado_pago_point", "confrapag_sdk", "mercado_pago_totem", "sumup_totem"}
     if banco_pagamento not in bancos_validos:
         raise HTTPException(status_code=422, detail="Banco de pagamento invalido")
     banco_habilitado = {
@@ -349,10 +349,14 @@ def criar_maquina(
         # Maquininha PAX com o SDK ConfraPag (android-confrapag/, rotas /confrapag).
         # Sem token: o CNPJ do estabelecimento fica na chave de cada terminal.
         "confrapag_sdk": bool(cliente.cliente_confrapag),
+        # Totem vending (tablet + agente local, rotas /totem): precisa da permissao
+        # "Vending machine" no cliente e da credencial da maquininha.
+        "mercado_pago_totem": bool(cliente.cliente_totem_vending and cliente.mp_access_token),
+        "sumup_totem": bool(cliente.cliente_totem_vending and cliente.sumup_api_key),
     }[banco_pagamento]
     if not banco_habilitado:
         raise HTTPException(status_code=422, detail="O banco escolhido nao esta habilitado para este cliente")
-    if banco_pagamento not in {"mercado_pago", "token_play", "sumup", "stone", "mercado_pago_apk", "mercado_pago_point", "confrapag_sdk"}:
+    if banco_pagamento not in {"mercado_pago", "token_play", "sumup", "stone", "mercado_pago_apk", "mercado_pago_point", "confrapag_sdk", "mercado_pago_totem", "sumup_totem"}:
         raise HTTPException(status_code=501, detail="Integracao deste banco ainda nao foi implementada")
 
     db_maquina = Maquina(

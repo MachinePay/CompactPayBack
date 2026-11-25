@@ -32,6 +32,7 @@ class ClienteListOut(ClienteBase):
     cliente_s6pay: Optional[bool] = None
     cliente_token_play: Optional[bool] = None
     cliente_confrapag: Optional[bool] = None
+    cliente_totem_vending: Optional[bool] = None
     confrapix_configurado: bool = False
     mp_configurado: bool = False
     mp_pos_category: Optional[int] = None

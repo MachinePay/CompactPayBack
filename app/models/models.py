@@ -37,6 +37,8 @@ class Cliente(Base):
     cliente_token_play = Column(Boolean, nullable=True)
     # Maquininha PAX com o SDK ConfraPag (banco confrapag_sdk). Sem credencial: o CNPJ vai na chave do terminal.
     cliente_confrapag = Column(Boolean, nullable=True)
+    # Totem vending (tablet + agente local): libera os bancos mercado_pago_totem / sumup_totem.
+    cliente_totem_vending = Column(Boolean, nullable=True)
     # Token da API Confrapix (Pix da maquininha ConfraPag). Mascarado no painel.
     confrapix_token = Column(String, nullable=True)
     mp_public_key = Column(String, nullable=True)
@@ -92,6 +94,8 @@ class Usuario(Base):
     cliente_token_play = Column(Boolean, nullable=True)
     # Maquininha PAX com o SDK ConfraPag (banco confrapag_sdk). Sem credencial: o CNPJ vai na chave do terminal.
     cliente_confrapag = Column(Boolean, nullable=True)
+    # Totem vending (tablet + agente local): libera os bancos mercado_pago_totem / sumup_totem.
+    cliente_totem_vending = Column(Boolean, nullable=True)
     # Token da API Confrapix (Pix da maquininha ConfraPag). Mascarado no painel.
     confrapix_token = Column(String, nullable=True)
     mp_public_key = Column(String, nullable=True)
