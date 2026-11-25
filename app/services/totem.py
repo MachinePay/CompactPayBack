@@ -35,6 +35,17 @@ MIDIA_MAX = 2 * 1024 * 1024
 STATUS_PULSO_TOTEM = "totem_entregue"  # fora de PAYMENT_PENDING_PULSE_STATUSES: nao gera alerta
 
 
+# Bancos da maquina que sao totem (cadastro de maquina, permissao "Vending machine" no cliente).
+BANCOS_TOTEM = {"mercado_pago_totem": "mercadopago", "sumup_totem": "sumup"}
+
+
+def modo_cartao_efetivo(totem: TotemVending, maquina: Maquina | None) -> str:
+    """O banco da maquina manda: Mercado Pago/SumUp (vending machine) fixa a maquininha."""
+    if maquina is not None and maquina.banco_pagamento in BANCOS_TOTEM:
+        return BANCOS_TOTEM[maquina.banco_pagamento]
+    return totem.modo_cartao or "off"
+
+
 def _sha256(texto: str) -> str:
     return hashlib.sha256(texto.encode("utf-8")).hexdigest()
 
@@ -105,7 +116,8 @@ def resumo(db: Session, totem: TotemVending | None, maquina: Maquina) -> dict:
         "versao_agente": totem.versao_agente,
         "versao_placa": totem.versao_placa,
         "codigo_pendente": bool(totem.codigo_hash and totem.codigo_expira_em and totem.codigo_expira_em > datetime.utcnow()),
-        "modo_cartao": totem.modo_cartao,
+        "modo_cartao": modo_cartao_efetivo(totem, maquina),
+        "modo_pelo_banco": maquina.banco_pagamento in BANCOS_TOTEM,
         "mp_terminal_id": totem.mp_terminal_id,
         "sumup_reader_id": totem.sumup_reader_id,
         "credenciais_cliente": {
@@ -226,11 +238,12 @@ def montar_config(db: Session, totem: TotemVending) -> dict:
     produtos = listar_produtos(db, totem.maquina_id)
     dono = db.query(Maquina).filter(Maquina.id_hardware == totem.maquina_id).first()
     cliente = dono.dono if dono else None
-    payment = {"mode": totem.modo_cartao or "off"}
-    if totem.modo_cartao == "mercadopago":
+    modo = modo_cartao_efetivo(totem, dono)
+    payment = {"mode": modo}
+    if modo == "mercadopago":
         payment["mercadopago"] = {"accessToken": (cliente.mp_access_token or "").strip() if cliente else "",
                                   "terminalId": totem.mp_terminal_id or ""}
-    elif totem.modo_cartao == "sumup":
+    elif modo == "sumup":
         payment["sumup"] = {"apiKey": (cliente.sumup_api_key or "").strip() if cliente else "",
                             "merchantCode": (cliente.sumup_merchant_code or "").strip() if cliente else "",
                             "readerId": totem.sumup_reader_id or ""}
@@ -305,7 +318,8 @@ def _lancar(db: Session, totem: TotemVending, tipo: str, p: dict, quando: dateti
         t = Transacao(maquina_id=maquina_id, tipo=EventoTipo.in_flux, metodo=MetodoPagamento.digital, valor=valor, data_hora=quando)
         db.add(t)
         db.flush()
-        provider = {"mercadopago": "mercado_pago", "sumup": "sumup"}.get(totem.modo_cartao, totem.modo_cartao)
+        modo = modo_cartao_efetivo(totem, db.query(Maquina).filter(Maquina.id_hardware == maquina_id).first())
+        provider = {"mercadopago": "mercado_pago", "sumup": "sumup"}.get(modo, modo)
         registrar_venda_pagamento(
             db, maquina_id=maquina_id, valor=valor, transacao_id=t.id, created_at=quando, origem="totem",
             provider=provider, provider_payment_id=ref, tipo_pagamento="cartao", status_pulso=STATUS_PULSO_TOTEM,

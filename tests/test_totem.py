@@ -221,3 +221,45 @@ def test_desativar_revoga_o_token(client, vinculado):
     dono, agente = vinculado["dono"], vinculado["agente"]
     assert client.delete("/api/v1/totem/maquinas/TOT-1", headers=dono).status_code == 200
     assert client.get("/api/v1/totem/TOT-1/config", headers=agente).status_code == 401
+
+
+def test_banco_vending_machine_exige_permissao_e_nao_cria_caixa(client, monkeypatch):
+    """Bancos "Mercado Pago (vending machine)" e "SumUp (vending machine)": so com a
+    permissao do cliente, sem criar caixa no Mercado Pago, e o banco define a maquininha."""
+    from app.api.v1.endpoints import maquinas as ep_maquinas
+
+    def nao_pode(*a, **k):
+        raise AssertionError("totem nao cria caixa/loja no Mercado Pago")
+
+    monkeypatch.setattr(ep_maquinas, "create_pos_for_machine", nao_pode)
+    admin = _login(client, "admin@totem.test")
+    db = SessionLocal()
+    try:
+        a = db.query(Cliente).filter_by(api_key="k-totem-a").one()
+        a.cliente_totem_vending = False
+        db.commit()
+        cliente_id = a.id
+    finally:
+        db.close()
+
+    corpo = {"id_hardware": "TOT-MP", "nome": "Totem MP", "cliente_id": cliente_id, "banco_pagamento": "mercado_pago_totem"}
+    assert client.post("/api/v1/maquinas", headers=admin, json=corpo).status_code == 422, "sem permissao Vending machine"
+
+    db = SessionLocal()
+    try:
+        db.query(Cliente).filter_by(id=cliente_id).one().cliente_totem_vending = True
+        db.commit()
+    finally:
+        db.close()
+    r = client.post("/api/v1/maquinas", headers=admin, json=corpo)
+    assert r.status_code == 200, r.text
+    r = client.post("/api/v1/maquinas", headers=admin, json={**corpo, "id_hardware": "TOT-SU", "nome": "Totem SumUp", "banco_pagamento": "sumup_totem"})
+    assert r.status_code == 200, r.text
+
+    dono = _login(client, "dono-a@totem.test")
+    codigo = client.post("/api/v1/totem/maquinas/TOT-SU/ativar", headers=dono).json()
+    assert codigo["modo_cartao"] == "sumup" and codigo["modo_pelo_banco"] is True
+    token = client.post("/api/v1/totem/vincular", json={"code": codigo["codigo"]}).json()["token"]
+    cfg = client.get("/api/v1/totem/TOT-SU/config", headers={"Authorization": f"Bearer {token}"}).json()
+    assert cfg["payment"]["mode"] == "sumup"
+    assert cfg["payment"]["sumup"]["apiKey"] == "sup_sk_a" and cfg["payment"]["sumup"]["merchantCode"] == "MCA"
