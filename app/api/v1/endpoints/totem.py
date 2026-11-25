@@ -19,6 +19,7 @@ from app.models.totem import TotemMidia
 from app.services import totem as svc
 from app.services.auditoria import registrar_auditoria
 from app.services.sumup import create_reader, get_sumup_merchant_code
+from app.services import tela_point as tela_point_svc
 
 router = APIRouter(prefix="/totem", tags=["totem-vending"])
 
@@ -135,6 +136,22 @@ def parear_sumup(machine_id: str, dados: PareamentoTotem, db: Session = Depends(
                         descricao=f"Solo pareada no totem: {reader['id']}")
     db.commit()
     return {**svc.resumo(db, totem, maquina), "reader": reader}
+
+
+@router.post("/maquinas/{machine_id}/caixa")
+def criar_caixa(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    """Caixa e loja no Mercado Pago para o totem (mesma funcao das maquinas de tela).
+    Para totem que nasceu antes de o cadastro criar o caixa sozinho."""
+    maquina, totem = _totem_do_painel(db, user, machine_id)
+    if maquina.banco_pagamento != "mercado_pago_totem":
+        raise HTTPException(status_code=422, detail="So para maquinas com banco Mercado Pago (vending machine)")
+    tinha = maquina.mp_pos_id is not None and str(maquina.mp_pos_id).strip() != ""
+    caixa = tela_point_svc.criar_caixa(db, maquina)
+    if not tinha:
+        registrar_auditoria(db, user, acao="TOTEM_CAIXA_CRIADO", entidade_tipo="maquina", entidade_id=maquina.id_hardware,
+                            descricao=f"Caixa Mercado Pago criado para o totem pos_id={caixa['pos_id']}")
+        db.commit()
+    return svc.resumo(db, totem, maquina)
 
 
 @router.get("/maquinas/{machine_id}/produtos")

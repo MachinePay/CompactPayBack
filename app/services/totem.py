@@ -120,11 +120,19 @@ def resumo(db: Session, totem: TotemVending | None, maquina: Maquina) -> dict:
         "modo_pelo_banco": maquina.banco_pagamento in BANCOS_TOTEM,
         "mp_terminal_id": totem.mp_terminal_id,
         "sumup_reader_id": totem.sumup_reader_id,
+        "caixa": _caixa(maquina),
         "credenciais_cliente": {
             "mercadopago": bool(dono and (dono.mp_access_token or "").strip()),
             "sumup": bool(dono and (dono.sumup_api_key or "").strip()),
         },
     }
+
+
+def _caixa(maquina: Maquina) -> dict | None:
+    if not (maquina.mp_pos_id or "").strip():
+        return None
+    return {"pos_id": maquina.mp_pos_id, "pos_external_id": maquina.mp_pos_external_id,
+            "store_id": maquina.mp_store_id, "store_external_id": maquina.mp_store_external_id}
 
 
 def salvar_pagamento(db: Session, totem: TotemVending, modo: str, mp_terminal_id: str | None, sumup_reader_id: str | None) -> None:

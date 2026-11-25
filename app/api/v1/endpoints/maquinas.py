@@ -367,8 +367,9 @@ def criar_maquina(
         localizacao=maquina.localizacao,
         ultimo_sinal=None,
     )
-    # mercado_pago_point (tela + Point) tambem nasce com caixa: a Point fica vinculada a ele.
-    if banco_pagamento in {"mercado_pago", "mercado_pago_point"}:
+    # mercado_pago_point (tela + Point) e mercado_pago_totem (totem vending) tambem nascem
+    # com caixa: a Point fica vinculada a ele, igual as outras maquinas.
+    if banco_pagamento in {"mercado_pago", "mercado_pago_point", "mercado_pago_totem"}:
         if not cliente.mp_access_token:
             raise HTTPException(
                 status_code=422,
