@@ -223,15 +223,21 @@ def test_desativar_revoga_o_token(client, vinculado):
     assert client.get("/api/v1/totem/TOT-1/config", headers=agente).status_code == 401
 
 
-def test_banco_vending_machine_exige_permissao_e_nao_cria_caixa(client, monkeypatch):
+def test_banco_vending_machine_exige_permissao_e_cria_caixa_no_mp(client, monkeypatch):
     """Bancos "Mercado Pago (vending machine)" e "SumUp (vending machine)": so com a
-    permissao do cliente, sem criar caixa no Mercado Pago, e o banco define a maquininha."""
+    permissao do cliente; o de Mercado Pago cria caixa e loja como as outras maquinas;
+    o banco define a maquininha."""
     from app.api.v1.endpoints import maquinas as ep_maquinas
 
-    def nao_pode(*a, **k):
-        raise AssertionError("totem nao cria caixa/loja no Mercado Pago")
+    criados = []
 
-    monkeypatch.setattr(ep_maquinas, "create_pos_for_machine", nao_pode)
+    def fake_pos(cliente, maquina):
+        criados.append(maquina.id_hardware)
+        n = len(criados)
+        return {"mp_store_id": f"ST{n}", "mp_store_external_id": f"STX{n}", "mp_pos_id": f"POS{n}",
+                "mp_pos_external_id": f"POSX{n}", "mp_qr_image": None}
+
+    monkeypatch.setattr(ep_maquinas, "create_pos_for_machine", fake_pos)
     admin = _login(client, "admin@totem.test")
     db = SessionLocal()
     try:
@@ -256,7 +262,28 @@ def test_banco_vending_machine_exige_permissao_e_nao_cria_caixa(client, monkeypa
     r = client.post("/api/v1/maquinas", headers=admin, json={**corpo, "id_hardware": "TOT-SU", "nome": "Totem SumUp", "banco_pagamento": "sumup_totem"})
     assert r.status_code == 200, r.text
 
+    assert criados == ["TOT-MP"], "Mercado Pago (vending machine) cria caixa; SumUp nao"
+
     dono = _login(client, "dono-a@totem.test")
+    mp = client.post("/api/v1/totem/maquinas/TOT-MP/ativar", headers=dono).json()
+    assert mp["modo_cartao"] == "mercadopago" and mp["caixa"]["pos_id"] == "POS1"
+
+    # Totem que nasceu sem caixa: botao "Criar caixa" usa a mesma funcao das maquinas de tela.
+    from app.services import tela_point as tela_point_svc
+    monkeypatch.setattr(tela_point_svc, "create_pos_for_machine", fake_pos)
+    db = SessionLocal()
+    try:
+        m = db.query(Maquina).filter_by(id_hardware="TOT-MP").one()
+        m.mp_pos_id = m.mp_store_id = m.mp_pos_external_id = m.mp_store_external_id = None
+        db.commit()
+    finally:
+        db.close()
+    r = client.post("/api/v1/totem/maquinas/TOT-MP/caixa", headers=dono)
+    assert r.status_code == 200, r.text
+    assert r.json()["caixa"]["pos_id"] == "POS2"
+    assert client.post("/api/v1/totem/maquinas/TOT-SU/ativar", headers=dono).status_code == 200
+    assert client.post("/api/v1/totem/maquinas/TOT-SU/caixa", headers=dono).status_code == 422, "SumUp nao tem caixa MP"
+
     codigo = client.post("/api/v1/totem/maquinas/TOT-SU/ativar", headers=dono).json()
     assert codigo["modo_cartao"] == "sumup" and codigo["modo_pelo_banco"] is True
     token = client.post("/api/v1/totem/vincular", json={"code": codigo["codigo"]}).json()["token"]
