@@ -13,6 +13,7 @@ from app.db.session import SessionLocal
 from app.models.models import Cliente, Maquina, SumupTransacaoPendente, VendaPagamento
 from app.services.sumup import build_reader_device_map, extract_card_reader_code, get_receipt, list_recent_transactions
 from app.services.sumup_webhook import liberar_pulso_sumup, registrar_pagamento_sumup
+from app.services.totem import eh_referencia_totem, readers_sumup_de_totem
 
 # Status que a API de historico da SumUp pode mandar - tratamos qualquer
 # variacao de caixa/alias como "foi aprovado", o resto e' ignorado.
@@ -147,6 +148,7 @@ def process_cliente(db, cliente: Cliente) -> None:
         if reader_id in maquina_by_reader_id
     }
 
+    readers_de_totem = readers_sumup_de_totem(db)
     for transacao in transacoes:
         status_raw = str(transacao.get("status") or "").strip().lower()
         if status_raw not in SUCCESS_STATUSES:
@@ -154,6 +156,9 @@ def process_cliente(db, cliente: Cliente) -> None:
 
         transaction_id = str(transacao.get("id") or transacao.get("transaction_id") or "").strip()
         if not transaction_id:
+            continue
+        if eh_referencia_totem(transacao.get("client_transaction_id")):
+            # Venda do totem vending: o agente da maquina ja cuidou (app/services/totem.py).
             continue
         if _ja_processada(db, transaction_id):
             continue
@@ -178,6 +183,9 @@ def process_cliente(db, cliente: Cliente) -> None:
             )
             receipt = {}
         device_identifier = extract_card_reader_code(receipt)
+        if device_identifier and reader_device_map_completo.get(device_identifier) in readers_de_totem:
+            logging.info("[SumUp poller] transacao %s ignorada: Solo de totem vending", transaction_id)
+            continue
         maquina, motivo = _resolve_maquina(
             device_identifier,
             maquina_by_device_code,

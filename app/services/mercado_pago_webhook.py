@@ -19,6 +19,18 @@ from app.services.pagamentos_helpers import (
 )
 from app.services.pulse_tracking import update_pulse_status
 from app.services.vendas import registrar_venda_pagamento
+from app.services.totem import eh_referencia_totem, terminais_mp_de_totem
+
+
+def _terminal_de_totem(terminal_id) -> bool:
+    """Point cadastrada num totem vending: o agente do totem cuida da venda."""
+    if not terminal_id:
+        return False
+    db = SessionLocal()
+    try:
+        return str(terminal_id) in terminais_mp_de_totem(db)
+    finally:
+        db.close()
 
 
 def _acquire_payment_lock(db, key: str) -> None:
@@ -183,6 +195,11 @@ def processar_callback_mercado_pago(dados: dict):
             return {"status": "ignorado", "detalhe": f"Order ainda nao aprovada ({order_status or action})"}
 
         external_reference = order_data.get("external_reference")
+        if eh_referencia_totem(external_reference):
+            # Cobranca do totem vending: o proprio agente da maquina confirma e
+            # libera o premio (app/services/totem.py). Aqui nao gera pulso.
+            print(f"[MP webhook] order de totem ignorada: {external_reference}")
+            return {"status": "ignorado", "detalhe": "Order do totem vending"}
         machine_id = parse_machine_id_from_external_reference(external_reference)
         if not machine_id:
             print("[MP webhook] order ignorada: sem machine_id no external_reference")
@@ -284,6 +301,9 @@ def processar_callback_mercado_pago(dados: dict):
             return {"status": "ignorado", "detalhe": f"Pagamento ainda nao aprovado ({payment_status})"}
 
         terminal_id = extract_terminal_id(payment_data)
+        if eh_referencia_totem(payment_data.get("external_reference")) or _terminal_de_totem(terminal_id):
+            print(f"[MP webhook] payment de totem ignorado payment_id={payment_id} terminal={terminal_id}")
+            return {"status": "ignorado", "detalhe": "Pagamento do totem vending"}
         amount = float(payment_data.get("transaction_amount") or 1.0)
 
         db = SessionLocal()
