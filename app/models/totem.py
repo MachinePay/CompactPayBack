@@ -74,6 +74,20 @@ class TotemMidia(Base):
     conteudo = deferred(Column(LargeBinary, nullable=False))
 
 
+class TotemVideo(Base):
+    """Video da tela inicial do totem (MP4/WebM como foi enviado: o tablet toca direto
+    no navegador). Um por maquina; o agente baixa pelo hash quando muda."""
+    __tablename__ = "totens_videos"
+    id = Column(Integer, primary_key=True)
+    maquina_id = Column(String, unique=True, index=True, nullable=False)
+    hash = Column(String, index=True, nullable=False)
+    mime = Column(String, nullable=False)
+    tamanho = Column(Integer, nullable=False)
+    nome_original = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, nullable=False)
+    conteudo = deferred(Column(LargeBinary, nullable=False))
+
+
 class TotemEvento(Base):
     """Evento recebido do agente (id UUID v7 gerado na maquina): garante que
     reenvio nao duplica venda."""

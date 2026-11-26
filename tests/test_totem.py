@@ -290,3 +290,32 @@ def test_banco_vending_machine_exige_permissao_e_cria_caixa_no_mp(client, monkey
     cfg = client.get("/api/v1/totem/TOT-SU/config", headers={"Authorization": f"Bearer {token}"}).json()
     assert cfg["payment"]["mode"] == "sumup"
     assert cfg["payment"]["sumup"]["apiKey"] == "sup_sk_a" and cfg["payment"]["sumup"]["merchantCode"] == "MCA"
+
+
+def test_video_da_tela_inicial(client):
+    """Video MP4 enviado pelo painel chega na config do agente e e baixado pelo hash."""
+    import hashlib
+
+    dono = _login(client, "dono-a@totem.test")
+    ativ = client.post("/api/v1/totem/maquinas/TOT-MP/ativar", headers=dono).json()
+    token = client.post("/api/v1/totem/vincular", json={"code": ativ["codigo"]}).json()["token"]
+    agente = {"Authorization": f"Bearer {token}"}
+    antes = client.get("/api/v1/totem/TOT-MP/config", headers=agente).json()
+    assert antes["attractVideo"] is None
+
+    mp4 = b"\x00\x00\x00\x18ftypisom" + b"\x00" * 64
+    nao_video = b"isto nao e video"
+    assert client.post("/api/v1/totem/maquinas/TOT-MP/video", headers=dono,
+                       files={"arquivo": ("x.txt", nao_video, "text/plain")}).status_code == 422
+    r = client.post("/api/v1/totem/maquinas/TOT-MP/video", headers=dono, files={"arquivo": ("promo.mp4", mp4, "video/mp4")})
+    assert r.status_code == 200, r.text
+    h = hashlib.sha256(mp4).hexdigest()
+    assert r.json()["video"]["hash"] == h
+
+    depois = client.get(f"/api/v1/totem/TOT-MP/config?version={antes['version']}", headers=agente).json()
+    assert depois["attractVideo"] == {"hash": h, "ext": "mp4"}
+    baixado = client.get(f"/api/v1/totem/videos/{h}.mp4")
+    assert baixado.status_code == 200 and baixado.content == mp4 and baixado.headers["content-type"] == "video/mp4"
+
+    assert client.delete("/api/v1/totem/maquinas/TOT-MP/video", headers=dono).json()["video"] is None
+    assert client.get("/api/v1/totem/TOT-MP/config", headers=agente).json()["attractVideo"] is None

@@ -23,7 +23,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from app.models.models import EventoTipo, Maquina, MetodoPagamento, Transacao, VendaPagamento
-from app.models.totem import TotemEvento, TotemMidia, TotemProduto, TotemVending
+from app.models.totem import TotemEvento, TotemMidia, TotemProduto, TotemVending, TotemVideo
 from app.services.vendas import registrar_venda_pagamento
 
 PREFIXO_REFERENCIA = "kiosk-"
@@ -121,6 +121,7 @@ def resumo(db: Session, totem: TotemVending | None, maquina: Maquina) -> dict:
         "mp_terminal_id": totem.mp_terminal_id,
         "sumup_reader_id": totem.sumup_reader_id,
         "caixa": _caixa(maquina),
+        "video": video_info(db, maquina.id_hardware),
         "credenciais_cliente": {
             "mercadopago": bool(dono and (dono.mp_access_token or "").strip()),
             "sumup": bool(dono and (dono.sumup_api_key or "").strip()),
@@ -242,6 +243,52 @@ def registrar_contato(db: Session, totem: TotemVending) -> None:
     db.flush()
 
 
+# ---------------------------------------------------------------- video da tela inicial
+VIDEO_MAX = 80 * 1024 * 1024
+VIDEO_TIPOS = {"video/mp4": "mp4", "video/webm": "webm"}
+
+
+def tipo_do_video(cabecalho: bytes) -> str | None:
+    """MP4 tem "ftyp" no byte 4; WebM comeca com a assinatura EBML."""
+    if cabecalho[4:8] == b"ftyp":
+        return "video/mp4"
+    if cabecalho[:4] == bytes([0x1A, 0x45, 0xDF, 0xA3]):
+        return "video/webm"
+    return None
+
+
+def video_da_maquina(db: Session, maquina_id: str) -> TotemVideo | None:
+    return db.query(TotemVideo).filter(TotemVideo.maquina_id == maquina_id).first()
+
+
+def video_info(db: Session, maquina_id: str) -> dict | None:
+    v = video_da_maquina(db, maquina_id)
+    if v is None:
+        return None
+    return {"hash": v.hash, "mime": v.mime, "tamanho": v.tamanho, "nome": v.nome_original,
+            "enviado_em": v.created_at.isoformat() + "Z" if v.created_at else None}
+
+
+def _video_config(db: Session, maquina_id: str) -> dict | None:
+    v = video_da_maquina(db, maquina_id)
+    return {"hash": v.hash, "ext": VIDEO_TIPOS.get(v.mime, "mp4")} if v else None
+
+
+def salvar_video(db: Session, totem: TotemVending, conteudo: bytes, nome: str | None) -> TotemVideo:
+    if not conteudo:
+        raise HTTPException(status_code=422, detail="Arquivo de video vazio")
+    mime = tipo_do_video(conteudo[:16])
+    if mime is None:
+        raise HTTPException(status_code=422, detail="Envie o video em MP4 (ou WebM)")
+    db.query(TotemVideo).filter(TotemVideo.maquina_id == totem.maquina_id).delete()
+    v = TotemVideo(maquina_id=totem.maquina_id, hash=hashlib.sha256(conteudo).hexdigest(), mime=mime,
+                   tamanho=len(conteudo), nome_original=(nome or "")[:120] or None, conteudo=conteudo)
+    db.add(v)
+    totem.config_versao = (totem.config_versao or 1) + 1
+    db.flush()
+    return v
+
+
 def montar_config(db: Session, totem: TotemVending) -> dict:
     produtos = listar_produtos(db, totem.maquina_id)
     dono = db.query(Maquina).filter(Maquina.id_hardware == totem.maquina_id).first()
@@ -262,6 +309,7 @@ def montar_config(db: Session, totem: TotemVending) -> dict:
             for p in produtos
         ],
         "payment": payment,
+        "attractVideo": _video_config(db, totem.maquina_id),
     }
     # Versao = impressao digital do conteudo: muda tambem quando o token do
     # cliente e' renovado (OAuth do Mercado Pago), sem precisar de contador.
