@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from app.core.dependencies import get_current_user
 from app.core.escopo import obter_maquina_do_usuario
 from app.db.session import SessionLocal
-from app.models.totem import TotemMidia
+from app.models.totem import TotemMidia, TotemVideo
 from app.services import totem as svc
 from app.services.auditoria import registrar_auditoria
 from app.services.sumup import create_reader, get_sumup_merchant_code
@@ -174,6 +174,51 @@ async def enviar_midia(arquivo: UploadFile = File(...), db: Session = Depends(ge
     h = svc.salvar_midia(db, user[2], conteudo)
     db.commit()
     return {"hash": h}
+
+
+@router.post("/maquinas/{machine_id}/video")
+def enviar_video(machine_id: str, arquivo: UploadFile = File(...), db: Session = Depends(get_db),
+                 user=Depends(get_current_user)):
+    """Video da tela inicial do totem (MP4). O tablet baixa sozinho na proxima sincronizacao."""
+    maquina, totem = _totem_do_painel(db, user, machine_id)
+    partes, recebidos = [], 0
+    while True:
+        bloco = arquivo.file.read(1024 * 1024)
+        if not bloco:
+            break
+        recebidos += len(bloco)
+        if recebidos > svc.VIDEO_MAX:
+            raise HTTPException(status_code=413, detail="Video muito grande (maximo 80 MB)")
+        partes.append(bloco)
+    video = svc.salvar_video(db, totem, b"".join(partes), arquivo.filename)
+    registrar_auditoria(db, user, acao="TOTEM_VIDEO_ENVIADO", entidade_tipo="maquina", entidade_id=maquina.id_hardware,
+                        descricao=f"Video da tela inicial do totem arquivo={video.nome_original} tamanho={video.tamanho}")
+    db.commit()
+    return svc.resumo(db, totem, maquina)
+
+
+@router.delete("/maquinas/{machine_id}/video")
+def remover_video(machine_id: str, db: Session = Depends(get_db), user=Depends(get_current_user)):
+    maquina, totem = _totem_do_painel(db, user, machine_id)
+    db.query(TotemVideo).filter(TotemVideo.maquina_id == maquina.id_hardware).delete()
+    totem.config_versao = (totem.config_versao or 1) + 1
+    registrar_auditoria(db, user, acao="TOTEM_VIDEO_REMOVIDO", entidade_tipo="maquina", entidade_id=maquina.id_hardware,
+                        descricao="Video da tela inicial do totem removido")
+    db.commit()
+    return svc.resumo(db, totem, maquina)
+
+
+@router.get("/videos/{arquivo}")
+def baixar_video(arquivo: str, db: Session = Depends(get_db)):
+    """Video publico pelo hash (sha256 do conteudo), como as fotos."""
+    h = arquivo.split(".", 1)[0]
+    if len(h) != 64 or any(c not in "0123456789abcdef" for c in h):
+        raise HTTPException(status_code=404, detail="Video nao encontrado")
+    video = db.query(TotemVideo).filter(TotemVideo.hash == h).first()
+    if video is None:
+        raise HTTPException(status_code=404, detail="Video nao encontrado")
+    return Response(content=video.conteudo, media_type=video.mime,
+                    headers={"Cache-Control": "public, max-age=31536000, immutable"})
 
 
 # ---- Fotos (publicas pelo hash) ----------------------------------------------
