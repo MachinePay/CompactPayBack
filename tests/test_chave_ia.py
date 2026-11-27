@@ -1,4 +1,4 @@
-"""Chave da IA Central (X-API-Key): le tudo, so escreve no que a IA usa."""
+"""Chave da IA Central (X-API-Key): acesso total de admin, sem login."""
 import os
 
 from fastapi.testclient import TestClient
@@ -32,10 +32,10 @@ def test_sem_chave_configurada_recusa(monkeypatch):
     assert r.status_code == 401
 
 
-def test_chave_nao_escreve_fora_da_lista(monkeypatch):
+def test_chave_escreve_como_admin(monkeypatch):
     with _cliente(monkeypatch) as client:
-        r = client.post("/api/v1/usuarios", headers={"X-API-Key": CHAVE}, json={"email": "x@x.com", "password": "123456"})
-    assert r.status_code == 403
+        r = client.post("/api/v1/usuarios", headers={"X-API-Key": CHAVE}, json={"email": "ia-teste@x.com", "password": "12345678", "role": "admin"})
+    assert r.status_code not in (401, 403)
 
 
 def test_credito_remoto_passa_pela_chave(monkeypatch):
